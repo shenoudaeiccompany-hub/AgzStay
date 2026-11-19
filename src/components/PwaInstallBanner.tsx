@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Download, Share, Smartphone, X } from 'lucide-react';
-import { loadLocalJson, masayefStorageKeys, saveLocalJson } from '@/services/masayefRepository';
+import { agzstayStorageKeys, loadLocalJson, saveLocalJson } from '@/services/agzstayRepository';
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -9,7 +9,7 @@ interface BeforeInstallPromptEvent extends Event {
 
 export function PwaInstallBanner() {
   const [dismissed, setDismissed] = useState<boolean>(() =>
-    loadLocalJson<boolean>(masayefStorageKeys.pwaDismissed, false)
+    loadLocalJson<boolean>(agzstayStorageKeys.pwaDismissed, false)
   );
   const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [isGuideOpen, setIsGuideOpen] = useState(false);
@@ -31,7 +31,7 @@ export function PwaInstallBanner() {
 
   const handleDismiss = () => {
     setDismissed(true);
-    saveLocalJson(masayefStorageKeys.pwaDismissed, true);
+    saveLocalJson(agzstayStorageKeys.pwaDismissed, true);
   };
 
   const handleInstallClick = async () => {

@@ -51,9 +51,47 @@ export type ViewMode = 'grid' | 'map';
 
 export type UserMode = 'renter' | 'host';
 
-export type AppSectionTab = 'browse' | 'price-guide' | 'host-dashboard';
+export type AppSectionTab = 'browse' | 'price-guide' | 'host-dashboard' | 'admin';
 
 export type VerificationStatus = 'unverified' | 'pending' | 'verified';
+
+export type HostTier = 'free' | 'pro';
+
+export type SubscriptionStatus = 'active' | 'pending-verification' | 'expired';
+
+export type PaymentMethod =
+  | 'instapay'
+  | 'vodafone-cash'
+  | 'orange-cash'
+  | 'etisalat-cash';
+
+export interface WelcomeGuideInfo {
+  wifiName: string;
+  wifiPassword: string;
+  gateInstructions: string;
+  caretakerName: string;
+  caretakerPhone: string;
+  mapsUrl?: string;
+}
+
+export interface HostSubscriptionRecord {
+  id: string;
+  hostId?: string;
+  hostName: string;
+  hostPhone: string;
+  tier: HostTier;
+  status: SubscriptionStatus;
+  monthlyFee: number;
+  paymentMethod?: PaymentMethod;
+  senderPhoneOrHandle?: string;
+  transferReference?: string;
+  receiptPath?: string;
+  receiptPreviewUrl?: string;
+  startDate: string;
+  expiryDate: string;
+  submittedAt?: string;
+  reviewedAt?: string;
+}
 
 export interface Coordinates {
   lat: number;
@@ -78,7 +116,7 @@ export interface DateRule {
 
 export interface ChaletOwner {
   name: string;
-  phone: string;
+  phone?: string;
   instaPayHandle?: string;
   verified: boolean;
   roleType?: AdvertiserRole;
@@ -88,10 +126,18 @@ export interface ChaletOwner {
   memberSince: string;
 }
 
-export type ListingAvailabilityStatus = 'active' | 'rented';
+export type ListingAvailabilityStatus =
+  | 'active'
+  | 'rented'
+  | 'draft'
+  | 'pending_review'
+  | 'hidden';
 
 export interface Chalet {
   id: string;
+  ownerId?: string;
+  isDemo?: boolean;
+  unitNumber?: number;
   title: string;
   listingMode?: 'rent';
   availabilityStatus?: ListingAvailabilityStatus;
@@ -104,6 +150,10 @@ export interface Chalet {
   unitType: UnitType;
   viewType: ViewType;
   includesPasses: boolean;
+  verifiedLivePhotos?: boolean;
+  livePhotosVerifiedAt?: string;
+  welcomeGuide?: WelcomeGuideInfo;
+  hostTier?: HostTier;
   pricePerNight: number;
   weeklyPrice?: number;
   monthlyPrice?: number;
@@ -132,14 +182,26 @@ export interface Chalet {
   featured?: boolean;
 }
 
+export type BookingStatus =
+  | 'pending'
+  | 'approved'
+  | 'payment_submitted'
+  | 'confirmed'
+  | 'completed'
+  | 'cancelled'
+  | 'rejected'
+  | 'expired'
+  | 'pending_verification';
+
 export interface BookingRequest {
   id: string;
   chaletId: string;
+  renterId?: string;
   chaletTitle: string;
   resort: string;
   destinationLabel: string;
   ownerName: string;
-  ownerPhone: string;
+  ownerPhone?: string;
   ownerInstaPay?: string;
   guestName: string;
   guestPhone: string;
@@ -154,13 +216,45 @@ export interface BookingRequest {
   remainingAmount?: number;
   securityDeposit?: number;
   policyAccepted?: boolean;
+  receiptPath?: string;
+  receiptPreviewUrl?: string;
+  paymentProvider?: string;
+  paymentReference?: string;
   notes: string;
-  status: 'pending' | 'confirmed' | 'cancelled';
+  status: BookingStatus;
+  rejectionReason?: string;
+  approvedAt?: string;
+  paymentSubmittedAt?: string;
   confirmedAt?: string;
+  completedAt?: string;
   cancelledAt?: string;
+  expiresAt?: string;
   cancellationDaysNotice?: number;
   depositForfeited?: boolean;
   forfeitedAmount?: number;
+  createdAt: string;
+}
+
+export interface BookedDateRange {
+  chaletId: string;
+  checkIn: string;
+  checkOut: string;
+  status: BookingStatus;
+}
+
+export interface RevealedOwnerContact {
+  ownerPhone: string | null;
+  instaPayHandle: string | null;
+}
+
+export interface AppNotification {
+  id: string;
+  userId: string;
+  bookingId?: string;
+  type: string;
+  title: string;
+  body: string;
+  isRead: boolean;
   createdAt: string;
 }
 
@@ -227,13 +321,18 @@ export interface RenterTrustReview {
 }
 
 export interface OwnerVerificationSubmission {
+  id?: string;
+  ownerId?: string;
   ownerName: string;
   phone: string;
   documentType: 'resort-card' | 'ownership-contract' | 'authorization';
   documentNumber: string;
+  documentPath?: string;
   documentPreviewName: string;
   status: VerificationStatus;
+  rejectionReason?: string;
   submittedAt: string;
+  reviewedAt?: string;
 }
 
 export interface AppUser {
@@ -241,8 +340,7 @@ export interface AppUser {
   name: string;
   email: string;
   phone?: string;
-  role: 'guest' | 'owner';
-  isLocalDemo?: boolean;
+  role: 'guest' | 'owner' | 'admin';
 }
 
 export interface MarketBenchmarkEntry {

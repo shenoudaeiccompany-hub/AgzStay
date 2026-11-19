@@ -1,6 +1,17 @@
-import { useEffect, useMemo, useState } from 'react';
-import { CalendarCheck2, Home, Scale, ShieldCheck, Sparkles, Umbrella, X } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  AlertTriangle,
+  CalendarCheck2,
+  Home,
+  RefreshCw,
+  Scale,
+  ShieldCheck,
+  Sparkles,
+  Umbrella,
+  X,
+} from 'lucide-react';
 import { AddPropertyModal } from '@/components/AddPropertyModal';
+import { AdminDashboard } from '@/components/AdminDashboard';
 import { AuthModal } from '@/components/AuthModal';
 import { BookingsDrawer } from '@/components/BookingsDrawer';
 import { ChaletsMapView } from '@/components/ChaletsMapView';
@@ -14,44 +25,85 @@ import { OwnerVerificationModal } from '@/components/OwnerVerificationModal';
 import { PropertyCard } from '@/components/PropertyCard';
 import { PropertyDetailModal } from '@/components/PropertyDetailModal';
 import { PwaInstallBanner } from '@/components/PwaInstallBanner';
+import { SubscriptionUpgradeModal } from '@/components/SubscriptionUpgradeModal';
 import {
   DESTINATION_DEFAULT_COORDINATES,
   INITIAL_CHALETS,
+  PRO_TIER_MONTHLY_FEE,
   getRentalPriceForDuration,
   resolveGovernorateId,
 } from '@/data/chalets';
+import { isSupabaseConfigured } from '@/lib/supabase';
 import {
-  fetchRemoteChalets,
-  loadInitialBookings,
-  loadInitialRenterTrustReviews,
-  loadInitialVerification,
+  agzstayStorageKeys,
+  approveBookingRequestRpc,
+  cancelBookingWithPolicyRpc,
+  completeBookingStayRpc,
+  confirmBookingPaymentRpc,
+  createBooking,
+  createChalet,
+  createListingReport,
+  createRenterTrustReview,
+  createReview,
+  deleteChalet,
+  deleteReview,
+  fetchAllActiveBookedRanges,
+  fetchAllBookingsAdmin,
+  fetchAllReviews,
+  fetchAllSubscriptionsAdmin,
+  fetchAllVerificationsAdmin,
+  fetchChaletReportCounts,
+  fetchHostChaletBookings,
+  fetchMyBookings,
+  fetchMyChalets,
+  fetchMyNotifications,
+  fetchMySubscriptions,
+  fetchMyVerification,
+  fetchPublicChalets,
+  fetchRenterTrustReviews,
+  getCurrentUser,
   loadLocalJson,
-  masayefStorageKeys,
-  persistRemoteBooking,
-  persistRemoteChalet,
-  persistRemoteRenterTrustReview,
-  persistRemoteReport,
-  persistRemoteReview,
+  markAllNotificationsAsRead,
+  markNotificationAsRead,
+  onAuthStateChange,
+  rejectBookingRequestRpc,
+  reviewOwnerVerificationAdmin,
   saveLocalJson,
   signOutUser,
-} from '@/services/masayefRepository';
+  submitHostSubscription,
+  submitOwnerVerification,
+  subscribeToBookingsChanges,
+  subscribeToNotifications,
+  syncBookingLifecycleStatusesRpc,
+  updateChalet,
+  updateSubscriptionStatusAdmin,
+  type RepoResult,
+} from '@/services/agzstayRepository';
+import { getPaymentProvider } from '@/services/payments/paymentProvider';
 import {
+  addDaysIso,
   calculateNightsBetween,
-  daysUntilDate,
   formatArabicDate,
+  formatIsoDate,
   isChaletAvailableForRange,
+  type BookingRangeLike,
 } from '@/utils/bookingPricing';
 import type {
   AmenityId,
+  AppNotification,
   AppSectionTab,
   AppUser,
+  BookedDateRange,
   BookingRequest,
+  BookingStatus,
   Chalet,
   ChaletReview,
   FilterState,
   GovernorateId,
-  ListingReport,
+  HostSubscriptionRecord,
+  HostTier,
   OwnerVerificationSubmission,
+  PaymentMethod,
   PropertyReviewTag,
   RentalDuration,
   RenterTrustReview,
@@ -62,28 +114,6 @@ import type {
   ViewMode,
   ViewType,
 } from '@/types/chalet';
-
-type ChaletConfigOverride = Partial<
-  Pick<
-    Chalet,
-    | 'title'
-    | 'description'
-    | 'availabilityStatus'
-    | 'pricePerNight'
-    | 'weeklyPrice'
-    | 'monthlyPrice'
-    | 'weekendPricePerNight'
-    | 'peakPricePerNight'
-    | 'securityDeposit'
-    | 'downPaymentPercent'
-    | 'depositType'
-    | 'fixedDepositAmount'
-    | 'includesPasses'
-    | 'blockedDates'
-    | 'dateRules'
-    | 'owner'
-  >
->;
 
 const DEFAULT_FILTERS: FilterState = {
   searchQuery: '',
@@ -112,45 +142,54 @@ function normalizeUnitType(unitType: UnitType | undefined): UnitType {
 }
 
 export function App() {
-  const [remoteChalets, setRemoteChalets] = useState<Chalet[]>([]);
-  const [customChalets, setCustomChalets] = useState<Chalet[]>(() =>
-    loadLocalJson<Chalet[]>(masayefStorageKeys.customChalets, [])
-  );
-  const [chaletOverrides, setChaletOverrides] = useState<Record<string, ChaletConfigOverride>>(
-    () => loadLocalJson<Record<string, ChaletConfigOverride>>(masayefStorageKeys.chaletOverrides, {})
-  );
+  const [currentUser, setCurrentUser] = useState<AppUser | null>(null);
+  const [publicChalets, setPublicChalets] = useState<Chalet[]>([]);
+  const [myChalets, setMyChalets] = useState<Chalet[]>([]);
+  const [activeBookedRanges, setActiveBookedRanges] = useState<BookedDateRange[]>([]);
+  const [myBookings, setMyBookings] = useState<BookingRequest[]>([]);
+  const [hostBookings, setHostBookings] = useState<BookingRequest[]>([]);
+  const [adminBookings, setAdminBookings] = useState<BookingRequest[]>([]);
+  const [reviews, setReviews] = useState<ChaletReview[]>([]);
+  const [renterTrustReviews, setRenterTrustReviews] = useState<RenterTrustReview[]>([]);
+  const [reportCounts, setReportCounts] = useState<Record<string, number>>({});
+  const [ownerVerification, setOwnerVerification] =
+    useState<OwnerVerificationSubmission | null>(null);
+  const [adminVerifications, setAdminVerifications] = useState<OwnerVerificationSubmission[]>([]);
+  const [mySubscriptions, setMySubscriptions] = useState<HostSubscriptionRecord[]>([]);
+  const [adminSubscriptions, setAdminSubscriptions] = useState<HostSubscriptionRecord[]>([]);
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const [notificationsLoading, setNotificationsLoading] = useState(false);
+  const [notificationsError, setNotificationsError] = useState<string | null>(null);
+  const [isInitialLoading, setIsInitialLoading] = useState(true);
+  const [publicLoadError, setPublicLoadError] = useState<string | null>(null);
+  const [scopedDataLoading, setScopedDataLoading] = useState(false);
+  const [scopedDataError, setScopedDataError] = useState<string | null>(null);
+
+  // Client-only UI preferences (strictly allowed in localStorage)
   const [favorites, setFavorites] = useState<string[]>(() =>
-    loadLocalJson<string[]>(masayefStorageKeys.favorites, [])
+    loadLocalJson<string[]>(agzstayStorageKeys.favorites, [])
   );
   const [compareIds, setCompareIds] = useState<string[]>(() =>
-    loadLocalJson<string[]>(masayefStorageKeys.compareIds, [])
+    loadLocalJson<string[]>(agzstayStorageKeys.compareIds, [])
   );
-  const [bookings, setBookings] = useState<BookingRequest[]>(() =>
-    loadInitialBookings()
-  );
-  const [reviews, setReviews] = useState<ChaletReview[]>(() =>
-    loadLocalJson<ChaletReview[]>(masayefStorageKeys.reviews, [])
-  );
-  const [renterTrustReviews, setRenterTrustReviews] = useState<RenterTrustReview[]>(() =>
-    loadInitialRenterTrustReviews()
-  );
-  const [reports, setReports] = useState<ListingReport[]>(() =>
-    loadLocalJson<ListingReport[]>(masayefStorageKeys.reports, [])
-  );
-  const [currentUser, setCurrentUser] = useState<AppUser | null>(() =>
-    loadLocalJson<AppUser | null>(masayefStorageKeys.user, null)
-  );
-  const [ownerVerification, setOwnerVerification] =
-    useState<OwnerVerificationSubmission | null>(() => loadInitialVerification());
 
   const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTERS);
   const [viewMode, setViewMode] = useState<ViewMode>('grid');
   const [userMode, setUserMode] = useState<UserMode>('renter');
-  const [activeSection, setActiveSection] = useState<AppSectionTab>('browse');
+  const [activeSection, setActiveSection] = useState<AppSectionTab>(() => {
+    try {
+      return window.location.pathname === '/admin' ? 'admin' : 'browse';
+    } catch {
+      return 'browse';
+    }
+  });
   const [selectedChaletId, setSelectedChaletId] = useState<string | null>(() => {
     try {
       const params = new URLSearchParams(window.location.search);
-      return params.get('chalet');
+      const fromQuery = params.get('unit') || params.get('chalet');
+      if (fromQuery) return fromQuery;
+      const pathMatch = window.location.pathname.match(/\/(?:unit|chalet)\/([^/]+)/);
+      return pathMatch?.[1] ?? null;
     } catch {
       return null;
     }
@@ -158,28 +197,219 @@ export function App() {
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isBookingsOpen, setIsBookingsOpen] = useState(false);
   const [isVerificationOpen, setIsVerificationOpen] = useState(false);
+  const [isUpgradeModalOpen, setIsUpgradeModalOpen] = useState(false);
   const [isAuthOpen, setIsAuthOpen] = useState(false);
   const [isCompareOpen, setIsCompareOpen] = useState(false);
+  const [actionFeedback, setActionFeedback] = useState<string | null>(null);
 
+  const loadPublicData = useCallback(async () => {
+    setPublicLoadError(null);
+    try {
+      const [chaletsRes, rangesRes, reviewsRes, reportsRes, trustRes] = await Promise.all([
+        fetchPublicChalets(),
+        fetchAllActiveBookedRanges(),
+        fetchAllReviews(),
+        fetchChaletReportCounts(),
+        fetchRenterTrustReviews(),
+      ]);
+
+      if (chaletsRes.error) {
+        setPublicLoadError(chaletsRes.error);
+      } else if (chaletsRes.data) {
+        setPublicChalets(chaletsRes.data);
+      }
+      if (rangesRes.data) setActiveBookedRanges(rangesRes.data);
+      if (reviewsRes.data) setReviews(reviewsRes.data);
+      if (reportsRes.data) setReportCounts(reportsRes.data);
+      if (trustRes.data) setRenterTrustReviews(trustRes.data);
+    } catch {
+      setPublicLoadError('تعذر تحميل بيانات الوحدات من الخادم. يرجى المحاولة مجدداً.');
+    } finally {
+      setIsInitialLoading(false);
+    }
+  }, []);
+
+  const loadNotifications = useCallback(async (userId: string) => {
+    setNotificationsLoading(true);
+    setNotificationsError(null);
+    const notifRes = await fetchMyNotifications(userId);
+    if (notifRes.error) {
+      setNotificationsError(notifRes.error);
+    } else {
+      setNotifications(notifRes.data ?? []);
+    }
+    setNotificationsLoading(false);
+  }, []);
+
+  const loadUserScopedData = useCallback(
+    async (user: AppUser | null) => {
+      if (!user) {
+        setMyChalets([]);
+        setMyBookings([]);
+        setHostBookings([]);
+        setAdminBookings([]);
+        setOwnerVerification(null);
+        setAdminVerifications([]);
+        setMySubscriptions([]);
+        setAdminSubscriptions([]);
+        setNotifications([]);
+        setNotificationsError(null);
+        setScopedDataError(null);
+        setScopedDataLoading(false);
+        return;
+      }
+
+      setScopedDataLoading(true);
+      setScopedDataError(null);
+
+      try {
+        await syncBookingLifecycleStatusesRpc();
+
+        const [ownedRes, myBookingsRes, verRes, subRes, notifRes] = await Promise.all([
+          fetchMyChalets(user.id),
+          fetchMyBookings(user.id),
+          fetchMyVerification(user.id),
+          fetchMySubscriptions(user.id),
+          fetchMyNotifications(user.id),
+        ]);
+
+        const firstErr =
+          ownedRes.error || myBookingsRes.error || verRes.error || subRes.error || null;
+        if (firstErr) {
+          setScopedDataError(firstErr);
+        }
+
+        const ownedList = ownedRes.data ?? [];
+        setMyChalets(ownedList);
+        if (myBookingsRes.data) setMyBookings(myBookingsRes.data);
+        setOwnerVerification(verRes.data ?? null);
+        if (subRes.data) setMySubscriptions(subRes.data);
+        if (notifRes.error) {
+          setNotificationsError(notifRes.error);
+        } else {
+          setNotificationsError(null);
+          setNotifications(notifRes.data ?? []);
+        }
+
+        if (ownedList.length > 0) {
+          const hostBookRes = await fetchHostChaletBookings(ownedList.map((c) => c.id));
+          if (hostBookRes.error) {
+            setScopedDataError((prev) => prev ?? hostBookRes.error);
+          } else if (hostBookRes.data) {
+            setHostBookings(hostBookRes.data);
+          }
+        } else {
+          setHostBookings([]);
+        }
+
+        if (user.role === 'admin') {
+          const [allBookRes, allVerRes, allSubRes] = await Promise.all([
+            fetchAllBookingsAdmin(),
+            fetchAllVerificationsAdmin(),
+            fetchAllSubscriptionsAdmin(),
+          ]);
+          const adminErr = allBookRes.error || allVerRes.error || allSubRes.error || null;
+          if (adminErr) {
+            setScopedDataError((prev) => prev ?? adminErr);
+          }
+          if (allBookRes.data) setAdminBookings(allBookRes.data);
+          if (allVerRes.data) setAdminVerifications(allVerRes.data);
+          if (allSubRes.data) setAdminSubscriptions(allSubRes.data);
+        } else {
+          setAdminBookings([]);
+          setAdminVerifications([]);
+          setAdminSubscriptions([]);
+        }
+      } catch {
+        setScopedDataError('تعذر مزامنة بيانات حسابك. يرجى المحاولة مرة أخرى.');
+      } finally {
+        setScopedDataLoading(false);
+      }
+    },
+    []
+  );
+
+  // Initial hydration + auth state listener
   useEffect(() => {
     let active = true;
-    fetchRemoteChalets().then((data) => {
-      if (active && data) {
-        setRemoteChalets(data);
-      }
+    void syncBookingLifecycleStatusesRpc().then(() => {
+      if (active) void loadPublicData();
     });
+    void getCurrentUser().then((res) => {
+      if (!active) return;
+      setCurrentUser(res.data ?? null);
+      void loadUserScopedData(res.data ?? null);
+    });
+
+    const unsubAuth = onAuthStateChange((user) => {
+      if (!active) return;
+      setCurrentUser(user);
+      void loadUserScopedData(user);
+    });
+
     return () => {
       active = false;
+      unsubAuth();
     };
-  }, []);
+  }, [loadPublicData, loadUserScopedData]);
+
+  // Realtime booking & notification changes
+  useEffect(() => {
+    const unsubBookings = subscribeToBookingsChanges(() => {
+      void fetchAllActiveBookedRanges().then((res) => {
+        if (res.data) setActiveBookedRanges(res.data);
+      });
+      if (currentUser) {
+        void loadUserScopedData(currentUser);
+      }
+    });
+
+    const unsubNotifications = currentUser
+      ? subscribeToNotifications(currentUser.id, () => {
+          void loadNotifications(currentUser.id);
+        })
+      : () => {};
+
+    return () => {
+      unsubBookings();
+      unsubNotifications();
+    };
+  }, [currentUser, loadNotifications, loadUserScopedData]);
+
+  // Sync /admin route with browser history
+  useEffect(() => {
+    const handlePopState = () => {
+      if (window.location.pathname === '/admin') {
+        setActiveSection('admin');
+      } else if (activeSection === 'admin') {
+        setActiveSection('browse');
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [activeSection]);
+
+  useEffect(() => {
+    try {
+      const currentPath = window.location.pathname;
+      if (activeSection === 'admin' && currentPath !== '/admin') {
+        window.history.pushState(null, '', `/admin${window.location.search}`);
+      } else if (activeSection !== 'admin' && currentPath === '/admin') {
+        window.history.pushState(null, '', `/${window.location.search}`);
+      }
+    } catch {
+      // Ignore history API errors
+    }
+  }, [activeSection]);
 
   useEffect(() => {
     try {
       const url = new URL(window.location.href);
+      url.searchParams.delete('chalet');
       if (selectedChaletId) {
-        url.searchParams.set('chalet', selectedChaletId);
+        url.searchParams.set('unit', selectedChaletId);
       } else {
-        url.searchParams.delete('chalet');
+        url.searchParams.delete('unit');
       }
       window.history.replaceState(null, '', url.toString());
     } catch {
@@ -187,72 +417,69 @@ export function App() {
     }
   }, [selectedChaletId]);
 
-  useEffect(() => saveLocalJson(masayefStorageKeys.favorites, favorites), [favorites]);
-  useEffect(() => saveLocalJson(masayefStorageKeys.compareIds, compareIds), [compareIds]);
-  useEffect(() => saveLocalJson(masayefStorageKeys.bookings, bookings), [bookings]);
-  useEffect(() => saveLocalJson(masayefStorageKeys.customChalets, customChalets), [customChalets]);
-  useEffect(
-    () => saveLocalJson(masayefStorageKeys.chaletOverrides, chaletOverrides),
-    [chaletOverrides]
-  );
-  useEffect(() => saveLocalJson(masayefStorageKeys.reviews, reviews), [reviews]);
-  useEffect(
-    () => saveLocalJson(masayefStorageKeys.renterReviews, renterTrustReviews),
-    [renterTrustReviews]
-  );
-  useEffect(() => saveLocalJson(masayefStorageKeys.reports, reports), [reports]);
-  useEffect(() => saveLocalJson(masayefStorageKeys.user, currentUser), [currentUser]);
-  useEffect(
-    () => saveLocalJson(masayefStorageKeys.verification, ownerVerification),
-    [ownerVerification]
+  useEffect(() => saveLocalJson(agzstayStorageKeys.favorites, favorites), [favorites]);
+  useEffect(() => saveLocalJson(agzstayStorageKeys.compareIds, compareIds), [compareIds]);
+
+  const currentHostSubscription = useMemo(
+    () => mySubscriptions[0] ?? null,
+    [mySubscriptions]
   );
 
-  const allChalets = useMemo(() => {
-    const normalizedCustom = customChalets
-      .filter((item) => (item.listingMode as string | undefined) !== 'sale')
-      .map((chalet) => ({
-        ...chalet,
-        listingMode: 'rent' as const,
-        unitType: normalizeUnitType(chalet.unitType),
-        viewType: chalet.viewType ?? 'city-nile',
-        includesPasses: chalet.includesPasses ?? true,
-        coordinates:
-          chalet.coordinates ?? DESTINATION_DEFAULT_COORDINATES[chalet.destination],
-      }));
+  const currentHostTier: HostTier =
+    currentHostSubscription?.tier === 'pro' && currentHostSubscription.status === 'active'
+      ? 'pro'
+      : 'free';
 
+  const showDemoListings =
+    import.meta.env.VITE_SHOW_DEMO === 'true' ||
+    (import.meta.env.DEV && publicChalets.length === 0);
+
+  const allChalets = useMemo<Chalet[]>(() => {
     const seenIds = new Set<string>();
-    const combined = [...normalizedCustom, ...remoteChalets, ...INITIAL_CHALETS].filter(
-      (item) => {
-        if ((item.listingMode as string | undefined) === 'sale') return false;
-        if (seenIds.has(item.id)) return false;
+    const combined: Chalet[] = [];
+
+    const pushUnique = (list: Chalet[]) => {
+      list.forEach((item) => {
+        if (seenIds.has(item.id)) return;
         seenIds.add(item.id);
-        return true;
-      }
-    );
+        combined.push({
+          ...item,
+          listingMode: 'rent',
+          unitType: normalizeUnitType(item.unitType),
+          viewType: item.viewType ?? 'city-nile',
+          includesPasses: item.includesPasses ?? true,
+          coordinates:
+            item.coordinates ?? DESTINATION_DEFAULT_COORDINATES[item.destination],
+        });
+      });
+    };
 
-    return combined.map((chalet) => {
-      const override = chaletOverrides[chalet.id];
-      const mergedChalet = override ? { ...chalet, ...override } : chalet;
-      const chaletReviews = reviews.filter((r) => r.chaletId === mergedChalet.id);
+    pushUnique(myChalets);
+    pushUnique(publicChalets);
+    if (showDemoListings) {
+      pushUnique(INITIAL_CHALETS);
+    }
 
-      if (chaletReviews.length === 0) {
-        return mergedChalet;
-      }
-      const addedSum = chaletReviews.reduce((acc, r) => acc + r.rating, 0);
-      const totalCount = mergedChalet.reviewsCount + chaletReviews.length;
-      const weightedAverage =
-        (mergedChalet.rating * mergedChalet.reviewsCount + addedSum) / totalCount;
+    // Ratings & reviewsCount are aggregated server-side by Postgres trigger
+    return combined;
+  }, [myChalets, publicChalets, showDemoListings]);
 
-      return {
-        ...mergedChalet,
-        rating: Math.round(weightedAverage * 100) / 100,
-        reviewsCount: totalCount,
-      };
-    });
-  }, [chaletOverrides, customChalets, remoteChalets, reviews]);
+  // Strict owner isolation for HostDashboard
+  const ownedChalets = useMemo(
+    () =>
+      currentUser
+        ? allChalets.filter((c) => !c.isDemo && c.ownerId === currentUser.id)
+        : [],
+    [allChalets, currentUser]
+  );
 
   const selectedChalet = useMemo(
-    () => allChalets.find((c) => c.id === selectedChaletId) ?? null,
+    () =>
+      allChalets.find(
+        (c) =>
+          c.id === selectedChaletId ||
+          (c.unitNumber !== undefined && String(c.unitNumber) === selectedChaletId)
+      ) ?? null,
     [allChalets, selectedChaletId]
   );
 
@@ -264,13 +491,32 @@ export function App() {
     [allChalets, compareIds]
   );
 
-  const reportCountByChaletId = useMemo(() => {
-    const map = new Map<string, number>();
-    reports.forEach((r) => {
-      map.set(r.chaletId, (map.get(r.chaletId) ?? 0) + 1);
+  const allKnownBookings = useMemo(() => {
+    const map = new Map<string, BookingRequest>();
+    [...myBookings, ...hostBookings, ...adminBookings].forEach((b) => {
+      map.set(b.id, b);
     });
-    return map;
-  }, [reports]);
+    return Array.from(map.values()).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }, [adminBookings, hostBookings, myBookings]);
+
+  const combinedBookedRanges = useMemo<BookingRangeLike[]>(() => {
+    const list: BookingRangeLike[] = activeBookedRanges.map((r) => ({
+      chaletId: r.chaletId,
+      checkIn: r.checkIn,
+      checkOut: r.checkOut,
+      status: r.status,
+    }));
+    allKnownBookings.forEach((b) => {
+      list.push({
+        chaletId: b.chaletId,
+        checkIn: b.checkIn,
+        checkOut: b.checkOut,
+        nights: b.nights,
+        status: b.status,
+      });
+    });
+    return list;
+  }, [activeBookedRanges, allKnownBookings]);
 
   const activeBrowseChaletsCount = useMemo(
     () => allChalets.filter((c) => (c.availabilityStatus ?? 'active') === 'active').length,
@@ -291,7 +537,7 @@ export function App() {
         hasValidDateRange &&
         !isChaletAvailableForRange(
           chalet,
-          bookings,
+          combinedBookedRanges,
           filters.checkInDate,
           filters.checkOutDate
         )
@@ -369,14 +615,17 @@ export function App() {
           return b.rating - a.rating;
         case 'featured':
         default: {
-          const aFlagged = (reportCountByChaletId.get(a.id) ?? 0) >= 2 ? 1 : 0;
-          const bFlagged = (reportCountByChaletId.get(b.id) ?? 0) >= 2 ? 1 : 0;
+          const aFlagged = (reportCounts[a.id] ?? 0) >= 2 ? 1 : 0;
+          const bFlagged = (reportCounts[b.id] ?? 0) >= 2 ? 1 : 0;
           if (aFlagged !== bFlagged) return aFlagged - bFlagged;
+          const aPro = a.hostTier === 'pro' ? 1 : 0;
+          const bPro = b.hostTier === 'pro' ? 1 : 0;
+          if (aPro !== bPro) return bPro - aPro;
           return Number(Boolean(b.featured)) - Number(Boolean(a.featured)) || b.rating - a.rating;
         }
       }
     });
-  }, [allChalets, bookings, favorites, filters, reportCountByChaletId]);
+  }, [allChalets, combinedBookedRanges, favorites, filters, reportCounts]);
 
   const renterTrustAverage = useMemo(() => {
     if (renterTrustReviews.length === 0) return 5.0;
@@ -412,101 +661,200 @@ export function App() {
     }));
   };
 
-  const handleAddBooking = (
-    payload: Omit<BookingRequest, 'id' | 'status' | 'createdAt'>
-  ) => {
-    const newBooking: BookingRequest = {
+  const showToast = (msg: string) => {
+    setActionFeedback(msg);
+    window.setTimeout(() => {
+      setActionFeedback((curr) => (curr === msg ? null : curr));
+    }, 4500);
+  };
+
+  const handleAddBooking = async (
+    payload: Omit<BookingRequest, 'id' | 'status' | 'createdAt'> & {
+      status?: BookingStatus;
+    }
+  ): Promise<RepoResult<BookingRequest>> => {
+    const res = await createBooking({
       ...payload,
-      id: `booking-${Date.now()}`,
-      status: 'pending',
-      createdAt: new Date().toISOString(),
-    };
-    setBookings((prev) => [newBooking, ...prev]);
-    void persistRemoteBooking(newBooking);
+      status: payload.status ?? 'pending',
+    });
+    if (res.data) {
+      setMyBookings((prev) => [res.data, ...prev]);
+      const rangesRes = await fetchAllActiveBookedRanges();
+      if (rangesRes.data) setActiveBookedRanges(rangesRes.data);
+      if (currentUser) {
+        void loadNotifications(currentUser.id);
+      }
+      showToast('تم إرسال طلب الحجز بنجاح وبانتظار موافقة المالك.');
+    }
+    return res;
   };
 
-  const handleConfirmBookingDeposit = (bookingId: string) => {
-    setBookings((prev) =>
-      prev.map((item) => {
-        if (item.id !== bookingId) return item;
-        const confirmedBooking: BookingRequest = {
-          ...item,
-          status: 'confirmed',
-          confirmedAt: new Date().toISOString(),
-        };
-        void persistRemoteBooking(confirmedBooking);
-        return confirmedBooking;
-      })
-    );
+  const handleApproveBookingRequest = async (bookingId: string) => {
+    const res = await approveBookingRequestRpc(bookingId);
+    if (res.error) {
+      showToast(res.error);
+      return;
+    }
+    showToast('تمت الموافقة المبدئية على الطلب وإرسال بيانات الدفع للمستأجر.');
+    if (currentUser) {
+      await loadUserScopedData(currentUser);
+    }
+    const rangesRes = await fetchAllActiveBookedRanges();
+    if (rangesRes.data) setActiveBookedRanges(rangesRes.data);
   };
 
-  const handleCancelBookingWithPolicy = (bookingId: string) => {
-    setBookings((prev) =>
-      prev.map((item) => {
-        if (item.id !== bookingId) return item;
-        const daysNotice = daysUntilDate(item.checkIn);
-        const isForfeited = daysNotice < 10;
-        const deposit = item.depositAmount ?? Math.round(item.totalPrice * 0.25);
-        const cancelledBooking: BookingRequest = {
-          ...item,
-          status: 'cancelled',
-          cancelledAt: new Date().toISOString(),
-          cancellationDaysNotice: daysNotice,
-          depositForfeited: isForfeited,
-          forfeitedAmount: isForfeited && item.status === 'confirmed' ? deposit : 0,
-        };
-        void persistRemoteBooking(cancelledBooking);
-        return cancelledBooking;
-      })
+  const handleRejectBookingRequest = async (bookingId: string, reason?: string) => {
+    const res = await rejectBookingRequestRpc(bookingId, reason);
+    if (res.error) {
+      showToast(res.error);
+      return;
+    }
+    showToast('تم رفض طلب الحجز وإشعار المستأجر.');
+    if (currentUser) {
+      await loadUserScopedData(currentUser);
+    }
+    const rangesRes = await fetchAllActiveBookedRanges();
+    if (rangesRes.data) setActiveBookedRanges(rangesRes.data);
+  };
+
+  const handleSubmitPaymentReceipt = async (
+    bookingId: string,
+    file: File,
+    reference?: string
+  ): Promise<RepoResult<BookingRequest>> => {
+    const provider = getPaymentProvider('manual_transfer');
+    const res = await provider.submitPaymentProof({ bookingId, file, reference });
+    if (res.data) {
+      showToast('تم رفع إيصال العربون بنجاح وبانتظار تأكيد المالك.');
+      if (currentUser) {
+        await loadUserScopedData(currentUser);
+      }
+      const rangesRes = await fetchAllActiveBookedRanges();
+      if (rangesRes.data) setActiveBookedRanges(rangesRes.data);
+    }
+    return res;
+  };
+
+  const handleConfirmBookingDeposit = async (bookingId: string) => {
+    const res = await confirmBookingPaymentRpc(bookingId);
+    if (res.error) {
+      showToast(res.error);
+      return;
+    }
+    showToast('تم تأكيد استلام العربون وتأكيد الحجز نهائياً.');
+    if (currentUser) {
+      await loadUserScopedData(currentUser);
+    }
+    const rangesRes = await fetchAllActiveBookedRanges();
+    if (rangesRes.data) setActiveBookedRanges(rangesRes.data);
+  };
+
+  const handleCompleteBookingStay = async (bookingId: string) => {
+    const res = await completeBookingStayRpc(bookingId);
+    if (res.error) {
+      showToast(res.error);
+      return;
+    }
+    showToast('تم تحديد الإقامة كمكتملة وإتاحة التقييم للمستأجر.');
+    if (currentUser) {
+      await loadUserScopedData(currentUser);
+    }
+    const rangesRes = await fetchAllActiveBookedRanges();
+    if (rangesRes.data) setActiveBookedRanges(rangesRes.data);
+  };
+
+  const handleRejectBookingAdmin = async (bookingId: string, reason?: string) => {
+    const res = await rejectBookingRequestRpc(
+      bookingId,
+      reason || 'تم رفض طلب الحجز من مراجعة الإدارة'
     );
+    if (res.error) {
+      showToast(res.error);
+      return;
+    }
+    showToast('تم رفض الطلب من الإدارة.');
+    if (currentUser) {
+      await loadUserScopedData(currentUser);
+    }
+    const rangesRes = await fetchAllActiveBookedRanges();
+    if (rangesRes.data) setActiveBookedRanges(rangesRes.data);
+  };
+
+  const handleCancelBookingWithPolicy = async (bookingId: string) => {
+    const res = await cancelBookingWithPolicyRpc(bookingId);
+    if (res.error) {
+      showToast(res.error);
+      return;
+    }
+    showToast('تم إلغاء الحجز وتطبيق سياسة الـ ١٠ أيام من الخادم.');
+    if (currentUser) {
+      await loadUserScopedData(currentUser);
+    }
+    const rangesRes = await fetchAllActiveBookedRanges();
+    if (rangesRes.data) setActiveBookedRanges(rangesRes.data);
   };
 
   const handleRemoveBookingRecord = (id: string) => {
-    setBookings((prev) => prev.filter((item) => item.id !== id));
+    setMyBookings((prev) => prev.filter((item) => item.id !== id));
   };
 
-  const handleUpdateChaletConfig = (
+  const handleUpdateChaletConfig = async (
     chaletId: string,
-    updates: ChaletConfigOverride
+    updates: Partial<Chalet>
   ) => {
-    setChaletOverrides((prev) => ({
-      ...prev,
-      [chaletId]: { ...(prev[chaletId] ?? {}), ...updates },
-    }));
+    if (!currentUser) return;
+    const res = await updateChalet(chaletId, currentUser.id, updates);
+    if (res.error || !res.data) {
+      showToast(res.error || 'تعذر حفظ تعديلات الوحدة.');
+      return;
+    }
+    setMyChalets((prev) =>
+      prev.map((c) => (c.id === chaletId ? res.data : c))
+    );
+    void loadPublicData();
   };
 
-  const handleAddProperty = (property: Chalet) => {
-    setCustomChalets((prev) => [property, ...prev]);
-    void persistRemoteChalet(property);
-  };
-
-  const handleDeleteCustomChalet = (chaletId: string) => {
-    setCustomChalets((prev) => prev.filter((item) => item.id !== chaletId));
-    setChaletOverrides((prev) => {
-      const next = { ...prev };
-      delete next[chaletId];
-      return next;
+  const handleAddProperty = async (property: Chalet): Promise<RepoResult<Chalet>> => {
+    const res = await createChalet({
+      ...property,
+      ownerPhone: property.owner.phone ?? '01000000000',
+      instaPayHandle: property.owner.instaPayHandle,
     });
+    if (res.data) {
+      setMyChalets((prev) => [res.data, ...prev]);
+      void loadPublicData();
+    }
+    return res;
+  };
+
+  const handleDeleteCustomChalet = async (chaletId: string) => {
+    if (!currentUser) return;
+    const res = await deleteChalet(chaletId, currentUser.id);
+    if (res.error) {
+      showToast(res.error);
+      return;
+    }
+    setMyChalets((prev) => prev.filter((item) => item.id !== chaletId));
+    setPublicChalets((prev) => prev.filter((item) => item.id !== chaletId));
     if (selectedChaletId === chaletId) {
       setSelectedChaletId(null);
     }
   };
 
-  const handleReportListing = (payload: {
+  const handleReportListing = async (payload: {
     chaletId: string;
     reason: string;
     details: string;
-  }) => {
-    const newReport: ListingReport = {
-      ...payload,
-      id: `report-${Date.now()}`,
-      createdAt: new Date().toISOString(),
-    };
-    setReports((prev) => [newReport, ...prev]);
-    void persistRemoteReport(newReport);
+  }): Promise<RepoResult<boolean>> => {
+    const res = await createListingReport(payload);
+    if (res.data) {
+      const countsRes = await fetchChaletReportCounts();
+      if (countsRes.data) setReportCounts(countsRes.data);
+    }
+    return res;
   };
 
-  const handleAddReview = (payload: {
+  const handleAddReview = async (payload: {
     chaletId: string;
     bookingId: string;
     authorName: string;
@@ -514,22 +862,27 @@ export function App() {
     tags?: PropertyReviewTag[];
     comment: string;
     stayDate: string;
-  }) => {
-    const newReview: ChaletReview = {
-      ...payload,
-      id: `review-${Date.now()}`,
-      createdAt: new Date().toISOString(),
-    };
-    setReviews((prev) => [newReview, ...prev]);
-    void persistRemoteReview(newReview);
+  }): Promise<RepoResult<ChaletReview>> => {
+    const res = await createReview(payload);
+    if (res.data) {
+      setReviews((prev) => [res.data, ...prev]);
+      void loadPublicData();
+    }
+    return res;
   };
 
-  const handleDeleteReview = (reviewId: string) => {
-    setReviews((prev) => prev.filter((item) => item.id !== reviewId));
+  const handleDeleteReview = async (reviewId: string) => {
+    const res = await deleteReview(reviewId);
+    if (res.data) {
+      setReviews((prev) => prev.filter((item) => item.id !== reviewId));
+      void loadPublicData();
+    }
   };
 
-  const handleAddRenterTrustReview = (payload: {
+  const handleAddRenterTrustReview = async (payload: {
     bookingId: string;
+    chaletId?: string;
+    renterId?: string;
     chaletTitle: string;
     renterName: string;
     renterPhone: string;
@@ -540,18 +893,167 @@ export function App() {
     tags: RenterTrustTag[];
     comment: string;
   }) => {
-    const newTrustReview: RenterTrustReview = {
-      ...payload,
-      id: `trust-${Date.now()}`,
-      createdAt: new Date().toISOString(),
-    };
-    setRenterTrustReviews((prev) => [newTrustReview, ...prev]);
-    void persistRemoteRenterTrustReview(newTrustReview);
+    if (!payload.chaletId) {
+      showToast('تعذر تحديد معرف الوحدة لتقييم المستأجر.');
+      return;
+    }
+    const res = await createRenterTrustReview({
+      bookingId: payload.bookingId,
+      chaletId: payload.chaletId,
+      renterId: payload.renterId,
+      chaletTitle: payload.chaletTitle,
+      renterName: payload.renterName,
+      renterPhone: payload.renterPhone,
+      hostName: payload.hostName,
+      rating: payload.rating,
+      punctualityScore: payload.punctualityScore,
+      propertyCareScore: payload.propertyCareScore,
+      tags: payload.tags,
+      comment: payload.comment,
+    });
+    if (res.error || !res.data) {
+      showToast(res.error || 'تعذر حفظ تقييم ثقة المستأجر.');
+      return;
+    }
+    setRenterTrustReviews((prev) => [res.data, ...prev]);
   };
 
-  const handleSignOut = () => {
+  const handleSubmitVerification = async (payload: {
+    ownerName: string;
+    phone: string;
+    documentType: OwnerVerificationSubmission['documentType'];
+    documentNumber: string;
+    documentPath: string;
+    documentPreviewName: string;
+  }): Promise<RepoResult<OwnerVerificationSubmission>> => {
+    const res = await submitOwnerVerification(payload);
+    if (res.data) {
+      setOwnerVerification(res.data);
+      showToast('تم إرسال مستند التوثيق للمراجعة الإدارية.');
+    }
+    return res;
+  };
+
+  const handleReviewVerification = async (
+    verificationId: string,
+    decision: 'verified' | 'unverified',
+    rejectionReason?: string
+  ): Promise<RepoResult<OwnerVerificationSubmission>> => {
+    const res = await reviewOwnerVerificationAdmin(verificationId, decision, rejectionReason);
+    if (res.data) {
+      setAdminVerifications((prev) =>
+        prev.map((v) => (v.id === verificationId ? res.data : v))
+      );
+      void loadPublicData();
+      if (currentUser) {
+        void loadUserScopedData(currentUser);
+      }
+      showToast(
+        decision === 'verified'
+          ? 'تم اعتماد توثيق المالك وتفعيل شارة التوثيق.'
+          : 'تم رفض طلب التوثيق مع تسجيل السبب للمالك.'
+      );
+    } else if (res.error) {
+      showToast(res.error);
+    }
+    return res;
+  };
+
+  const handleSubmitUpgradeRequest = async (payload: {
+    hostName: string;
+    hostPhone: string;
+    paymentMethod: PaymentMethod;
+    senderPhoneOrHandle: string;
+    transferReference: string;
+    receiptPath?: string;
+  }): Promise<RepoResult<HostSubscriptionRecord>> => {
+    const startDate = formatIsoDate(new Date());
+    const expiryDate = addDaysIso(startDate, 30);
+
+    const res = await submitHostSubscription({
+      ...payload,
+      monthlyFee: PRO_TIER_MONTHLY_FEE,
+      startDate,
+      expiryDate,
+    });
+    if (res.data) {
+      setMySubscriptions((prev) => [res.data, ...prev]);
+    }
+    return res;
+  };
+
+  const handleApproveSubscription = async (subscriptionId: string) => {
+    const today = formatIsoDate(new Date());
+    const expiry = addDaysIso(today, 30);
+    const res = await updateSubscriptionStatusAdmin(subscriptionId, 'active', {
+      startDate: today,
+      expiryDate: expiry,
+    });
+    if (res.error) {
+      showToast(res.error);
+      return;
+    }
+    if (res.data) {
+      setAdminSubscriptions((prev) =>
+        prev.map((s) => (s.id === subscriptionId ? res.data : s))
+      );
+    }
+  };
+
+  const handleExpireSubscription = async (subscriptionId: string) => {
+    const res = await updateSubscriptionStatusAdmin(subscriptionId, 'expired');
+    if (res.error) {
+      showToast(res.error);
+      return;
+    }
+    if (res.data) {
+      setAdminSubscriptions((prev) =>
+        prev.map((s) => (s.id === subscriptionId ? res.data : s))
+      );
+    }
+  };
+
+  const handleMarkNotificationRead = async (id: string) => {
+    setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, isRead: true } : n)));
+    await markNotificationAsRead(id);
+  };
+
+  const handleMarkAllNotificationsRead = async () => {
+    if (!currentUser) return;
+    setNotifications((prev) => prev.map((n) => ({ ...n, isRead: true })));
+    await markAllNotificationsAsRead(currentUser.id);
+  };
+
+  const handleSelectNotification = (notification: AppNotification) => {
+    if (!notification.isRead) {
+      void handleMarkNotificationRead(notification.id);
+    }
+    if (notification.type.includes('verification')) {
+      setUserMode('host');
+      setActiveSection('host-dashboard');
+      return;
+    }
+    if (
+      notification.type === 'booking_created' ||
+      notification.type === 'booking_payment_submitted'
+    ) {
+      setUserMode('host');
+      setActiveSection('host-dashboard');
+      return;
+    }
+    if (notification.bookingId) {
+      setIsBookingsOpen(true);
+    }
+  };
+
+  const handleSignOut = async () => {
+    await signOutUser();
     setCurrentUser(null);
-    void signOutUser();
+    await loadUserScopedData(null);
+    if (activeSection === 'admin') {
+      setActiveSection('browse');
+      setUserMode('renter');
+    }
   };
 
   const handleSwitchUserMode = (mode: UserMode) => {
@@ -560,7 +1062,22 @@ export function App() {
   };
 
   const resetFilters = () => setFilters(DEFAULT_FILTERS);
-  const pendingHostInquiriesCount = bookings.filter((b) => b.status === 'pending').length;
+
+  const pendingHostInquiriesCount = hostBookings.filter(
+    (b) =>
+      b.status === 'pending' ||
+      b.status === 'payment_submitted' ||
+      b.status === 'pending_verification'
+  ).length;
+
+  const pendingAdminVerificationsCount =
+    currentUser?.role === 'admin'
+      ? adminSubscriptions.filter((s) => s.status === 'pending-verification').length +
+        adminBookings.filter(
+          (b) => b.status === 'pending_verification' || b.status === 'payment_submitted'
+        ).length +
+        adminVerifications.filter((v) => v.status === 'pending').length
+      : 0;
 
   const durationTitleSuffix =
     filters.rentalDuration === 'monthly'
@@ -571,18 +1088,58 @@ export function App() {
 
   return (
     <div className="flex min-h-screen flex-col bg-sand-100">
+      {!isSupabaseConfigured && (
+        <div
+          className="sticky top-0 z-50 flex items-center justify-center gap-2 border-b border-amber-300 bg-amber-100 px-4 py-2 text-center text-xs font-extrabold text-amber-950"
+          role="status"
+        >
+          <AlertTriangle className="h-4 w-4 shrink-0 text-amber-700" />
+          <span>وضع تجريبي: لا يتم حفظ أي بيانات — قم بضبط مفاتيح Supabase للتشغيل الفعلي.</span>
+        </div>
+      )}
+
+      {actionFeedback && (
+        <div
+          className="fixed bottom-4 left-4 z-50 flex items-center gap-2 rounded-2xl bg-slate-900 px-4 py-3 text-xs font-bold text-white shadow-xl"
+          role="alert"
+        >
+          <span>{actionFeedback}</span>
+          <button
+            type="button"
+            onClick={() => setActionFeedback(null)}
+            className="rounded-lg p-1 text-slate-300 hover:bg-slate-800 hover:text-white"
+            aria-label="إغلاق التنبيه"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
+
       <PwaInstallBanner />
 
       <Navbar
         activeSection={activeSection}
         userMode={userMode}
         favoritesCount={favorites.length}
-        bookingsCount={bookings.length}
+        bookingsCount={myBookings.length}
         pendingHostInquiriesCount={pendingHostInquiriesCount}
+        pendingAdminVerificationsCount={pendingAdminVerificationsCount}
         renterTrustAverage={renterTrustAverage}
         favoritesOnly={filters.favoritesOnly}
         currentUser={currentUser}
+        notifications={notifications}
+        notificationsLoading={notificationsLoading}
+        notificationsError={notificationsError}
+        onRetryNotifications={() => {
+          if (currentUser) void loadNotifications(currentUser.id);
+        }}
+        onMarkNotificationRead={handleMarkNotificationRead}
+        onMarkAllNotificationsRead={handleMarkAllNotificationsRead}
+        onSelectNotification={handleSelectNotification}
         onSelectSection={(section) => {
+          if (section === 'admin' && currentUser?.role !== 'admin') {
+            return;
+          }
           setActiveSection(section);
           if (section === 'host-dashboard') setUserMode('host');
           else if (section === 'browse') setUserMode('renter');
@@ -600,19 +1157,50 @@ export function App() {
 
       {activeSection === 'host-dashboard' ? (
         <HostDashboard
-          chalets={allChalets}
-          customChaletIds={customChalets.map((c) => c.id)}
-          bookings={bookings}
+          currentUser={currentUser}
+          chalets={ownedChalets}
+          customChaletIds={ownedChalets.map((c) => c.id)}
+          bookings={hostBookings}
           renterTrustReviews={renterTrustReviews}
           verification={ownerVerification}
+          currentSubscription={currentHostSubscription}
+          activeCustomUnitsCount={ownedChalets.length}
+          loading={scopedDataLoading}
+          error={scopedDataError}
+          onRetry={() => void loadUserScopedData(currentUser)}
           onBackToRenterMode={() => handleSwitchUserMode('renter')}
+          onOpenAuth={() => setIsAuthOpen(true)}
           onOpenAddProperty={() => setIsAddModalOpen(true)}
           onOpenVerification={() => setIsVerificationOpen(true)}
+          onOpenUpgradeModal={() => setIsUpgradeModalOpen(true)}
+          onApproveBookingRequest={handleApproveBookingRequest}
+          onRejectBookingRequest={handleRejectBookingRequest}
           onConfirmBookingDeposit={handleConfirmBookingDeposit}
+          onCompleteBookingStay={handleCompleteBookingStay}
           onCancelBookingWithPolicy={handleCancelBookingWithPolicy}
           onUpdateChaletConfig={handleUpdateChaletConfig}
           onDeleteCustomChalet={handleDeleteCustomChalet}
           onAddRenterTrustReview={handleAddRenterTrustReview}
+        />
+      ) : activeSection === 'admin' ? (
+        <AdminDashboard
+          currentUser={currentUser}
+          chalets={allChalets}
+          bookings={adminBookings}
+          subscriptions={adminSubscriptions}
+          verifications={adminVerifications}
+          loading={scopedDataLoading}
+          error={scopedDataError}
+          onRetry={() => void loadUserScopedData(currentUser)}
+          onApproveBooking={handleConfirmBookingDeposit}
+          onRejectBooking={handleRejectBookingAdmin}
+          onApproveSubscription={handleApproveSubscription}
+          onExpireSubscription={handleExpireSubscription}
+          onReviewVerification={handleReviewVerification}
+          onBackToBrowse={() => {
+            setUserMode('renter');
+            setActiveSection('browse');
+          }}
         />
       ) : activeSection === 'price-guide' ? (
         <MarketPriceGuide
@@ -677,6 +1265,26 @@ export function App() {
           />
 
           <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-8 sm:px-6">
+            {publicLoadError && (
+              <div
+                role="alert"
+                className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs font-bold text-rose-800"
+              >
+                <div className="flex items-center gap-2">
+                  <AlertTriangle className="h-4 w-4 shrink-0 text-rose-600" />
+                  <span>{publicLoadError}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void loadPublicData()}
+                  className="inline-flex min-h-[44px] items-center gap-1.5 rounded-xl bg-rose-600 px-3.5 py-2 text-xs font-bold text-white hover:bg-rose-700"
+                >
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  إعادة المحاولة
+                </button>
+              </div>
+            )}
+
             <div className="mb-6 flex flex-wrap items-center justify-between gap-2">
               <div>
                 <h2 className="text-xl font-extrabold text-primary-700">
@@ -720,7 +1328,21 @@ export function App() {
                 </div>
               )}
 
-            {filteredChalets.length === 0 ? (
+            {isInitialLoading && filteredChalets.length === 0 ? (
+              <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3" aria-busy="true">
+                {Array.from({ length: 6 }).map((_, idx) => (
+                  <div
+                    key={idx}
+                    className="h-96 animate-pulse rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"
+                  >
+                    <div className="h-48 w-full rounded-xl bg-slate-200" />
+                    <div className="mt-4 h-4 w-3/4 rounded bg-slate-200" />
+                    <div className="mt-2 h-3 w-1/2 rounded bg-slate-100" />
+                    <div className="mt-6 h-10 w-full rounded-xl bg-slate-100" />
+                  </div>
+                ))}
+              </div>
+            ) : filteredChalets.length === 0 ? (
               <div className="rounded-3xl border border-dashed border-slate-300 bg-white p-10 text-center">
                 <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-primary-50 text-primary-600">
                   <Umbrella className="h-7 w-7" />
@@ -853,14 +1475,17 @@ export function App() {
 
       {selectedChalet && (
         <PropertyDetailModal
+          currentUser={currentUser}
           chalet={selectedChalet}
           reviews={reviews.filter((r) => r.chaletId === selectedChalet.id)}
-          allBookingsForChalet={bookings.filter((b) => b.chaletId === selectedChalet.id)}
+          allBookingsForChalet={allKnownBookings.filter((b) => b.chaletId === selectedChalet.id)}
+          bookedRangesForChalet={activeBookedRanges.filter((r) => r.chaletId === selectedChalet.id)}
           defaultDuration={filters.rentalDuration}
           initialCheckIn={filters.checkInDate}
           initialCheckOut={filters.checkOutDate}
-          reportsCount={reportCountByChaletId.get(selectedChalet.id) ?? 0}
+          reportsCount={reportCounts[selectedChalet.id] ?? 0}
           onClose={() => setSelectedChaletId(null)}
+          onOpenAuth={() => setIsAuthOpen(true)}
           onSubmitBooking={handleAddBooking}
           onSubmitReview={handleAddReview}
           onDeleteReview={handleDeleteReview}
@@ -870,19 +1495,29 @@ export function App() {
 
       {isAddModalOpen && (
         <AddPropertyModal
+          currentUser={currentUser}
           verification={ownerVerification}
+          hostTier={currentHostTier}
+          activeCustomUnitsCount={ownedChalets.length}
           onClose={() => setIsAddModalOpen(false)}
+          onOpenAuth={() => setIsAuthOpen(true)}
           onAddProperty={handleAddProperty}
           onOpenVerification={() => setIsVerificationOpen(true)}
+          onOpenUpgradeModal={() => setIsUpgradeModalOpen(true)}
         />
       )}
 
       {isBookingsOpen && (
         <BookingsDrawer
-          bookings={bookings}
+          bookings={myBookings}
+          chalets={allChalets}
           reviews={reviews}
           renterTrustReviews={renterTrustReviews}
+          loading={scopedDataLoading}
+          error={scopedDataError}
+          onRetry={() => void loadUserScopedData(currentUser)}
           onClose={() => setIsBookingsOpen(false)}
+          onSubmitPaymentReceipt={handleSubmitPaymentReceipt}
           onCancelBookingWithPolicy={handleCancelBookingWithPolicy}
           onRemoveBookingRecord={handleRemoveBookingRecord}
           onSubmitReview={handleAddReview}
@@ -892,16 +1527,31 @@ export function App() {
 
       {isVerificationOpen && (
         <OwnerVerificationModal
+          currentUser={currentUser}
           existingSubmission={ownerVerification}
           onClose={() => setIsVerificationOpen(false)}
-          onSubmitVerification={setOwnerVerification}
+          onOpenAuth={() => setIsAuthOpen(true)}
+          onSubmitVerification={handleSubmitVerification}
+        />
+      )}
+
+      {isUpgradeModalOpen && (
+        <SubscriptionUpgradeModal
+          defaultHostName={ownerVerification?.ownerName || currentUser?.name || ''}
+          defaultHostPhone={ownerVerification?.phone || currentUser?.phone || ''}
+          existingSubscription={currentHostSubscription}
+          onClose={() => setIsUpgradeModalOpen(false)}
+          onSubmitUpgradeRequest={handleSubmitUpgradeRequest}
         />
       )}
 
       {isAuthOpen && (
         <AuthModal
           onClose={() => setIsAuthOpen(false)}
-          onAuthenticated={setCurrentUser}
+          onAuthenticated={(user) => {
+            setCurrentUser(user);
+            void loadUserScopedData(user);
+          }}
         />
       )}
 

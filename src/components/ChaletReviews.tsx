@@ -63,6 +63,8 @@ export function StarRatingInput({ value, onChange, size = 'md' }: StarRatingInpu
   );
 }
 
+import type { RepoResult } from '@/services/agzstayRepository';
+
 interface ReviewFormProps {
   booking: BookingRequest;
   onSubmit: (payload: {
@@ -73,7 +75,7 @@ interface ReviewFormProps {
     tags?: PropertyReviewTag[];
     comment: string;
     stayDate: string;
-  }) => void;
+  }) => Promise<RepoResult<ChaletReview> | void> | void;
   onCancel?: () => void;
   compact?: boolean;
 }
@@ -86,6 +88,7 @@ export function ReviewForm({ booking, onSubmit, onCancel, compact = false }: Rev
   ]);
   const [comment, setComment] = useState('');
   const [error, setError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
 
   const toggleTag = (tag: PropertyReviewTag) => {
     setSelectedTags((prev) =>
@@ -93,7 +96,7 @@ export function ReviewForm({ booking, onSubmit, onCancel, compact = false }: Rev
     );
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (rating < 1 || rating > 5) {
       setError('يرجى اختيار التقييم من ١ إلى ٥ نجوم.');
@@ -104,7 +107,8 @@ export function ReviewForm({ booking, onSubmit, onCancel, compact = false }: Rev
       return;
     }
     setError('');
-    onSubmit({
+    setSubmitting(true);
+    const result = await onSubmit({
       chaletId: booking.chaletId,
       bookingId: booking.id,
       authorName: booking.guestName,
@@ -113,6 +117,12 @@ export function ReviewForm({ booking, onSubmit, onCancel, compact = false }: Rev
       comment: comment.trim(),
       stayDate: booking.checkIn,
     });
+    setSubmitting(false);
+
+    if (result && result.error) {
+      setError(result.error);
+      return;
+    }
     setComment('');
   };
 
@@ -134,7 +144,7 @@ export function ReviewForm({ booking, onSubmit, onCancel, compact = false }: Rev
           </div>
         </div>
         <span className="rounded-full bg-success-50 px-2.5 py-0.5 text-[11px] font-bold text-success-700">
-          تواصل موثق
+          إقامة مؤكدة ومنتهية
         </span>
       </div>
 
@@ -206,10 +216,11 @@ export function ReviewForm({ booking, onSubmit, onCancel, compact = false }: Rev
         )}
         <button
           type="submit"
-          className="inline-flex items-center gap-1.5 rounded-xl bg-primary-600 px-4 py-2 text-xs font-bold text-white shadow-sm transition hover:bg-primary-700"
+          disabled={submitting}
+          className="inline-flex items-center gap-1.5 rounded-xl bg-primary-600 px-4 py-2 text-xs font-bold text-white shadow-sm transition hover:bg-primary-700 disabled:opacity-60"
         >
           <MessageSquarePlus className="h-3.5 w-3.5" />
-          نشر التقييم الآن
+          {submitting ? 'جاري النشر...' : 'نشر التقييم الآن'}
         </button>
       </div>
     </form>
@@ -221,6 +232,7 @@ interface ChaletReviewsProps {
   totalReviewsCount: number;
   reviews: ChaletReview[];
   bookingsForChalet: BookingRequest[];
+  currentUserId?: string;
   onSubmitReview: (payload: {
     chaletId: string;
     bookingId: string;
@@ -229,7 +241,7 @@ interface ChaletReviewsProps {
     tags?: PropertyReviewTag[];
     comment: string;
     stayDate: string;
-  }) => void;
+  }) => Promise<RepoResult<ChaletReview>> | void;
   onDeleteReview: (reviewId: string) => void;
 }
 
@@ -238,13 +250,17 @@ export function ChaletReviews({
   totalReviewsCount,
   reviews,
   bookingsForChalet,
+  currentUserId,
   onSubmitReview,
   onDeleteReview,
 }: ChaletReviewsProps) {
   const reviewedBookingIds = new Set(reviews.map((r) => r.bookingId));
-  const pendingReviewBookings = bookingsForChalet.filter(
-    (b) => !reviewedBookingIds.has(b.id)
-  );
+  const eligibleBookings = bookingsForChalet.filter((b) => {
+    if (b.status !== 'completed') return false;
+    if (currentUserId && b.renterId && b.renterId !== currentUserId) return false;
+    return true;
+  });
+  const pendingReviewBookings = eligibleBookings.filter((b) => !reviewedBookingIds.has(b.id));
   const [selectedBookingId, setSelectedBookingId] = useState<string>('');
 
   const activeBooking =
@@ -278,13 +294,15 @@ export function ChaletReviews({
         </div>
       </div>
 
-      {bookingsForChalet.length === 0 ? (
+      {eligibleBookings.length === 0 ? (
         <div className="flex items-start gap-3 rounded-2xl border border-slate-200 bg-sand-50 p-4 text-xs text-slate-600">
           <Lock className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" />
           <div>
-            <p className="font-bold text-slate-800">التقييم متاح بعد التواصل أو إرسال طلب حجز</p>
+            <p className="font-bold text-slate-800">
+              التقييم متاح فقط بعد اكتمال الإقامة (completed)
+            </p>
             <p className="mt-0.5 leading-relaxed">
-              لضمان مصداقية التقييمات، تواصل مع المعلن عبر واتساب/الاتصال أو أرسل طلب حجز لتتمكن من تقييم الوحدة والشفافية.
+              لضمان مصداقية التقييمات، يُفتح نموذج التقييم تلقائياً بعد وصول الحجز لحالة &quot;مكتمل&quot; بعد انتهاء تاريخ المغادرة.
             </p>
           </div>
         </div>

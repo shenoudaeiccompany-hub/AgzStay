@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   Award,
@@ -7,6 +7,7 @@ import {
   BedDouble,
   Briefcase,
   Calculator,
+  Camera,
   Check,
   CheckCircle2,
   ChevronLeft,
@@ -14,6 +15,7 @@ import {
   Compass,
   Copy,
   CreditCard,
+  Crown,
   Flag,
   Home,
   MapPin,
@@ -45,6 +47,13 @@ import {
   getUnitTypeLabel,
   getViewTypeLabel,
 } from '@/data/chalets';
+import { isSupabaseConfigured } from '@/lib/supabase';
+import {
+  fetchChaletBookedRanges,
+  revealOwnerContact,
+  subscribeToBookingsChanges,
+  type RepoResult,
+} from '@/services/agzstayRepository';
 import {
   addDaysIso,
   calculateNightsBetween,
@@ -57,24 +66,33 @@ import {
   getOccupiedDatesForChalet,
 } from '@/utils/bookingPricing';
 import type {
+  AppUser,
+  BookedDateRange,
   BookingRequest,
+  BookingStatus,
   Chalet,
   ChaletReview,
   NearbyHighlight,
   PropertyReviewTag,
   RentalDuration,
+  RevealedOwnerContact,
 } from '@/types/chalet';
 
 interface PropertyDetailModalProps {
+  currentUser: AppUser | null;
   chalet: Chalet;
   reviews: ChaletReview[];
   allBookingsForChalet: BookingRequest[];
+  bookedRangesForChalet?: BookedDateRange[];
   defaultDuration?: RentalDuration;
   initialCheckIn?: string;
   initialCheckOut?: string;
   reportsCount?: number;
   onClose: () => void;
-  onSubmitBooking: (booking: Omit<BookingRequest, 'id' | 'status' | 'createdAt'>) => void;
+  onOpenAuth: () => void;
+  onSubmitBooking: (
+    booking: Omit<BookingRequest, 'id' | 'status' | 'createdAt'> & { status?: BookingStatus }
+  ) => Promise<RepoResult<BookingRequest>>;
   onSubmitReview: (payload: {
     chaletId: string;
     bookingId: string;
@@ -83,9 +101,13 @@ interface PropertyDetailModalProps {
     tags?: PropertyReviewTag[];
     comment: string;
     stayDate: string;
-  }) => void;
+  }) => Promise<RepoResult<ChaletReview>>;
   onDeleteReview: (reviewId: string) => void;
-  onReportListing?: (payload: { chaletId: string; reason: string; details: string }) => void;
+  onReportListing?: (payload: {
+    chaletId: string;
+    reason: string;
+    details: string;
+  }) => Promise<RepoResult<boolean>>;
 }
 
 function getHighlightIcon(category: NearbyHighlight['category']) {
@@ -110,14 +132,17 @@ const REPORT_REASONS = [
 ];
 
 export function PropertyDetailModal({
+  currentUser,
   chalet,
   reviews,
   allBookingsForChalet,
+  bookedRangesForChalet = [],
   defaultDuration = 'daily',
   initialCheckIn = '',
   initialCheckOut = '',
   reportsCount = 0,
   onClose,
+  onOpenAuth,
   onSubmitBooking,
   onSubmitReview,
   onDeleteReview,
@@ -125,13 +150,81 @@ export function PropertyDetailModal({
 }: PropertyDetailModalProps) {
   const badgeInfo = getAdvertiserBadgeInfo(chalet.owner.roleType, chalet.owner.brokerAgency);
   const today = useMemo(() => formatIsoDate(new Date()), []);
+  const [remoteRanges, setRemoteRanges] = useState<BookedDateRange[]>([]);
+  const [revealedContact, setRevealedContact] = useState<RevealedOwnerContact | null>(null);
+
+  const hasUserActiveBooking = useMemo(
+    () =>
+      Boolean(
+        currentUser &&
+          allBookingsForChalet.some(
+            (b) =>
+              b.chaletId === chalet.id &&
+              b.renterId === currentUser.id &&
+              (b.status === 'approved' ||
+                b.status === 'payment_submitted' ||
+                b.status === 'pending_verification' ||
+                b.status === 'confirmed' ||
+                b.status === 'completed')
+          )
+      ),
+    [allBookingsForChalet, chalet.id, currentUser]
+  );
+
+  const isOwnerOrAdmin = useMemo(
+    () =>
+      Boolean(
+        currentUser &&
+          (currentUser.role === 'admin' || chalet.ownerId === currentUser.id)
+      ),
+    [chalet.ownerId, currentUser]
+  );
+
+  useEffect(() => {
+    let active = true;
+    const loadRanges = () => {
+      void fetchChaletBookedRanges(chalet.id).then((res) => {
+        if (active && res.data) {
+          setRemoteRanges(res.data);
+        }
+      });
+    };
+    loadRanges();
+    const unsubscribe = subscribeToBookingsChanges(loadRanges, chalet.id);
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [chalet.id]);
+
+  useEffect(() => {
+    let active = true;
+    if (!chalet.isDemo && (hasUserActiveBooking || isOwnerOrAdmin)) {
+      void revealOwnerContact(chalet.id).then((res) => {
+        if (active && res.data) {
+          setRevealedContact(res.data);
+        }
+      });
+    } else {
+      setRevealedContact(null);
+    }
+    return () => {
+      active = false;
+    };
+  }, [chalet.id, chalet.isDemo, hasUserActiveBooking, isOwnerOrAdmin]);
+
+  const combinedRanges = useMemo(
+    () => [...bookedRangesForChalet, ...remoteRanges, ...allBookingsForChalet],
+    [allBookingsForChalet, bookedRangesForChalet, remoteRanges]
+  );
+
   const occupiedDates = useMemo(
-    () => getOccupiedDatesForChalet(chalet, allBookingsForChalet),
-    [chalet, allBookingsForChalet]
+    () => getOccupiedDatesForChalet(chalet, combinedRanges),
+    [chalet, combinedRanges]
   );
   const confirmedBookedDates = useMemo(
-    () => getConfirmedBookedDatesForChalet(chalet.id, allBookingsForChalet),
-    [chalet.id, allBookingsForChalet]
+    () => getConfirmedBookedDatesForChalet(chalet.id, combinedRanges),
+    [chalet.id, combinedRanges]
   );
 
   const initialAvailableDate = useMemo(() => {
@@ -167,19 +260,20 @@ export function PropertyDetailModal({
   const [checkOut, setCheckOut] = useState(initialComputedCheckOut);
   const [guests, setGuests] = useState(Math.min(4, chalet.maxGuests));
   const [splitFamilies, setSplitFamilies] = useState(2);
-  const [guestName, setGuestName] = useState('');
-  const [guestPhone, setGuestPhone] = useState('');
+  const [guestName, setGuestName] = useState(currentUser?.name ?? '');
+  const [guestPhone, setGuestPhone] = useState(currentUser?.phone ?? '');
   const [notes, setNotes] = useState('');
   const [policyAccepted, setPolicyAccepted] = useState(false);
+  const [isSubmittingBooking, setIsSubmittingBooking] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [summaryCopied, setSummaryCopied] = useState(false);
   const [instaPayCopied, setInstaPayCopied] = useState(false);
-  const [directContactLogged, setDirectContactLogged] = useState<string | null>(null);
   const [formError, setFormError] = useState('');
   const [isReportOpen, setIsReportOpen] = useState(false);
   const [reportReason, setReportReason] = useState(REPORT_REASONS[0]);
   const [reportDetails, setReportDetails] = useState('');
   const [reportSubmitted, setReportSubmitted] = useState(false);
+  const [reportError, setReportError] = useState('');
 
   const nights = Math.max(1, calculateNightsBetween(checkIn, checkOut));
   const daysBeforeCheckIn = daysUntilDate(checkIn, today);
@@ -234,48 +328,58 @@ export function PropertyDetailModal({
 
   const perFamilyShare = Math.round(pricing.subtotal / Math.max(1, splitFamilies));
 
-  const whatsappNumber = chalet.owner.phone.startsWith('0')
-    ? `2${chalet.owner.phone}`
-    : chalet.owner.phone;
+  const canSeeOwnerContact =
+    !chalet.isDemo && (hasUserActiveBooking || isOwnerOrAdmin);
+  const effectiveOwnerPhone = canSeeOwnerContact
+    ? revealedContact?.ownerPhone || chalet.owner.phone || ''
+    : '';
+  const effectiveInstaPay = canSeeOwnerContact
+    ? revealedContact?.instaPayHandle || chalet.owner.instaPayHandle || effectiveOwnerPhone
+    : '';
 
-  const instaPayTarget = chalet.owner.instaPayHandle || chalet.owner.phone;
+  const whatsappNumber = effectiveOwnerPhone
+    ? effectiveOwnerPhone.startsWith('0')
+      ? `2${effectiveOwnerPhone}`
+      : effectiveOwnerPhone
+    : '';
 
-  const logDirectInquiry = (channel: 'whatsapp' | 'phone') => {
-    onSubmitBooking({
-      chaletId: chalet.id,
-      chaletTitle: chalet.title,
-      resort: chalet.resort,
-      destinationLabel: chalet.destinationLabel,
-      ownerName: chalet.owner.name,
-      ownerPhone: chalet.owner.phone,
-      ownerInstaPay: instaPayTarget,
-      guestName: guestName.trim() || 'زائر منصة AgzStay',
-      guestPhone: guestPhone.trim() || '01000000000',
+  const whatsappDirectMessage = useMemo(
+    () =>
+      [
+        `مرحباً ${chalet.owner.name}، أرغب في حجز "${chalet.title}" (${chalet.resort}) عبر منصة AgzStay.`,
+        `تاريخ الوصول: ${formatArabicDate(checkIn)}`,
+        `تاريخ المغادرة: ${formatArabicDate(checkOut)}`,
+        `المدة: ${nights.toLocaleString('ar-EG')} ليالٍ • ${guests.toLocaleString('ar-EG')} أفراد`,
+        `الإجمالي: ${formatEGP(pricing.subtotal)} • العربون (${pricing.depositLabel}): ${formatEGP(pricing.downPaymentAmount)}`,
+      ].join('\n'),
+    [
+      chalet.owner.name,
+      chalet.resort,
+      chalet.title,
       checkIn,
       checkOut,
-      nights,
-      rentalDuration,
-      inquiryChannel: channel,
       guests,
-      totalPrice: pricing.subtotal,
-      depositAmount: pricing.downPaymentAmount,
-      remainingAmount: pricing.remainingBalance,
-      securityDeposit: pricing.securityDeposit,
-      policyAccepted,
-      notes:
-        channel === 'whatsapp'
-          ? 'تم فتح محادثة واتساب مباشرة مع المعلن'
-          : 'تم الضغط على اتصال هاتفي مباشر بالمعلن',
-    });
-    setDirectContactLogged(
-      channel === 'whatsapp'
-        ? 'تم تسجيل استفسار الواتساب تلقائياً في لوحة تحكم المعلن وقائمة طلباتك.'
-        : 'تم تسجيل محاولة الاتصال المباشر تلقائياً في لوحة تحكم المعلن.'
-    );
-  };
+      nights,
+      pricing.depositLabel,
+      pricing.downPaymentAmount,
+      pricing.subtotal,
+    ]
+  );
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (chalet.isDemo) {
+      setFormError('هذا إعلان تجريبي للعرض فقط — أضف وحدة حقيقية من المالك لإجراء حجز.');
+      return;
+    }
+    if (!isSupabaseConfigured) {
+      setFormError('وضع تجريبي: الحجز معطل لعدم إعداد Supabase.');
+      return;
+    }
+    if (!currentUser) {
+      setFormError('يرجى تسجيل الدخول أولاً قبل إرسال طلب الحجز.');
+      return;
+    }
     if (conflicts.length > 0) {
       setFormError(
         `التواريخ المختارة تتعارض مع مواعيد محجوزة أو مغلقة (${conflicts.map(formatArabicDate).join('، ')}). يرجى اختيار موعد متاح من التقويم.`
@@ -296,31 +400,44 @@ export function PropertyDetailModal({
       );
       return;
     }
+
     setFormError('');
-    onSubmitBooking({
-      chaletId: chalet.id,
-      chaletTitle: chalet.title,
-      resort: chalet.resort,
-      destinationLabel: chalet.destinationLabel,
-      ownerName: chalet.owner.name,
-      ownerPhone: chalet.owner.phone,
-      ownerInstaPay: instaPayTarget,
-      guestName: guestName.trim(),
-      guestPhone: guestPhone.trim(),
-      checkIn,
-      checkOut,
-      nights,
-      rentalDuration,
-      inquiryChannel: 'form',
-      guests,
-      totalPrice: pricing.subtotal,
-      depositAmount: pricing.downPaymentAmount,
-      remainingAmount: pricing.remainingBalance,
-      securityDeposit: pricing.securityDeposit,
-      policyAccepted: true,
-      notes: notes.trim(),
-    });
-    setSubmitted(true);
+    setIsSubmittingBooking(true);
+    try {
+      const bookingResult = await onSubmitBooking({
+        chaletId: chalet.id,
+        chaletTitle: chalet.title,
+        resort: chalet.resort,
+        destinationLabel: chalet.destinationLabel,
+        ownerName: chalet.owner.name,
+        ownerPhone: effectiveOwnerPhone || undefined,
+        ownerInstaPay: effectiveInstaPay || undefined,
+        guestName: guestName.trim(),
+        guestPhone: guestPhone.trim(),
+        checkIn,
+        checkOut,
+        nights,
+        rentalDuration,
+        inquiryChannel: 'form',
+        guests,
+        totalPrice: pricing.subtotal,
+        depositAmount: pricing.downPaymentAmount,
+        remainingAmount: pricing.remainingBalance,
+        securityDeposit: pricing.securityDeposit,
+        policyAccepted: true,
+        status: 'pending',
+        notes: notes.trim(),
+      });
+
+      if (bookingResult.error) {
+        setFormError(bookingResult.error);
+        return;
+      }
+
+      setSubmitted(true);
+    } finally {
+      setIsSubmittingBooking(false);
+    }
   };
 
   const agreementSummaryText = useMemo(() => {
@@ -330,8 +447,8 @@ export function PropertyDetailModal({
       'ملخص طلب حجز مبدئي — منصة AgzStay (إجازة ستاي)',
       `الوحدة: ${chalet.title}`,
       `الموقع: ${chalet.destinationLabel}${chalet.area ? ` - ${chalet.area}` : ''} (${chalet.resort})`,
-      `المعلن: ${chalet.owner.name} (${badgeInfo.label}) — ${chalet.owner.phone}`,
-      `حساب إنستاباي لجدية الحجز: ${instaPayTarget}`,
+      `المعلن: ${chalet.owner.name} (${badgeInfo.label})${effectiveOwnerPhone ? ` — ${effectiveOwnerPhone}` : ''}`,
+      effectiveInstaPay ? `حساب إنستاباي لجدية الحجز: ${effectiveInstaPay}` : '',
       `المستأجر: ${guestName.trim() || 'غير محدد'} (${guestPhone.trim() || 'غير محدد'})`,
       `نظام الإيجار: ${durationLabel} • الوصول: ${formatArabicDate(checkIn)} ← المغادرة: ${formatArabicDate(checkOut)} (${nights} ليالٍ • ${guests} أفراد)`,
       `التكلفة الإجمالية للإقامة: ${formatEGP(pricing.subtotal)}`,
@@ -341,17 +458,18 @@ export function PropertyDetailModal({
       'سياسة الإلغاء: جدية الحجز لا تُرد في حال إلغاء الحجز قبل موعد الوصول بأقل من 10 أيام.',
       `تصاريح القرية والخدمات: ${chalet.includesPasses ? 'مشمولة بدون رسوم إضافية' : 'غير مشمولة / تُسدد عند البوابة'}`,
       'رسوم منصة AgzStay: ٠ ج.م',
-    ];
+    ].filter(Boolean);
     return lines.join('\n');
   }, [
     badgeInfo.label,
     chalet,
     checkIn,
     checkOut,
+    effectiveInstaPay,
+    effectiveOwnerPhone,
     guestName,
     guestPhone,
     guests,
-    instaPayTarget,
     nights,
     pricing,
     rentalDuration,
@@ -368,8 +486,9 @@ export function PropertyDetailModal({
   };
 
   const handleCopyInstaPay = async () => {
+    if (!effectiveInstaPay) return;
     try {
-      await navigator.clipboard?.writeText(instaPayTarget);
+      await navigator.clipboard?.writeText(effectiveInstaPay);
       setInstaPayCopied(true);
       setTimeout(() => setInstaPayCopied(false), 2200);
     } catch {
@@ -377,14 +496,23 @@ export function PropertyDetailModal({
     }
   };
 
-  const handleReportSubmit = (e: React.FormEvent) => {
+  const handleReportSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!onReportListing) return;
-    onReportListing({
+    if (!isSupabaseConfigured || !currentUser) {
+      setReportError('يرجى تسجيل الدخول أولاً لإرسال البلاغ.');
+      return;
+    }
+    setReportError('');
+    const res = await onReportListing({
       chaletId: chalet.id,
       reason: reportReason,
       details: reportDetails.trim(),
     });
+    if (res.error) {
+      setReportError(res.error);
+      return;
+    }
     setReportSubmitted(true);
     setReportDetails('');
   };
@@ -504,9 +632,26 @@ export function PropertyDetailModal({
           <div className="space-y-6 lg:col-span-7">
             <div>
               <div className="flex flex-wrap items-center gap-2">
+                {chalet.isDemo && (
+                  <span className="rounded-full border border-amber-300 bg-amber-100 px-3 py-1 text-xs font-extrabold text-amber-900">
+                    إعلان تجريبي للعرض
+                  </span>
+                )}
                 <span className="rounded-full bg-secondary-500 px-3 py-1 text-xs font-extrabold text-white">
                   للإيجار المباشر
                 </span>
+                {chalet.hostTier === 'pro' && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-amber-400 px-3 py-1 text-xs font-extrabold text-slate-900">
+                    <Crown className="h-3.5 w-3.5" />
+                    مالك موثق / شريك مميز
+                  </span>
+                )}
+                {chalet.verifiedLivePhotos && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-800">
+                    <Camera className="h-3.5 w-3.5 text-emerald-600" />
+                    صور حديثة على الطبيعة{chalet.livePhotosVerifiedAt ? ` (${chalet.livePhotosVerifiedAt})` : ''}
+                  </span>
+                )}
                 <span className="rounded-full bg-primary-50 px-3 py-1 text-xs font-bold text-primary-700">
                   {chalet.destinationLabel}
                   {chalet.area ? ` • ${chalet.area}` : ''}
@@ -688,34 +833,35 @@ export function PropertyDetailModal({
                   </p>
                 </div>
 
-                <div className="flex items-center gap-2">
-                  <a
-                    href={`tel:${chalet.owner.phone}`}
-                    onClick={() => logDirectInquiry('phone')}
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-primary-200 bg-white px-3 py-2 text-xs font-bold text-primary-700 transition hover:bg-primary-50"
-                  >
-                    <Phone className="h-3.5 w-3.5" />
-                    اتصال مباشر
-                  </a>
-                  <a
-                    href={`https://wa.me/${whatsappNumber}?text=${encodeURIComponent(
-                      `مرحباً ${chalet.owner.name}، أستفسر عن إيجار "${chalet.title}" عبر تطبيق AgzStay - إجازة ستاي.`
-                    )}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    onClick={() => logDirectInquiry('whatsapp')}
-                    className="inline-flex items-center gap-1.5 rounded-xl bg-success-500 px-3 py-2 text-xs font-bold text-white transition hover:bg-success-700"
-                  >
-                    <MessageCircle className="h-3.5 w-3.5" />
-                    واتساب
-                  </a>
-                </div>
+                {canSeeOwnerContact && effectiveOwnerPhone ? (
+                  <div className="flex items-center gap-2">
+                    <a
+                      href={`tel:${effectiveOwnerPhone}`}
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-primary-200 bg-white px-3 py-2 text-xs font-bold text-primary-700 transition hover:bg-primary-50"
+                    >
+                      <Phone className="h-3.5 w-3.5" />
+                      اتصال مباشر
+                    </a>
+                    <a
+                      href={`https://wa.me/${whatsappNumber}?text=${encodeURIComponent(
+                        whatsappDirectMessage
+                      )}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-success-500 px-3 py-2 text-xs font-bold text-white transition hover:bg-success-700"
+                    >
+                      <MessageCircle className="h-3.5 w-3.5" />
+                      واتساب
+                    </a>
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[11px] font-bold text-slate-600">
+                    {currentUser
+                      ? 'تظهر أرقام الهاتف وواتساب المعلن تلقائياً فور إرسال طلب الحجز'
+                      : 'سجّل الدخول وأرسل طلب حجز لإظهار رقم هاتف المعلن وواتساب'}
+                  </div>
+                )}
               </div>
-              {directContactLogged && (
-                <p className="mt-2.5 rounded-xl bg-success-50 px-3 py-2 text-xs font-bold text-success-700">
-                  {directContactLogged}
-                </p>
-              )}
 
               {onReportListing && (
                 <div className="mt-3 border-t border-slate-200 pt-3">
@@ -769,6 +915,9 @@ export function PropertyDetailModal({
                         placeholder="تفاصيل إضافية (مثال: طلب مبلغ أعلى عند الاتصال)..."
                         className="w-full rounded-lg border border-slate-200 bg-sand-50 px-2.5 py-1.5 text-xs text-slate-800"
                       />
+                      {reportError && (
+                        <p className="text-[11px] font-bold text-error-600">{reportError}</p>
+                      )}
                       <button
                         type="submit"
                         className="w-full rounded-lg bg-error-500 py-1.5 text-xs font-bold text-white hover:bg-error-700"
@@ -786,6 +935,7 @@ export function PropertyDetailModal({
               totalReviewsCount={chalet.reviewsCount}
               reviews={reviews}
               bookingsForChalet={allBookingsForChalet}
+              currentUserId={currentUser?.id}
               onSubmitReview={onSubmitReview}
               onDeleteReview={onDeleteReview}
             />
@@ -834,28 +984,32 @@ export function PropertyDetailModal({
                 ))}
               </div>
 
-              <div className="grid grid-cols-2 gap-2">
-                <a
-                  href={`https://wa.me/${whatsappNumber}?text=${encodeURIComponent(
-                    `مرحباً ${chalet.owner.name}، أرغب في حجز "${chalet.title}" (${chalet.resort}) عبر AgzStay.`
-                  )}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  onClick={() => logDirectInquiry('whatsapp')}
-                  className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-success-500 px-3 py-2.5 text-xs font-bold text-white shadow-sm transition hover:bg-success-700"
-                >
-                  <MessageCircle className="h-4 w-4" />
-                  <span>تواصل عبر واتساب</span>
-                </a>
-                <a
-                  href={`tel:${chalet.owner.phone}`}
-                  onClick={() => logDirectInquiry('phone')}
-                  className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-primary-600 bg-primary-600 px-3 py-2.5 text-xs font-bold text-white shadow-sm transition hover:bg-primary-700"
-                >
-                  <Phone className="h-4 w-4" />
-                  <span>اتصال بالمعلن</span>
-                </a>
-              </div>
+              {canSeeOwnerContact && effectiveOwnerPhone ? (
+                <div className="grid grid-cols-2 gap-2">
+                  <a
+                    href={`https://wa.me/${whatsappNumber}?text=${encodeURIComponent(
+                      whatsappDirectMessage
+                    )}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-success-500 px-3 py-2.5 text-xs font-bold text-white shadow-sm transition hover:bg-success-700"
+                  >
+                    <MessageCircle className="h-4 w-4" />
+                    <span>واتساب المعلن</span>
+                  </a>
+                  <a
+                    href={`tel:${effectiveOwnerPhone}`}
+                    className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-primary-600 bg-primary-600 px-3 py-2.5 text-xs font-bold text-white shadow-sm transition hover:bg-primary-700"
+                  >
+                    <Phone className="h-4 w-4" />
+                    <span>اتصال بالمعلن</span>
+                  </a>
+                </div>
+              ) : (
+                <div className="rounded-xl border border-primary-100 bg-primary-50/70 p-3 text-center text-xs font-semibold text-primary-900">
+                  بيانات اتصال المعلن وواتساب محمية وتُفتح تلقائياً فور تسجيل الدخول وإرسال طلب الحجز.
+                </div>
+              )}
 
               {submitted ? (
                 <div className="space-y-4 py-4">
@@ -864,44 +1018,46 @@ export function PropertyDetailModal({
                       <CheckCircle2 className="h-8 w-8 text-success-500" />
                     </div>
                     <span className="mt-2 inline-block rounded-full bg-warning-50 px-3 py-0.5 text-[11px] font-bold text-warning-800">
-                      حالة الطلب: في انتظار تأكيد جدية الحجز
+                      حالة الطلب: بانتظار موافقة المالك (مهلة ٢٤ ساعة)
                     </span>
                     <h3 className="mt-2 text-lg font-bold text-slate-900">
-                      تم تسجيل طلب الحجز بنجاح
+                      تم إرسال طلب الحجز بنجاح
                     </h3>
                     <p className="mt-1 text-xs leading-relaxed text-slate-600">
-                      أرسل جدية الحجز ({formatEGP(pricing.downPaymentAmount)}) عبر إنستاباي أو تواصل مع المعلن ({chalet.owner.name}) لتأكيد الاستلام وإغلاق التواريخ على التقويم فوراً.
+                      سيراجع المالك طلبك خلال ٢٤ ساعة. فور الموافقة سيصلك إشعار وتظهر بيانات التحويل لرفع إيصال العربون ({formatEGP(pricing.downPaymentAmount)}) داخل قائمة &quot;طلباتي&quot;.
                     </p>
                   </div>
 
-                  <div className="rounded-2xl border border-secondary-200 bg-secondary-50/80 p-3.5 text-xs">
-                    <div className="flex items-center justify-between font-bold text-secondary-900">
-                      <span className="inline-flex items-center gap-1.5">
-                        <CreditCard className="h-4 w-4 text-secondary-600" />
-                        تفاصيل تحويل جدية الحجز (InstaPay)
-                      </span>
-                      <span className="font-extrabold text-primary-700">
-                        {formatEGP(pricing.downPaymentAmount)}
-                      </span>
+                  {effectiveInstaPay && (
+                    <div className="rounded-2xl border border-secondary-200 bg-secondary-50/80 p-3.5 text-xs">
+                      <div className="flex items-center justify-between font-bold text-secondary-900">
+                        <span className="inline-flex items-center gap-1.5">
+                          <CreditCard className="h-4 w-4 text-secondary-600" />
+                          تفاصيل تحويل جدية الحجز (InstaPay)
+                        </span>
+                        <span className="font-extrabold text-primary-700">
+                          {formatEGP(pricing.downPaymentAmount)}
+                        </span>
+                      </div>
+                      <div className="mt-2 flex items-center justify-between gap-2 rounded-xl bg-white px-3 py-2">
+                        <span dir="ltr" className="font-bold text-slate-900">
+                          {effectiveInstaPay}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={handleCopyInstaPay}
+                          className="inline-flex items-center gap-1 rounded-lg bg-primary-50 px-2.5 py-1 text-[11px] font-bold text-primary-700 hover:bg-primary-100"
+                        >
+                          {instaPayCopied ? (
+                            <Check className="h-3 w-3 text-success-500" />
+                          ) : (
+                            <Copy className="h-3 w-3" />
+                          )}
+                          <span>{instaPayCopied ? 'تم النسخ' : 'نسخ'}</span>
+                        </button>
+                      </div>
                     </div>
-                    <div className="mt-2 flex items-center justify-between gap-2 rounded-xl bg-white px-3 py-2">
-                      <span dir="ltr" className="font-bold text-slate-900">
-                        {instaPayTarget}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={handleCopyInstaPay}
-                        className="inline-flex items-center gap-1 rounded-lg bg-primary-50 px-2.5 py-1 text-[11px] font-bold text-primary-700 hover:bg-primary-100"
-                      >
-                        {instaPayCopied ? (
-                          <Check className="h-3 w-3 text-success-500" />
-                        ) : (
-                          <Copy className="h-3 w-3" />
-                        )}
-                        <span>{instaPayCopied ? 'تم النسخ' : 'نسخ'}</span>
-                      </button>
-                    </div>
-                  </div>
+                  )}
 
                   <div className="rounded-2xl border border-primary-100 bg-sand-50 p-3.5 text-right text-xs">
                     <div className="mb-2 flex items-center justify-between">
@@ -926,17 +1082,19 @@ export function PropertyDetailModal({
                         )}
                         <span>{summaryCopied ? 'تم النسخ!' : 'نسخ الملخص'}</span>
                       </button>
-                      <a
-                        href={`https://wa.me/${whatsappNumber}?text=${encodeURIComponent(
-                          agreementSummaryText
-                        )}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-success-500 py-2 text-xs font-bold text-white hover:bg-success-700"
-                      >
-                        <MessageCircle className="h-3.5 w-3.5" />
-                        <span>إرسال عبر واتساب</span>
-                      </a>
+                      {whatsappNumber && (
+                        <a
+                          href={`https://wa.me/${whatsappNumber}?text=${encodeURIComponent(
+                            agreementSummaryText
+                          )}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-success-500 py-2 text-xs font-bold text-white hover:bg-success-700"
+                        >
+                          <MessageCircle className="h-3.5 w-3.5" />
+                          <span>إرسال عبر واتساب</span>
+                        </a>
+                      )}
                     </div>
                   </div>
 
@@ -1078,7 +1236,7 @@ export function PropertyDetailModal({
                       dir="ltr"
                       value={guestPhone}
                       onChange={(e) => setGuestPhone(e.target.value)}
-                      placeholder="01012345678"
+                      placeholder="01000000000"
                       className="w-full rounded-xl border border-slate-200 bg-sand-50 px-3 py-2 text-left text-sm text-slate-900 focus:border-secondary-500 focus:bg-white focus:outline-none"
                     />
                   </div>
@@ -1161,15 +1319,20 @@ export function PropertyDetailModal({
                     </div>
                   </div>
 
-                  {/* InstaPay Preview */}
-                  <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-sand-50 px-3 py-2 text-[11px] text-slate-700">
-                    <span className="inline-flex items-center gap-1.5 font-bold">
-                      <CreditCard className="h-3.5 w-3.5 text-secondary-600" />
-                      التحويل المباشر (إنستاباي):
-                    </span>
-                    <span dir="ltr" className="font-extrabold text-primary-700">
-                      {instaPayTarget}
-                    </span>
+                  {/* Phase 2 Step Guide before receipt upload */}
+                  <div className="space-y-1.5 rounded-xl border border-secondary-200 bg-sand-50 p-3 text-xs">
+                    <div className="flex items-center justify-between gap-2 font-bold text-slate-800">
+                      <span className="inline-flex items-center gap-1.5">
+                        <CreditCard className="h-4 w-4 text-secondary-600" />
+                        آلية دفع العربون ({pricing.depositLabel}):
+                      </span>
+                      <span className="font-extrabold text-secondary-700">
+                        {formatEGP(pricing.downPaymentAmount)}
+                      </span>
+                    </div>
+                    <p className="text-[11px] leading-relaxed text-slate-600">
+                      ١. أرسل طلب الحجز الآن مجاناً • ٢. يوافق المالك خلال ٢٤ ساعة وتظهر بيانات InstaPay ورقم الهاتف • ٣. ارفع صورة الإيصال من &quot;طلباتي&quot; لتأكيد الحجز وإغلاق التواريخ.
+                    </p>
                   </div>
 
                   {/* 10-Day Non-Refundable Deposit Policy Box */}
@@ -1196,7 +1359,7 @@ export function PropertyDetailModal({
                         className="mt-0.5 h-4 w-4 shrink-0 rounded accent-secondary-500"
                       />
                       <span>
-                        أوافق على سياسة الإلغاء وعدم استرداد جدية الحجز في حال الإلغاء قبل الوصول بأقل من ١٠ أيام.
+                        أوافق على سياسة المنصة وأقر بأن جدية الحجز لا تُرد في حال الإلغاء قبل موعد الوصول بأقل من 10 أيام، وأن AgzStay منصة تقنية وليست طرفاً في التسوية المالية النهائية.
                       </span>
                     </label>
                   </div>
@@ -1228,6 +1391,25 @@ export function PropertyDetailModal({
                     </div>
                   </div>
 
+                  {!currentUser && isSupabaseConfigured && !chalet.isDemo && (
+                    <div className="rounded-xl border border-primary-200 bg-primary-50 p-3 text-center text-xs">
+                      <p className="font-bold text-primary-900">سجّل دخولك أولاً لإتمام طلب الحجز</p>
+                      <button
+                        type="button"
+                        onClick={onOpenAuth}
+                        className="mt-2 rounded-xl bg-primary-600 px-4 py-1.5 text-xs font-bold text-white hover:bg-primary-700"
+                      >
+                        تسجيل الدخول / إنشاء حساب
+                      </button>
+                    </div>
+                  )}
+
+                  {chalet.isDemo && (
+                    <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-center text-xs font-bold text-amber-900">
+                      هذا إعلان تجريبي للعرض فقط — لا يمكن حجزه فعلياً.
+                    </div>
+                  )}
+
                   {formError && (
                     <p className="rounded-xl bg-error-50 px-3 py-2 text-xs font-semibold text-error-700">
                       {formError}
@@ -1236,10 +1418,18 @@ export function PropertyDetailModal({
 
                   <button
                     type="submit"
-                    disabled={conflicts.length > 0}
+                    disabled={
+                      conflicts.length > 0 ||
+                      isSubmittingBooking ||
+                      !isSupabaseConfigured ||
+                      Boolean(chalet.isDemo) ||
+                      !currentUser
+                    }
                     className="w-full rounded-xl bg-primary-600 py-3 text-sm font-bold text-white shadow-sm transition hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    احجز الآن — إرسال طلب الحجز للمعلن
+                    {isSubmittingBooking
+                      ? 'جاري تسجيل طلب الحجز...'
+                      : `إرسال طلب الحجز للمالك (عربون متوقع ${formatEGP(pricing.downPaymentAmount)})`}
                   </button>
                 </form>
               )}

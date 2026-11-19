@@ -123,15 +123,38 @@ export function expandInclusiveRange(startIso: string, endIso: string): string[]
   return expandStayDates(startIso, totalDays + 1);
 }
 
+export interface BookingRangeLike {
+  chaletId: string;
+  checkIn: string;
+  checkOut?: string;
+  nights?: number;
+  status: BookingRequest['status'];
+}
+
 export function getConfirmedBookedDatesForChalet(
   chaletId: string,
-  bookings: BookingRequest[]
+  bookings: BookingRangeLike[]
 ): Set<string> {
   const booked = new Set<string>();
   bookings
-    .filter((b) => b.chaletId === chaletId && b.status === 'confirmed')
+    .filter(
+      (b) =>
+        b.chaletId === chaletId &&
+        (b.status === 'confirmed' ||
+          b.status === 'completed' ||
+          b.status === 'payment_submitted' ||
+          b.status === 'approved' ||
+          b.status === 'pending_verification' ||
+          b.status === 'pending')
+    )
     .forEach((b) => {
-      expandStayDates(b.checkIn, b.nights).forEach((d) => booked.add(d));
+      const nights =
+        b.nights && b.nights > 0
+          ? b.nights
+          : b.checkOut
+          ? Math.max(1, calculateNightsBetween(b.checkIn, b.checkOut))
+          : 1;
+      expandStayDates(b.checkIn, nights).forEach((d) => booked.add(d));
     });
   return booked;
 }
@@ -152,7 +175,7 @@ export function getBlockedDatesForChalet(chalet: Chalet): Set<string> {
 
 export function getOccupiedDatesForChalet(
   chalet: Chalet,
-  bookings: BookingRequest[]
+  bookings: BookingRangeLike[]
 ): Set<string> {
   const occupied = getBlockedDatesForChalet(chalet);
   getConfirmedBookedDatesForChalet(chalet.id, bookings).forEach((d) => occupied.add(d));
@@ -169,7 +192,7 @@ export function findConflictingDates(
 
 export function isChaletAvailableForRange(
   chalet: Chalet,
-  bookings: BookingRequest[],
+  bookings: BookingRangeLike[],
   checkIn: string,
   checkOut: string
 ): boolean {
@@ -377,7 +400,7 @@ export function calculateFinancialMetrics(
     const [bYear, bMonth] = b.checkIn.split('-').map(Number);
     const bMonthIndex = (bMonth || 1) - 1;
 
-    if (b.status === 'confirmed') {
+    if (b.status === 'confirmed' || b.status === 'completed') {
       if (bYear === year) {
         annualIncome += b.totalPrice;
         annualConfirmedCount += 1;

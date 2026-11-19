@@ -6,13 +6,19 @@ import {
   CalendarCog,
   CheckCircle2,
   ClipboardList,
+  Clock3,
+  Crown,
+  Eye,
+  Image as ImageIcon,
   MessageCircle,
   Phone,
   PlusCircle,
+  RefreshCw,
   ShieldAlert,
   ShieldCheck,
   Star,
   UserCheck,
+  X,
   XCircle,
 } from 'lucide-react';
 import { CancellationPolicyModal } from '@/components/CancellationPolicyModal';
@@ -20,10 +26,17 @@ import { HostCalendarPricingPanel } from '@/components/HostCalendarPricingPanel'
 import { HostFinancialDashboard } from '@/components/HostFinancialDashboard';
 import { RatingModal } from '@/components/RatingModal';
 import { RenterTrustBadge } from '@/components/RenterTrustBadge';
-import { formatEGP } from '@/data/chalets';
+import {
+  FREE_TIER_MAX_UNITS,
+  PRO_TIER_MAX_UNITS,
+  PRO_TIER_MONTHLY_FEE,
+  formatEGP,
+} from '@/data/chalets';
 import type {
+  AppUser,
   BookingRequest,
   Chalet,
+  HostSubscriptionRecord,
   OwnerVerificationSubmission,
   RenterTrustReview,
   RenterTrustTag,
@@ -32,19 +45,32 @@ import {
   addDaysIso,
   calculateFinancialMetrics,
   formatArabicDate,
+  formatIsoDate,
 } from '@/utils/bookingPricing';
+import { getBookingReceiptSignedUrl } from '@/services/agzstayRepository';
 
 interface HostDashboardProps {
+  currentUser: AppUser | null;
   chalets: Chalet[];
   customChaletIds?: string[];
   bookings: BookingRequest[];
   renterTrustReviews: RenterTrustReview[];
   verification: OwnerVerificationSubmission | null;
+  currentSubscription?: HostSubscriptionRecord | null;
+  activeCustomUnitsCount?: number;
+  loading?: boolean;
+  error?: string | null;
+  onRetry?: () => void;
   onBackToRenterMode: () => void;
+  onOpenAuth: () => void;
   onOpenAddProperty: () => void;
   onOpenVerification: () => void;
-  onConfirmBookingDeposit: (bookingId: string) => void;
-  onCancelBookingWithPolicy: (bookingId: string) => void;
+  onOpenUpgradeModal: () => void;
+  onApproveBookingRequest: (bookingId: string) => Promise<void> | void;
+  onRejectBookingRequest: (bookingId: string, reason?: string) => Promise<void> | void;
+  onConfirmBookingDeposit: (bookingId: string) => Promise<void> | void;
+  onCompleteBookingStay: (bookingId: string) => Promise<void> | void;
+  onCancelBookingWithPolicy: (bookingId: string) => Promise<void> | void;
   onUpdateChaletConfig: (
     chaletId: string,
     updates: Partial<
@@ -63,6 +89,9 @@ interface HostDashboardProps {
         | 'depositType'
         | 'fixedDepositAmount'
         | 'includesPasses'
+        | 'verifiedLivePhotos'
+        | 'livePhotosVerifiedAt'
+        | 'welcomeGuide'
         | 'blockedDates'
         | 'dateRules'
         | 'owner'
@@ -72,6 +101,8 @@ interface HostDashboardProps {
   onDeleteCustomChalet?: (chaletId: string) => void;
   onAddRenterTrustReview: (payload: {
     bookingId: string;
+    chaletId?: string;
+    renterId?: string;
     chaletTitle: string;
     renterName: string;
     renterPhone: string;
@@ -85,15 +116,26 @@ interface HostDashboardProps {
 }
 
 export function HostDashboard({
+  currentUser,
   chalets,
   customChaletIds = [],
   bookings,
   renterTrustReviews,
   verification,
+  currentSubscription,
+  activeCustomUnitsCount = 0,
+  loading = false,
+  error = null,
+  onRetry,
   onBackToRenterMode,
+  onOpenAuth,
   onOpenAddProperty,
   onOpenVerification,
+  onOpenUpgradeModal,
+  onApproveBookingRequest,
+  onRejectBookingRequest,
   onConfirmBookingDeposit,
+  onCompleteBookingStay,
   onCancelBookingWithPolicy,
   onUpdateChaletConfig,
   onDeleteCustomChalet,
@@ -105,18 +147,50 @@ export function HostDashboard({
   const [managedChaletId, setManagedChaletId] = useState<string>(chalets[0]?.id ?? '');
   const [ratingTargetBooking, setRatingTargetBooking] = useState<BookingRequest | null>(null);
   const [cancelTargetBooking, setCancelTargetBooking] = useState<BookingRequest | null>(null);
+  const [rejectingBookingId, setRejectingBookingId] = useState<string | null>(null);
+  const [rejectionReasonInput, setRejectionReasonInput] = useState('');
+  const [loadingReceiptBookingId, setLoadingReceiptBookingId] = useState<string | null>(null);
+  const [receiptPreviewModal, setReceiptPreviewModal] = useState<{
+    booking: BookingRequest;
+    url: string | null;
+    error?: string;
+  } | null>(null);
+
+  const todayIso = useMemo(() => formatIsoDate(new Date()), []);
 
   const managedChalet = useMemo(
     () => chalets.find((c) => c.id === managedChaletId) ?? chalets[0] ?? null,
     [chalets, managedChaletId]
   );
 
-  const pendingCount = bookings.filter((b) => b.status === 'pending').length;
-  const confirmedCount = bookings.filter((b) => b.status === 'confirmed').length;
+  const pendingCount = bookings.filter(
+    (b) =>
+      b.status === 'pending' ||
+      b.status === 'approved' ||
+      b.status === 'payment_submitted' ||
+      b.status === 'pending_verification'
+  ).length;
+  const confirmedCount = bookings.filter(
+    (b) => b.status === 'confirmed' || b.status === 'completed'
+  ).length;
   const ratedBookingIds = useMemo(
     () => new Set(renterTrustReviews.map((r) => r.bookingId)),
     [renterTrustReviews]
   );
+
+  const handleOpenReceiptPreview = async (booking: BookingRequest) => {
+    setLoadingReceiptBookingId(booking.id);
+    try {
+      const res = await getBookingReceiptSignedUrl(booking.receiptPath);
+      setReceiptPreviewModal({
+        booking,
+        url: res.data,
+        error: res.error ?? undefined,
+      });
+    } finally {
+      setLoadingReceiptBookingId(null);
+    }
+  };
 
   const currentDate = useMemo(() => new Date(), []);
   const currentYear = currentDate.getFullYear();
@@ -141,6 +215,15 @@ export function HostDashboard({
                   <ShieldCheck className="h-3.5 w-3.5" />
                   حساب موثق ({verification.ownerName})
                 </span>
+              ) : verification?.status === 'pending' ? (
+                <button
+                  type="button"
+                  onClick={onOpenVerification}
+                  className="inline-flex items-center gap-1 rounded-full bg-amber-400 px-3 py-1 text-xs font-extrabold text-slate-900 hover:bg-amber-300"
+                >
+                  <Clock3 className="h-3.5 w-3.5" />
+                  طلب التوثيق قيد مراجعة الإدارة
+                </button>
               ) : (
                 <button
                   type="button"
@@ -202,8 +285,100 @@ export function HostDashboard({
             </div>
           </div>
         </div>
+
+        {/* Freemium vs Pro Membership Banner */}
+        <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-white/15 bg-white/10 px-4 py-3 backdrop-blur-sm">
+          <div className="flex flex-wrap items-center gap-2.5 text-xs">
+            {currentSubscription?.tier === 'pro' && currentSubscription.status === 'active' ? (
+              <>
+                <span className="inline-flex items-center gap-1 rounded-full bg-amber-400 px-3 py-1 font-extrabold text-slate-900">
+                  <Crown className="h-3.5 w-3.5" />
+                  الباقة الاحترافية (Pro) — شريك مميز مفعّل
+                </span>
+                <span className="text-primary-50">
+                  الوحدات المضافة: {activeCustomUnitsCount} / {PRO_TIER_MAX_UNITS} • سارية حتى{' '}
+                  {formatArabicDate(currentSubscription.expiryDate)}
+                </span>
+              </>
+            ) : currentSubscription?.status === 'pending-verification' ? (
+              <>
+                <span className="inline-flex items-center gap-1 rounded-full bg-warning-400 px-3 py-1 font-extrabold text-slate-900">
+                  <Clock3 className="h-3.5 w-3.5" />
+                  طلب الترقية للباقة الاحترافية قيد مراجعة الإدارة
+                </span>
+                <span className="text-primary-50">
+                  مرجع التحويل: <strong dir="ltr">{currentSubscription.transferReference}</strong>
+                </span>
+              </>
+            ) : (
+              <>
+                <span className="inline-flex items-center gap-1 rounded-full bg-white/20 px-3 py-1 font-bold text-white">
+                  الباقة الأساسية (مجانية ١٠٠٪)
+                </span>
+                <span className="text-primary-50">
+                  الحد المتاح للنشر: {activeCustomUnitsCount} / {FREE_TIER_MAX_UNITS} وحدة • احصل على شارة &quot;شريك مميز&quot; والأولوية بالبحث وحتى {PRO_TIER_MAX_UNITS} وحدات.
+                </span>
+              </>
+            )}
+          </div>
+
+          {!(currentSubscription?.tier === 'pro' && currentSubscription.status === 'active') && (
+            <button
+              type="button"
+              onClick={onOpenUpgradeModal}
+              className="inline-flex items-center gap-1.5 rounded-xl bg-amber-400 px-4 py-2 text-xs font-extrabold text-slate-950 shadow-sm transition hover:bg-amber-300"
+            >
+              <Crown className="h-4 w-4" />
+              <span>
+                {currentSubscription?.status === 'pending-verification'
+                  ? 'عرض / تحديث طلب الاشتراك'
+                  : `الترقية للباقة الاحترافية (${formatEGP(PRO_TIER_MONTHLY_FEE)} / شهرياً)`}
+              </span>
+            </button>
+          )}
+        </div>
       </div>
 
+      {loading && (
+        <div className="mt-5 flex items-center gap-2 rounded-2xl border border-primary-200 bg-primary-50 px-4 py-3 text-xs font-bold text-primary-800">
+          <RefreshCw className="h-4 w-4 animate-spin" />
+          <span>جاري تحميل وحداتك وطلبات الحجز...</span>
+        </div>
+      )}
+
+      {error && (
+        <div className="mt-5 flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-error-200 bg-error-50 px-4 py-3 text-xs font-bold text-error-800">
+          <span>{error}</span>
+          {onRetry && (
+            <button
+              type="button"
+              onClick={onRetry}
+              className="rounded-xl bg-white px-3 py-1.5 text-[11px] font-bold text-error-700 shadow-sm hover:bg-error-100"
+            >
+              إعادة المحاولة
+            </button>
+          )}
+        </div>
+      )}
+
+      {!currentUser ? (
+        <div className="mt-6 rounded-3xl border border-primary-100 bg-white p-8 text-center shadow-sm">
+          <Building2 className="mx-auto h-12 w-12 text-primary-600" />
+          <h2 className="mt-3 text-lg font-extrabold text-slate-900">
+            سجّل الدخول للوصول إلى وحداتك وحجوزاتك
+          </h2>
+          <p className="mt-1 text-xs text-slate-600">
+            تظهر هنا وحداتك المملوكة فقط وطلبات الحجز المرتبطة بها وفق قواعد عزل الملكية الصارمة.
+          </p>
+          <button
+            type="button"
+            onClick={onOpenAuth}
+            className="mt-4 rounded-xl bg-primary-600 px-6 py-2.5 text-xs font-bold text-white hover:bg-primary-700"
+          >
+            تسجيل الدخول / إنشاء حساب
+          </button>
+        </div>
+      ) : (
       <div className="mt-6 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
         <div className="flex flex-wrap gap-2 border-b border-slate-200 pb-4">
           <button
@@ -282,20 +457,37 @@ export function HostDashboard({
                       <div className="flex flex-wrap items-center gap-2">
                         <span
                           className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${
-                            booking.status === 'confirmed'
+                            booking.status === 'completed'
+                              ? 'bg-emerald-100 text-emerald-900'
+                              : booking.status === 'confirmed'
                               ? 'bg-success-50 text-success-700'
-                              : booking.status === 'cancelled'
+                              : booking.status === 'approved'
+                              ? 'bg-sky-50 text-sky-800'
+                              : booking.status === 'cancelled' ||
+                                booking.status === 'rejected' ||
+                                booking.status === 'expired'
                               ? 'bg-error-50 text-error-700'
                               : 'bg-warning-50 text-warning-700'
                           }`}
                         >
-                          {booking.status === 'confirmed'
+                          {booking.status === 'completed'
+                            ? 'مكتمل — أُتيح التقييم'
+                            : booking.status === 'confirmed'
                             ? 'مؤكد — التواريخ مغلقة ومقيدة بالدخل'
+                            : booking.status === 'approved'
+                            ? 'موافق مبدئياً — بانتظار رفع إيصال العربون'
+                            : booking.status === 'payment_submitted' ||
+                              booking.status === 'pending_verification'
+                            ? 'المستأجر رفع الإيصال — بانتظار تأكيدك'
+                            : booking.status === 'rejected'
+                            ? 'مرفوض'
+                            : booking.status === 'expired'
+                            ? 'منتهي المهلة (٢٤ ساعة)'
                             : booking.status === 'cancelled'
                             ? booking.depositForfeited
                               ? 'ملغي — جدية الحجز مصادرة (<١٠ أيام)'
                               : 'ملغي — التواريخ مفتوحة'
-                            : 'في انتظار تأكيد جدية الحجز'}
+                            : 'طلب جديد — بانتظار موافقتك خلال ٢٤ ساعة'}
                         </span>
 
                         {booking.inquiryChannel === 'whatsapp' && (
@@ -343,6 +535,18 @@ export function HostDashboard({
                         </span>
                       </div>
 
+                      {booking.paymentReference && (
+                        <div className="text-[11px] font-bold text-primary-700">
+                          مرجع التحويل المرفق: <span dir="ltr">{booking.paymentReference}</span>
+                        </div>
+                      )}
+
+                      {booking.rejectionReason && (
+                        <div className="text-[11px] font-bold text-error-700">
+                          سبب الرفض: {booking.rejectionReason}
+                        </div>
+                      )}
+
                       {booking.status === 'cancelled' && booking.depositForfeited && (
                         <div className="inline-flex items-center gap-1.5 rounded-lg bg-amber-50 px-2.5 py-1 text-[11px] font-bold text-amber-800">
                           <ShieldAlert className="h-3.5 w-3.5" />
@@ -353,41 +557,130 @@ export function HostDashboard({
                       )}
                     </div>
 
-                    <div className="flex flex-wrap items-center gap-2">
-                      {booking.status === 'pending' && (
-                        <button
-                          type="button"
-                          onClick={() => onConfirmBookingDeposit(booking.id)}
-                          className="inline-flex items-center gap-1.5 rounded-xl bg-success-500 px-3.5 py-2 text-xs font-bold text-white shadow-sm transition hover:bg-success-700"
-                        >
-                          <CheckCircle2 className="h-4 w-4" />
-                          <span>تأكيد استلام جدية الحجز وإغلاق التواريخ</span>
-                        </button>
-                      )}
-                      {booking.status !== 'cancelled' && (
-                        <button
-                          type="button"
-                          onClick={() => setCancelTargetBooking(booking)}
-                          className="inline-flex items-center gap-1 rounded-xl border border-error-500/30 bg-error-50 px-3 py-2 text-xs font-bold text-error-700 hover:bg-error-500 hover:text-white"
-                        >
-                          <XCircle className="h-3.5 w-3.5" />
-                          <span>إلغاء الحجز</span>
-                        </button>
-                      )}
-                      {isAlreadyRated ? (
-                        <span className="inline-flex items-center gap-1 rounded-xl bg-secondary-50 px-3 py-2 text-xs font-bold text-secondary-700">
-                          <Star className="h-3.5 w-3.5 fill-warning-500 text-warning-500" />
-                          تم تقييم المستأجر
-                        </span>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => setRatingTargetBooking(booking)}
-                          className="inline-flex items-center gap-1 rounded-xl border border-secondary-500 bg-white px-3 py-2 text-xs font-bold text-secondary-700 hover:bg-secondary-50"
-                        >
-                          <Star className="h-3.5 w-3.5 text-warning-500" />
-                          تقييم المستأجر
-                        </button>
+                    <div className="flex flex-col items-end gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        {booking.status === 'pending' && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => onApproveBookingRequest(booking.id)}
+                              className="inline-flex items-center gap-1.5 rounded-xl bg-primary-600 px-3.5 py-2 text-xs font-bold text-white shadow-sm transition hover:bg-primary-700"
+                            >
+                              <CheckCircle2 className="h-4 w-4" />
+                              <span>موافقة وإرسال بيانات الدفع</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setRejectingBookingId(
+                                  rejectingBookingId === booking.id ? null : booking.id
+                                );
+                                setRejectionReasonInput('');
+                              }}
+                              className="inline-flex items-center gap-1 rounded-xl border border-error-200 bg-white px-3 py-2 text-xs font-bold text-error-700 hover:bg-error-50"
+                            >
+                              <XCircle className="h-3.5 w-3.5" />
+                              <span>رفض الطلب</span>
+                            </button>
+                          </>
+                        )}
+
+                        {(booking.status === 'payment_submitted' ||
+                          booking.status === 'pending_verification') && (
+                          <>
+                            {booking.receiptPath && (
+                              <button
+                                type="button"
+                                disabled={loadingReceiptBookingId === booking.id}
+                                onClick={() => handleOpenReceiptPreview(booking)}
+                                className="inline-flex items-center gap-1.5 rounded-xl border border-primary-200 bg-white px-3 py-2 text-xs font-bold text-primary-700 hover:bg-primary-50 disabled:opacity-60"
+                              >
+                                <Eye className="h-3.5 w-3.5" />
+                                <span>
+                                  {loadingReceiptBookingId === booking.id
+                                    ? 'جاري الجلب...'
+                                    : 'معاينة الإيصال'}
+                                </span>
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => onConfirmBookingDeposit(booking.id)}
+                              className="inline-flex items-center gap-1.5 rounded-xl bg-success-500 px-3.5 py-2 text-xs font-bold text-white shadow-sm transition hover:bg-success-700"
+                            >
+                              <CheckCircle2 className="h-4 w-4" />
+                              <span>تأكيد استلام جدية الحجز وإغلاق التواريخ</span>
+                            </button>
+                          </>
+                        )}
+
+                        {booking.status === 'confirmed' && checkOut <= todayIso && (
+                          <button
+                            type="button"
+                            onClick={() => onCompleteBookingStay(booking.id)}
+                            className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3.5 py-2 text-xs font-bold text-white shadow-sm transition hover:bg-emerald-700"
+                          >
+                            <CheckCircle2 className="h-4 w-4" />
+                            <span>تأكيد اكتمال الإقامة</span>
+                          </button>
+                        )}
+
+                        {(booking.status === 'approved' ||
+                          booking.status === 'payment_submitted' ||
+                          booking.status === 'pending_verification' ||
+                          booking.status === 'confirmed') && (
+                          <button
+                            type="button"
+                            onClick={() => setCancelTargetBooking(booking)}
+                            className="inline-flex items-center gap-1 rounded-xl border border-error-500/30 bg-error-50 px-3 py-2 text-xs font-bold text-error-700 hover:bg-error-500 hover:text-white"
+                          >
+                            <XCircle className="h-3.5 w-3.5" />
+                            <span>إلغاء الحجز</span>
+                          </button>
+                        )}
+
+                        {(booking.status === 'confirmed' || booking.status === 'completed') &&
+                          (isAlreadyRated ? (
+                            <span className="inline-flex items-center gap-1 rounded-xl bg-secondary-50 px-3 py-2 text-xs font-bold text-secondary-700">
+                              <Star className="h-3.5 w-3.5 fill-warning-500 text-warning-500" />
+                              تم تقييم المستأجر
+                            </span>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setRatingTargetBooking(booking)}
+                              className="inline-flex items-center gap-1 rounded-xl border border-secondary-500 bg-white px-3 py-2 text-xs font-bold text-secondary-700 hover:bg-secondary-50"
+                            >
+                              <Star className="h-3.5 w-3.5 text-warning-500" />
+                              تقييم المستأجر
+                            </button>
+                          ))}
+                      </div>
+
+                      {rejectingBookingId === booking.id && (
+                        <div className="flex w-full max-w-sm items-center gap-2 rounded-xl border border-error-200 bg-white p-2">
+                          <input
+                            type="text"
+                            value={rejectionReasonInput}
+                            onChange={(e) => setRejectionReasonInput(e.target.value)}
+                            placeholder="سبب الرفض (اختياري)..."
+                            className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-sand-50 px-2.5 py-1.5 text-xs focus:outline-none"
+                          />
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              await onRejectBookingRequest(
+                                booking.id,
+                                rejectionReasonInput.trim() || undefined
+                              );
+                              setRejectingBookingId(null);
+                              setRejectionReasonInput('');
+                            }}
+                            className="rounded-lg bg-error-500 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-error-700"
+                          >
+                            تأكيد الرفض
+                          </button>
+                        </div>
                       )}
                     </div>
                   </div>
@@ -397,20 +690,32 @@ export function HostDashboard({
           </div>
         )}
 
-        {activeTab === 'pricing' && managedChalet && (
-          <HostCalendarPricingPanel
-            chalets={chalets}
-            customChaletIds={customChaletIds}
-            managedChalet={managedChalet}
-            bookings={bookings}
-            onSelectManagedChalet={setManagedChaletId}
-            onUpdateChaletConfig={onUpdateChaletConfig}
-            onDeleteCustomChalet={onDeleteCustomChalet}
-          />
+        {activeTab === 'pricing' && (
+          managedChalet ? (
+            <HostCalendarPricingPanel
+              chalets={chalets}
+              customChaletIds={customChaletIds}
+              managedChalet={managedChalet}
+              bookings={bookings}
+              onSelectManagedChalet={setManagedChaletId}
+              onUpdateChaletConfig={onUpdateChaletConfig}
+              onDeleteCustomChalet={onDeleteCustomChalet}
+            />
+          ) : (
+            <div className="mt-5 rounded-2xl border border-dashed border-slate-300 bg-sand-50 p-8 text-center text-sm text-slate-500">
+              لا توجد وحدات مملوكة لحسابك بعد — أضف وحدتك الأولى لتخصيص التقويم والأسعار.
+            </div>
+          )
         )}
 
         {activeTab === 'financials' && (
-          <HostFinancialDashboard chalets={chalets} bookings={bookings} />
+          chalets.length > 0 ? (
+            <HostFinancialDashboard chalets={chalets} bookings={bookings} />
+          ) : (
+            <div className="mt-5 rounded-2xl border border-dashed border-slate-300 bg-sand-50 p-8 text-center text-sm text-slate-500">
+              لا توجد وحدات مملوكة لحسابك بعد لعرض التقارير المالية.
+            </div>
+          )
         )}
 
         {activeTab === 'renter-trust' && (
@@ -453,6 +758,7 @@ export function HostDashboard({
           </div>
         )}
       </div>
+      )}
 
       {ratingTargetBooking && (
         <RatingModal
@@ -463,7 +769,12 @@ export function HostDashboard({
             renterName: ratingTargetBooking.guestName,
             renterPhone: ratingTargetBooking.guestPhone,
             hostName: ratingTargetBooking.ownerName,
-            onSubmit: onAddRenterTrustReview,
+            onSubmit: (payload) =>
+              onAddRenterTrustReview({
+                ...payload,
+                chaletId: ratingTargetBooking.chaletId,
+                renterId: ratingTargetBooking.renterId,
+              }),
           }}
           onClose={() => setRatingTargetBooking(null)}
         />
@@ -474,11 +785,57 @@ export function HostDashboard({
           booking={cancelTargetBooking}
           actor="host"
           onClose={() => setCancelTargetBooking(null)}
-          onConfirmCancel={(id) => {
-            onCancelBookingWithPolicy(id);
+          onConfirmCancel={async (id) => {
+            await onCancelBookingWithPolicy(id);
             setCancelTargetBooking(null);
           }}
         />
+      )}
+
+      {receiptPreviewModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-label="معاينة إيصال تحويل العربون"
+        >
+          <div className="w-full max-w-md rounded-3xl bg-white p-5 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div>
+                <h3 className="text-sm font-extrabold text-slate-900">
+                  معاينة إيصال تحويل العربون
+                </h3>
+                <p className="text-[11px] text-slate-500">
+                  {receiptPreviewModal.booking.guestName} • {receiptPreviewModal.booking.chaletTitle}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setReceiptPreviewModal(null)}
+                aria-label="إغلاق المعاينة"
+                className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="mt-4">
+              {receiptPreviewModal.url ? (
+                <img
+                  src={receiptPreviewModal.url}
+                  alt="إيصال التحويل"
+                  className="max-h-80 w-full rounded-2xl border border-slate-200 bg-sand-50 object-contain"
+                />
+              ) : (
+                <div className="rounded-2xl border border-dashed border-slate-300 bg-sand-50 p-6 text-center text-xs text-slate-600">
+                  <ImageIcon className="mx-auto mb-2 h-8 w-8 text-slate-400" />
+                  <p className="font-bold">
+                    {receiptPreviewModal.error || 'لا يوجد إيصال مرفق.'}
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
       )}
     </section>
   );

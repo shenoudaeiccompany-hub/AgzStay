@@ -7,11 +7,13 @@ import {
   LogIn,
   LogOut,
   PlusCircle,
+  ShieldAlert,
   ShieldCheck,
   UserCheck,
   UserCircle2,
 } from 'lucide-react';
-import type { AppSectionTab, AppUser, UserMode } from '@/types/chalet';
+import { NotificationsBell } from '@/components/NotificationsBell';
+import type { AppNotification, AppSectionTab, AppUser, UserMode } from '@/types/chalet';
 
 interface NavbarProps {
   activeSection: AppSectionTab;
@@ -19,9 +21,17 @@ interface NavbarProps {
   favoritesCount: number;
   bookingsCount: number;
   pendingHostInquiriesCount: number;
+  pendingAdminVerificationsCount: number;
   renterTrustAverage: number;
   favoritesOnly: boolean;
   currentUser: AppUser | null;
+  notifications: AppNotification[];
+  notificationsLoading: boolean;
+  notificationsError: string | null;
+  onRetryNotifications: () => void;
+  onMarkNotificationRead: (id: string) => Promise<void> | void;
+  onMarkAllNotificationsRead: () => Promise<void> | void;
+  onSelectNotification: (notification: AppNotification) => void;
   onSelectSection: (section: AppSectionTab) => void;
   onSwitchUserMode: (mode: UserMode) => void;
   onToggleFavoritesOnly: () => void;
@@ -38,9 +48,17 @@ export function Navbar({
   favoritesCount,
   bookingsCount,
   pendingHostInquiriesCount,
+  pendingAdminVerificationsCount,
   renterTrustAverage,
   favoritesOnly,
   currentUser,
+  notifications,
+  notificationsLoading,
+  notificationsError,
+  onRetryNotifications,
+  onMarkNotificationRead,
+  onMarkAllNotificationsRead,
+  onSelectNotification,
   onSelectSection,
   onSwitchUserMode,
   onToggleFavoritesOnly,
@@ -113,6 +131,26 @@ export function Navbar({
               <BarChart3 className="h-3.5 w-3.5" />
               <span>مؤشر الأسعار</span>
             </button>
+
+            {currentUser?.role === 'admin' && (
+              <button
+                type="button"
+                onClick={() => onSelectSection('admin')}
+                className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-bold transition ${
+                  activeSection === 'admin'
+                    ? 'bg-slate-900 text-white shadow-sm'
+                    : 'text-slate-700 hover:bg-slate-100'
+                }`}
+              >
+                <ShieldAlert className="h-3.5 w-3.5 text-amber-500" />
+                <span>الإدارة العامة</span>
+                {pendingAdminVerificationsCount > 0 && (
+                  <span className="rounded-full bg-amber-400 px-1.5 py-0.5 text-[10px] font-extrabold text-slate-900">
+                    {pendingAdminVerificationsCount}
+                  </span>
+                )}
+              </button>
+            )}
           </nav>
         </div>
 
@@ -166,6 +204,21 @@ export function Navbar({
             <span>الأسعار</span>
           </button>
 
+          {currentUser?.role === 'admin' && (
+            <button
+              type="button"
+              onClick={() => onSelectSection('admin')}
+              className={`inline-flex items-center gap-1 rounded-xl border px-2.5 py-2 text-xs font-bold transition md:hidden ${
+                activeSection === 'admin'
+                  ? 'border-slate-900 bg-slate-900 text-white'
+                  : 'border-slate-200 bg-white text-slate-700'
+              }`}
+            >
+              <ShieldAlert className="h-4 w-4 text-amber-500" />
+              <span>الإدارة</span>
+            </button>
+          )}
+
           <button
             type="button"
             onClick={() => {
@@ -205,6 +258,18 @@ export function Navbar({
               </span>
             )}
           </button>
+
+          {currentUser && (
+            <NotificationsBell
+              notifications={notifications}
+              loading={notificationsLoading}
+              error={notificationsError}
+              onRetry={onRetryNotifications}
+              onMarkAsRead={onMarkNotificationRead}
+              onMarkAllRead={onMarkAllNotificationsRead}
+              onSelectNotification={onSelectNotification}
+            />
+          )}
 
           {currentUser ? (
             <div className="inline-flex items-center gap-1 rounded-xl border border-primary-200 bg-primary-50 px-2.5 py-1.5 text-xs font-bold text-primary-700">

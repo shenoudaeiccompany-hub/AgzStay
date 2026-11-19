@@ -2,8 +2,10 @@ import { useMemo, useState } from 'react';
 import {
   CalendarCheck,
   CalendarRange,
+  Camera,
   CheckCircle2,
   CreditCard,
+  KeyRound,
   Lock,
   MessageSquareText,
   Sparkles,
@@ -53,6 +55,9 @@ interface HostCalendarPricingPanelProps {
         | 'depositType'
         | 'fixedDepositAmount'
         | 'includesPasses'
+        | 'verifiedLivePhotos'
+        | 'livePhotosVerifiedAt'
+        | 'welcomeGuide'
         | 'blockedDates'
         | 'dateRules'
         | 'owner'
@@ -66,8 +71,10 @@ const AVAILABILITY_STATUS_OPTIONS: {
   id: ListingAvailabilityStatus;
   label: string;
 }[] = [
-  { id: 'active', label: 'نشط ومتاح للإيجار' },
+  { id: 'active', label: 'نشط ومنشور للجمهور' },
+  { id: 'draft', label: 'مسودة (غير منشور)' },
   { id: 'rented', label: 'تم التأجير مؤقتاً' },
+  { id: 'hidden', label: 'مخفي مؤقتاً' },
 ];
 
 export function HostCalendarPricingPanel({
@@ -248,7 +255,12 @@ export function HostCalendarPricingPanel({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <div className="grid grid-cols-2 gap-1 rounded-xl border border-slate-200 bg-white p-1">
+          {managedChalet.availabilityStatus === 'pending_review' && (
+            <span className="inline-flex items-center gap-1 rounded-xl border border-amber-200 bg-amber-50 px-3 py-1.5 text-[11px] font-extrabold text-amber-900">
+              قيد مراجعة وتوثيق المالك (pending_review)
+            </span>
+          )}
+          <div className="grid grid-cols-2 gap-1 rounded-xl border border-slate-200 bg-white p-1 sm:grid-cols-4">
             {AVAILABILITY_STATUS_OPTIONS.map((opt) => {
               const currentStatus = managedChalet.availabilityStatus ?? 'active';
               const isSelected = currentStatus === opt.id;
@@ -259,10 +271,12 @@ export function HostCalendarPricingPanel({
                   onClick={() =>
                     onUpdateChaletConfig(managedChalet.id, { availabilityStatus: opt.id })
                   }
-                  className={`rounded-lg px-3 py-1.5 text-[11px] font-bold transition ${
+                  className={`rounded-lg px-2.5 py-1.5 text-[11px] font-bold transition ${
                     isSelected
                       ? opt.id === 'active'
                         ? 'bg-success-500 text-white'
+                        : opt.id === 'draft'
+                        ? 'bg-slate-700 text-white'
                         : 'bg-amber-500 text-white'
                       : 'text-slate-600 hover:bg-sand-50'
                   }`}
@@ -660,6 +674,98 @@ export function HostCalendarPricingPanel({
               />
               <span>الإيجار شامل تصاريح دخول القرية والخدمات</span>
             </label>
+
+            <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50/70 px-3 py-2 text-xs font-bold text-emerald-900">
+              <input
+                type="checkbox"
+                checked={Boolean(managedChalet.verifiedLivePhotos)}
+                onChange={(e) =>
+                  onUpdateChaletConfig(managedChalet.id, {
+                    verifiedLivePhotos: e.target.checked,
+                    livePhotosVerifiedAt: e.target.checked ? 'نوفمبر ٢٠٢٦' : undefined,
+                  })
+                }
+                className="h-4 w-4 rounded accent-emerald-600"
+              />
+              <Camera className="h-3.5 w-3.5 text-emerald-600" />
+              <span>تفعيل شارة &quot;صور حديثة على الطبيعة&quot;</span>
+            </label>
+
+            <div className="space-y-2 border-t border-slate-200 pt-3">
+              <h4 className="flex items-center gap-1.5 text-xs font-extrabold text-emerald-900">
+                <KeyRound className="h-3.5 w-3.5 text-emerald-600" />
+                إعدادات بطاقة الترحيب التلقائية للمستأجر (بعد تأكيد الجدية)
+              </h4>
+              <div className="grid grid-cols-2 gap-2">
+                <input
+                  type="text"
+                  value={managedChalet.welcomeGuide?.wifiName ?? ''}
+                  placeholder="اسم شبكة Wi-Fi"
+                  onChange={(e) =>
+                    onUpdateChaletConfig(managedChalet.id, {
+                      welcomeGuide: {
+                        wifiName: e.target.value,
+                        wifiPassword: managedChalet.welcomeGuide?.wifiPassword ?? '',
+                        gateInstructions: managedChalet.welcomeGuide?.gateInstructions ?? '',
+                        caretakerName:
+                          managedChalet.welcomeGuide?.caretakerName ?? managedChalet.owner.name,
+                        caretakerPhone:
+                          managedChalet.welcomeGuide?.caretakerPhone ??
+                          managedChalet.owner.phone ??
+                          '',
+                        mapsUrl: managedChalet.welcomeGuide?.mapsUrl,
+                      },
+                    })
+                  }
+                  className="rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-900"
+                />
+                <input
+                  type="text"
+                  dir="ltr"
+                  value={managedChalet.welcomeGuide?.wifiPassword ?? ''}
+                  placeholder="كلمة سر Wi-Fi"
+                  onChange={(e) =>
+                    onUpdateChaletConfig(managedChalet.id, {
+                      welcomeGuide: {
+                        wifiName: managedChalet.welcomeGuide?.wifiName ?? '',
+                        wifiPassword: e.target.value,
+                        gateInstructions: managedChalet.welcomeGuide?.gateInstructions ?? '',
+                        caretakerName:
+                          managedChalet.welcomeGuide?.caretakerName ?? managedChalet.owner.name,
+                        caretakerPhone:
+                          managedChalet.welcomeGuide?.caretakerPhone ??
+                          managedChalet.owner.phone ??
+                          '',
+                        mapsUrl: managedChalet.welcomeGuide?.mapsUrl,
+                      },
+                    })
+                  }
+                  className="rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-left text-xs text-slate-900"
+                />
+              </div>
+              <input
+                type="text"
+                value={managedChalet.welcomeGuide?.gateInstructions ?? ''}
+                placeholder="تعليمات البوابة والكمبوند أو رمز الدخول"
+                onChange={(e) =>
+                  onUpdateChaletConfig(managedChalet.id, {
+                    welcomeGuide: {
+                      wifiName: managedChalet.welcomeGuide?.wifiName ?? '',
+                      wifiPassword: managedChalet.welcomeGuide?.wifiPassword ?? '',
+                      gateInstructions: e.target.value,
+                      caretakerName:
+                        managedChalet.welcomeGuide?.caretakerName ?? managedChalet.owner.name,
+                      caretakerPhone:
+                        managedChalet.welcomeGuide?.caretakerPhone ??
+                        managedChalet.owner.phone ??
+                        '',
+                      mapsUrl: managedChalet.welcomeGuide?.mapsUrl,
+                    },
+                  })
+                }
+                className="w-full rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-900"
+              />
+            </div>
           </div>
         </div>
       </div>

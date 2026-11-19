@@ -5,7 +5,9 @@ import {
   Bath,
   BedDouble,
   Briefcase,
+  Camera,
   CheckCircle2,
+  Crown,
   Heart,
   Home,
   MapPin,
@@ -72,8 +74,14 @@ export function PropertyCard({
       ? 'إيجار أسبوعي'
       : 'إيجار يومي';
 
+  const isProPartner = property.hostTier === 'pro';
+
   return (
-    <article className="group flex flex-col overflow-hidden rounded-2xl border border-slate-200/90 bg-white shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg">
+    <article
+      className={`group flex flex-col overflow-hidden rounded-2xl border bg-white shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg ${
+        isProPartner ? 'border-amber-300 ring-1 ring-amber-300/60' : 'border-slate-200/90'
+      }`}
+    >
       <div className="relative aspect-[16/10] w-full overflow-hidden bg-primary-100">
         {!imageError && property.images[0] ? (
           <img
@@ -91,6 +99,17 @@ export function PropertyCard({
         )}
 
         <div className="absolute right-3 top-3 flex flex-wrap items-center gap-1.5">
+          {property.isDemo && (
+            <span className="inline-flex items-center gap-1 rounded-full border border-amber-300 bg-amber-100/95 px-2.5 py-1 text-[11px] font-extrabold text-amber-900 shadow-sm">
+              إعلان تجريبي
+            </span>
+          )}
+          {isProPartner && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-amber-400 px-2.5 py-1 text-[11px] font-extrabold text-slate-900 shadow-sm">
+              <Crown className="h-3 w-3" />
+              مالك موثق / شريك مميز
+            </span>
+          )}
           <span className="rounded-full bg-secondary-500 px-2.5 py-1 text-[11px] font-extrabold text-white shadow-sm">
             {stayQuote
               ? `متاح (${selectedNights.toLocaleString('ar-EG')} ليالٍ)`
@@ -149,6 +168,13 @@ export function PropertyCard({
             <span className="inline-flex items-center gap-1 rounded-full bg-sky-600 px-2.5 py-1 text-[11px] font-bold text-white shadow-sm">
               <Briefcase className="h-3.5 w-3.5" />
               {badgeInfo.label}
+            </span>
+          )}
+
+          {property.verifiedLivePhotos && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-600/95 px-2.5 py-1 text-[11px] font-bold text-white shadow-sm backdrop-blur-sm">
+              <Camera className="h-3 w-3" />
+              صور حديثة على الطبيعة
             </span>
           )}
 

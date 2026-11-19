@@ -4,8 +4,11 @@ import {
   ArrowRight,
   Award,
   Briefcase,
+  Camera,
   Check,
+  Crown,
   ImagePlus,
+  KeyRound,
   ShieldCheck,
   Trash2,
   X,
@@ -14,17 +17,27 @@ import { MapPinPicker } from '@/components/MapPinPicker';
 import {
   AMENITIES,
   DESTINATION_DEFAULT_COORDINATES,
+  FREE_TIER_MAX_UNITS,
   GOVERNORATES,
+  PRO_TIER_MAX_UNITS,
+  PRO_TIER_MONTHLY_FEE,
   UNIT_TYPES,
   VIEW_TYPES,
+  formatEGP,
 } from '@/data/chalets';
-import { uploadChaletImages } from '@/services/masayefRepository';
+import { isSupabaseConfigured } from '@/lib/supabase';
+import {
+  uploadChaletImages,
+  type RepoResult,
+} from '@/services/agzstayRepository';
 import type {
   AdvertiserRole,
   AmenityId,
+  AppUser,
   Chalet,
   Coordinates,
   GovernorateId,
+  HostTier,
   OwnerVerificationSubmission,
   RentalDuration,
   UnitType,
@@ -32,20 +45,30 @@ import type {
 } from '@/types/chalet';
 
 interface AddPropertyModalProps {
+  currentUser: AppUser | null;
   verification: OwnerVerificationSubmission | null;
+  hostTier?: HostTier;
+  activeCustomUnitsCount?: number;
   onClose: () => void;
-  onAddProperty: (property: Chalet) => void;
+  onOpenAuth?: () => void;
+  onAddProperty: (property: Chalet) => Promise<RepoResult<Chalet>>;
   onOpenVerification: () => void;
+  onOpenUpgradeModal?: () => void;
 }
 
 const DEFAULT_FALLBACK_IMAGE =
   'https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&w=1000&q=80';
 
 export function AddPropertyModal({
+  currentUser,
   verification,
+  hostTier = 'free',
+  activeCustomUnitsCount = 0,
   onClose,
+  onOpenAuth,
   onAddProperty,
   onOpenVerification,
+  onOpenUpgradeModal,
 }: AddPropertyModalProps) {
   const [step, setStep] = useState<1 | 2 | 3>(1);
 
@@ -81,6 +104,7 @@ export function AddPropertyModal({
 
   // Step 3: Amenities, Photos, Owner Info
   const [includesPasses, setIncludesPasses] = useState(true);
+  const [verifiedLivePhotos, setVerifiedLivePhotos] = useState(true);
   const [selectedAmenities, setSelectedAmenities] = useState<AmenityId[]>([
     'wifi',
     'ac',
@@ -89,12 +113,26 @@ export function AddPropertyModal({
   const [imageUrl, setImageUrl] = useState('');
   const [uploadedImages, setUploadedImages] = useState<string[]>([]);
   const [isUploadingImages, setIsUploadingImages] = useState(false);
-  const [ownerName, setOwnerName] = useState(verification?.ownerName ?? '');
-  const [ownerPhone, setOwnerPhone] = useState(verification?.phone ?? '');
+  const [ownerName, setOwnerName] = useState(
+    verification?.ownerName ?? currentUser?.name ?? ''
+  );
+  const [ownerPhone, setOwnerPhone] = useState(
+    verification?.phone ?? currentUser?.phone ?? ''
+  );
   const [instaPayHandle, setInstaPayHandle] = useState('');
   const [downPaymentPercent, setDownPaymentPercent] = useState('25');
+  const [wifiName, setWifiName] = useState('');
+  const [wifiPassword, setWifiPassword] = useState('');
+  const [gateInstructions, setGateInstructions] = useState('');
+  const [caretakerName, setCaretakerName] = useState('');
+  const [caretakerPhone, setCaretakerPhone] = useState('');
   const [description, setDescription] = useState('');
+  const [saveAsDraft, setSaveAsDraft] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState('');
+
+  const maxAllowedUnits = hostTier === 'pro' ? PRO_TIER_MAX_UNITS : FREE_TIER_MAX_UNITS;
+  const isAtTierLimit = activeCustomUnitsCount >= maxAllowedUnits;
 
   const activeGovConfig = GOVERNORATES.find((g) => g.id === governorate);
   const availableAreas = activeGovConfig?.areas ?? [];
@@ -125,12 +163,21 @@ export function AddPropertyModal({
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? []);
     if (files.length === 0) return;
+    if (!isSupabaseConfigured || !currentUser) {
+      setError('يرجى تسجيل الدخول وإعداد Supabase قبل رفع الصور.');
+      e.target.value = '';
+      return;
+    }
+    setError('');
     setIsUploadingImages(true);
     try {
-      const urls = await uploadChaletImages(files);
-      setUploadedImages((prev) => [...prev, ...urls].slice(0, 8));
-    } catch {
-      setError('تعذر قراءة بعض الصور المختارة.');
+      const res = await uploadChaletImages(files);
+      if (res.error || !res.data) {
+        setError(res.error || 'تعذر رفع الصور المختارة.');
+        e.target.value = '';
+        return;
+      }
+      setUploadedImages((prev) => [...prev, ...res.data!].slice(0, 8));
     } finally {
       setIsUploadingImages(false);
     }
@@ -159,8 +206,16 @@ export function AddPropertyModal({
     return true;
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!isSupabaseConfigured) {
+      setError('وضع تجريبي: لا يمكن نشر وحدات جديدة لعدم إعداد Supabase.');
+      return;
+    }
+    if (!currentUser) {
+      setError('يرجى تسجيل الدخول أولاً لإضافة وحدة.');
+      return;
+    }
     if (!ownerName.trim()) {
       setError('يرجى إدخال اسم المعلن.');
       return;
@@ -179,9 +234,14 @@ export function AddPropertyModal({
     }
 
     const dailyVal = Number(pricePerNight) || 2000;
+    const isVerifiedOwner =
+      currentUser.role === 'admin' || verification?.status === 'verified';
 
     const newProperty: Chalet = {
       id: `prop-${Date.now()}`,
+      ownerId: currentUser.id,
+      isDemo: false,
+      unitNumber: Math.floor(200 + (Date.now() % 790)),
       title: title.trim(),
       listingMode: 'rent',
       supportedDurations,
@@ -192,7 +252,28 @@ export function AddPropertyModal({
       resort: resort.trim(),
       unitType,
       viewType,
+      availabilityStatus: saveAsDraft
+        ? 'draft'
+        : isVerifiedOwner
+        ? 'active'
+        : 'pending_review',
       includesPasses,
+      verifiedLivePhotos,
+      livePhotosVerifiedAt: verifiedLivePhotos ? 'نوفمبر ٢٠٢٦' : undefined,
+      hostTier,
+      welcomeGuide:
+        wifiName.trim() || wifiPassword.trim() || gateInstructions.trim() || caretakerPhone.trim()
+          ? {
+              wifiName: wifiName.trim() || 'AgzStay_Guest',
+              wifiPassword: wifiPassword.trim() || 'يُرسل عند الوصول',
+              gateInstructions:
+                gateInstructions.trim() ||
+                'التواصل مع المشرف قبل الوصول لتسليم المفاتيح وتصاريح الدخول.',
+              caretakerName: caretakerName.trim() || ownerName.trim(),
+              caretakerPhone: caretakerPhone.trim() || ownerPhone.trim(),
+              mapsUrl: `https://maps.google.com/?q=${coordinates.lat},${coordinates.lng}`,
+            }
+          : undefined,
       pricePerNight: dailyVal,
       weeklyPrice: Number(weeklyPrice) || Math.round(dailyVal * 6.2),
       monthlyPrice: Number(monthlyPrice) || Math.round(dailyVal * 22),
@@ -206,9 +287,9 @@ export function AddPropertyModal({
       maxGuests: Number(maxGuests) || 4,
       beachDistanceMeters: Number(beachDistanceMeters) || 0,
       coordinates,
-      rating: 5.0,
+      rating: 0,
       reviewsCount: 0,
-      featured: true,
+      featured: hostTier === 'pro',
       images: combinedImages,
       amenities: selectedAmenities.length > 0 ? selectedAmenities : ['ac'],
       description:
@@ -222,17 +303,29 @@ export function AddPropertyModal({
         name: ownerName.trim(),
         phone: ownerPhone.trim(),
         instaPayHandle: instaPayHandle.trim() || undefined,
-        verified: true,
+        verified: isVerifiedOwner,
         roleType: advertiserRole,
         brokerAgency: advertiserRole === 'broker' ? brokerAgency.trim() : undefined,
-        verificationStatus: verification?.status ?? 'verified',
+        verificationStatus: isVerifiedOwner
+          ? 'verified'
+          : verification?.status ?? 'unverified',
         responseTime: 'يرد خلال دقائق',
         memberSince: '٢٠٢٦',
       },
     };
 
-    onAddProperty(newProperty);
-    onClose();
+    setError('');
+    setIsSubmitting(true);
+    try {
+      const res = await onAddProperty(newProperty);
+      if (res.error) {
+        setError(res.error);
+        return;
+      }
+      onClose();
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -275,32 +368,140 @@ export function AddPropertyModal({
           </button>
         </div>
 
-        <div className="mt-4 grid grid-cols-3 gap-2">
-          {[
-            { num: 1, label: '١. الهوية والموقع' },
-            { num: 2, label: '٢. الأسعار والخريطة' },
-            { num: 3, label: '٣. المميزات والصور' },
-          ].map((item) => (
+        {!isSupabaseConfigured ? (
+          <div className="mt-5 space-y-3 rounded-2xl border border-amber-200 bg-amber-50 p-6 text-center">
+            <h3 className="text-base font-extrabold text-amber-950">
+              وضع تجريبي: إضافة الوحدات معطلة
+            </h3>
+            <p className="text-xs text-amber-800">
+              يرجى ضبط مفاتيح Supabase في <code className="font-mono">.env</code> لتفعيل النشر الحقيقي.
+            </p>
             <button
-              key={item.num}
               type="button"
-              onClick={() => {
-                if (item.num < step) setStep(item.num as 1 | 2 | 3);
-              }}
-              className={`rounded-xl px-3 py-2 text-xs font-bold transition ${
-                step === item.num
-                  ? 'bg-primary-600 text-white shadow-sm'
-                  : step > item.num
-                  ? 'bg-success-50 text-success-700'
-                  : 'bg-sand-100 text-slate-500'
-              }`}
+              onClick={onClose}
+              className="rounded-xl bg-white px-5 py-2 text-xs font-bold text-slate-700 shadow-sm"
             >
-              {item.label}
+              إغلاق
             </button>
-          ))}
-        </div>
+          </div>
+        ) : !currentUser ? (
+          <div className="mt-5 space-y-3 rounded-2xl border border-primary-100 bg-primary-50/70 p-6 text-center">
+            <h3 className="text-base font-extrabold text-primary-900">
+              سجّل دخولك أولاً لإضافة وحدة إيجار
+            </h3>
+            <p className="text-xs text-primary-800">
+              لحماية المستأجرين وضمان ملكية الوحدات، يجب تسجيل الدخول وتوثيق حساب المالك قبل نشر الوحدة.
+            </p>
+            <div className="flex justify-center gap-2 pt-1">
+              {onOpenAuth && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    onOpenAuth();
+                  }}
+                  className="rounded-xl bg-primary-600 px-5 py-2.5 text-xs font-bold text-white hover:bg-primary-700"
+                >
+                  تسجيل الدخول / إنشاء حساب
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={onClose}
+                className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-bold text-slate-700"
+              >
+                إغلاق
+              </button>
+            </div>
+          </div>
+        ) : isAtTierLimit ? (
+          <div className="mt-5 space-y-4 rounded-2xl border-2 border-amber-300 bg-amber-50/70 p-6 text-center">
+            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-amber-100 text-amber-700">
+              <Crown className="h-6 w-6" />
+            </div>
+            <h3 className="text-base font-extrabold text-slate-900">
+              وصلت للحد الأقصى للوحدات في {hostTier === 'pro' ? 'الباقة الاحترافية' : 'الباقة الأساسية المجانية'} ({activeCustomUnitsCount} / {maxAllowedUnits})
+            </h3>
+            <p className="text-xs leading-relaxed text-slate-600">
+              {hostTier === 'free'
+                ? `تتيح الباقة المجانية نشر وحدة إيجار واحدة نشطة. قم بالترقية إلى الباقة الاحترافية (${formatEGP(PRO_TIER_MONTHLY_FEE)} / شهرياً) لنشر حتى ${PRO_TIER_MAX_UNITS} وحدات مع تثبيت بالبحث وشارة شريك مميز.`
+                : `لقد قمت بنشر الحد الأقصى (${PRO_TIER_MAX_UNITS} وحدات) للباقة الاحترافية. يمكنك إدارة وحداتك أو حذف وحدة لإضافة غيرها.`}
+            </p>
+            <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
+              {hostTier === 'free' && onOpenUpgradeModal && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    onOpenUpgradeModal();
+                  }}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-secondary-500 px-5 py-2.5 text-xs font-bold text-white shadow-sm hover:bg-secondary-600"
+                >
+                  <Crown className="h-4 w-4" />
+                  <span>الترقية للباقة الاحترافية ({formatEGP(PRO_TIER_MONTHLY_FEE)}/شهرياً)</span>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={onClose}
+                className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50"
+              >
+                إغلاق
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            {currentUser.role !== 'admin' && verification?.status !== 'verified' && (
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-amber-200 bg-amber-50 p-3.5 text-xs text-amber-950">
+                <div className="min-w-0 flex-1">
+                  <p className="font-extrabold">
+                    تنبيه النشر: حسابك غير موثق بعد (
+                    {verification?.status === 'pending' ? 'طلبك قيد المراجعة' : 'بانتظار التوثيق'})
+                  </p>
+                  <p className="mt-0.5 text-[11px] text-amber-900">
+                    ستُحفظ الوحدة بحالة &quot;بانتظار التوثيق (pending_review)&quot; أو كمسودة، ولن تظهر للجمهور إلا بعد اعتماد مستندات الملكية من الإدارة.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    onOpenVerification();
+                  }}
+                  className="shrink-0 rounded-xl bg-amber-500 px-3 py-1.5 text-[11px] font-extrabold text-slate-950 hover:bg-amber-400"
+                >
+                  {verification?.status === 'pending' ? 'متابعة التوثيق' : 'رفع مستند الملكية'}
+                </button>
+              </div>
+            )}
 
-        <form onSubmit={handleSubmit} className="mt-5 space-y-4">
+            <div className="mt-4 grid grid-cols-3 gap-2">
+              {[
+                { num: 1, label: '١. الهوية والموقع' },
+                { num: 2, label: '٢. الأسعار والخريطة' },
+                { num: 3, label: '٣. المميزات والصور' },
+              ].map((item) => (
+                <button
+                  key={item.num}
+                  type="button"
+                  onClick={() => {
+                    if (item.num < step) setStep(item.num as 1 | 2 | 3);
+                  }}
+                  className={`rounded-xl px-3 py-2 text-xs font-bold transition ${
+                    step === item.num
+                      ? 'bg-primary-600 text-white shadow-sm'
+                      : step > item.num
+                      ? 'bg-success-50 text-success-700'
+                      : 'bg-sand-100 text-slate-500'
+                  }`}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+
+            <form onSubmit={handleSubmit} className="mt-5 space-y-4">
           {step === 1 && (
             <div className="space-y-4">
               <div>
@@ -649,6 +850,17 @@ export function AddPropertyModal({
                 <span>يشمل تصاريح الدخول والكارنيهات أو رسوم خدمات الكمبوند</span>
               </label>
 
+              <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50/70 px-3 py-2.5 text-xs font-bold text-emerald-900">
+                <input
+                  type="checkbox"
+                  checked={verifiedLivePhotos}
+                  onChange={(e) => setVerifiedLivePhotos(e.target.checked)}
+                  className="h-4 w-4 rounded accent-emerald-600"
+                />
+                <Camera className="h-4 w-4 text-emerald-600" />
+                <span>تفعيل شارة &quot;صور حديثة على الطبيعة&quot; لتعزيز ثقة المستأجرين</span>
+              </label>
+
               <div className="space-y-2 rounded-2xl border border-slate-200 bg-sand-50 p-3.5">
                 <span className="block text-xs font-bold text-slate-700">
                   صور الوحدة (رفع من الجهاز أو رابط)
@@ -724,7 +936,7 @@ export function AddPropertyModal({
                     dir="ltr"
                     value={ownerPhone}
                     onChange={(e) => setOwnerPhone(e.target.value)}
-                    placeholder="01012345678"
+                    placeholder="01000000000"
                     className="w-full rounded-xl border border-slate-200 bg-sand-50 px-3 py-2 text-left text-sm"
                   />
                 </div>
@@ -772,6 +984,52 @@ export function AddPropertyModal({
                   className="w-full rounded-xl border border-slate-200 bg-sand-50 px-3 py-2 text-sm"
                 />
               </div>
+
+              <div className="space-y-2.5 rounded-2xl border border-emerald-200 bg-emerald-50/50 p-3.5">
+                <div className="flex items-center gap-1.5 text-xs font-extrabold text-emerald-900">
+                  <KeyRound className="h-4 w-4 text-emerald-600" />
+                  <span>بيانات بطاقة الترحيب التلقائية (تظهر للمستأجر فور تأكيد الجدية)</span>
+                </div>
+                <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                  <input
+                    type="text"
+                    value={wifiName}
+                    onChange={(e) => setWifiName(e.target.value)}
+                    placeholder="اسم شبكة Wi-Fi"
+                    className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs"
+                  />
+                  <input
+                    type="text"
+                    dir="ltr"
+                    value={wifiPassword}
+                    onChange={(e) => setWifiPassword(e.target.value)}
+                    placeholder="كلمة سر Wi-Fi"
+                    className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-left text-xs"
+                  />
+                  <input
+                    type="text"
+                    value={caretakerName}
+                    onChange={(e) => setCaretakerName(e.target.value)}
+                    placeholder="اسم المشرف / البواب"
+                    className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs"
+                  />
+                  <input
+                    type="tel"
+                    dir="ltr"
+                    value={caretakerPhone}
+                    onChange={(e) => setCaretakerPhone(e.target.value)}
+                    placeholder="موبايل المشرف للاستلام"
+                    className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-left text-xs"
+                  />
+                </div>
+                <input
+                  type="text"
+                  value={gateInstructions}
+                  onChange={(e) => setGateInstructions(e.target.value)}
+                  placeholder="تعليمات البوابة والكمبوند (مثال: بوابة ٢ — استلام المفاتيح من الأمن)"
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs"
+                />
+              </div>
             </div>
           )}
 
@@ -781,49 +1039,67 @@ export function AddPropertyModal({
             </p>
           )}
 
-          <div className="flex items-center justify-between gap-2 border-t border-slate-100 pt-3">
-            {step > 1 ? (
-              <button
-                type="button"
-                onClick={() => setStep((s) => (s === 3 ? 2 : 1))}
-                className="inline-flex items-center gap-1 rounded-xl border border-slate-200 px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50"
-              >
-                <ArrowRight className="h-4 w-4" />
-                <span>السابق</span>
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={onClose}
-                className="rounded-xl border border-slate-200 px-4 py-2.5 text-xs font-bold text-slate-600 hover:bg-slate-50"
-              >
-                إلغاء
-              </button>
-            )}
+              <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-slate-200 bg-sand-50 px-3 py-2 text-xs font-bold text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={saveAsDraft}
+                  onChange={(e) => setSaveAsDraft(e.target.checked)}
+                  className="h-4 w-4 rounded accent-primary-600"
+                />
+                <span>حفظ كمسودة (draft) فقط دون نشر علني الآن</span>
+              </label>
 
-            {step < 3 ? (
-              <button
-                type="button"
-                onClick={() => {
-                  if (step === 1 && validateStep1()) setStep(2);
-                  else if (step === 2 && validateStep2()) setStep(3);
-                }}
-                className="inline-flex items-center gap-1 rounded-xl bg-primary-600 px-6 py-2.5 text-xs font-bold text-white shadow-sm hover:bg-primary-700"
-              >
-                <span>التالي</span>
-                <ArrowLeft className="h-4 w-4" />
-              </button>
-            ) : (
-              <button
-                type="submit"
-                disabled={isUploadingImages}
-                className="rounded-xl bg-secondary-500 px-6 py-2.5 text-xs font-bold text-white shadow-sm hover:bg-secondary-600 disabled:opacity-60"
-              >
-                نشر الوحدة للإيجار
-              </button>
-            )}
-          </div>
+              <div className="flex items-center justify-between gap-2 border-t border-slate-100 pt-3">
+                {step > 1 ? (
+                  <button
+                    type="button"
+                    onClick={() => setStep((s) => (s === 3 ? 2 : 1))}
+                    className="inline-flex items-center gap-1 rounded-xl border border-slate-200 px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50"
+                  >
+                    <ArrowRight className="h-4 w-4" />
+                    <span>السابق</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={onClose}
+                    className="rounded-xl border border-slate-200 px-4 py-2.5 text-xs font-bold text-slate-600 hover:bg-slate-50"
+                  >
+                    إلغاء
+                  </button>
+                )}
+
+                {step < 3 ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (step === 1 && validateStep1()) setStep(2);
+                      else if (step === 2 && validateStep2()) setStep(3);
+                    }}
+                    className="inline-flex items-center gap-1 rounded-xl bg-primary-600 px-6 py-2.5 text-xs font-bold text-white shadow-sm hover:bg-primary-700"
+                  >
+                    <span>التالي</span>
+                    <ArrowLeft className="h-4 w-4" />
+                  </button>
+                ) : (
+                  <button
+                    type="submit"
+                    disabled={isUploadingImages || isSubmitting}
+                    className="rounded-xl bg-secondary-500 px-6 py-2.5 text-xs font-bold text-white shadow-sm hover:bg-secondary-600 disabled:opacity-60"
+                  >
+                    {isSubmitting
+                      ? 'جاري الحفظ...'
+                      : saveAsDraft
+                      ? 'حفظ كمسودة (draft)'
+                      : verification?.status === 'verified' || currentUser.role === 'admin'
+                      ? 'نشر الوحدة للإيجار'
+                      : 'حفظ للمراجعة لحين التوثيق'}
+                  </button>
+                )}
+              </div>
         </form>
+          </>
+        )}
       </div>
     </div>
   );

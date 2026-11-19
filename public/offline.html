@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0B3954" />
+    <title>غير متصل بالإنترنت | AgzStay - إجازة ستاي</title>
+    <style>
+      :root {
+        color-scheme: light;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 1.5rem;
+        background-color: #f4f1de;
+        color: #0f172a;
+        font-family: 'Cairo', system-ui, -apple-system, sans-serif;
+      }
+      .card {
+        max-width: 28rem;
+        width: 100%;
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 1.5rem;
+        padding: 2rem 1.5rem;
+        text-align: center;
+        box-shadow: 0 12px 30px -10px rgba(11, 57, 84, 0.14);
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 3.5rem;
+        height: 3.5rem;
+        border-radius: 1rem;
+        background: #eef5f9;
+        color: #0b3954;
+        font-size: 1.75rem;
+        margin-bottom: 1rem;
+      }
+      h1 {
+        margin: 0;
+        font-size: 1.25rem;
+        font-weight: 800;
+        color: #0b3954;
+      }
+      p {
+        margin: 0.75rem 0 1.5rem;
+        font-size: 0.9rem;
+        line-height: 1.7;
+        color: #475569;
+      }
+      button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 44px;
+        padding: 0.75rem 1.5rem;
+        border: none;
+        border-radius: 0.875rem;
+        background: #087e8b;
+        color: #ffffff;
+        font-family: inherit;
+        font-size: 0.9rem;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      button:hover {
+        background: #076a75;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <div class="badge" aria-hidden="true">🏖️</div>
+      <h1>لا يوجد اتصال بالإنترنت حالياً</h1>
+      <p>
+        يبدو أنك غير متصل بالشبكة. تحقق من اتصال الواي فاي أو بيانات الهاتف ثم أعد تحميل الصفحة لاستعراض الشقق والشاليهات في AgzStay - إجازة ستاي.
+      </p>
+      <button type="button" onclick="window.location.reload()">
+        إعادة المحاولة الآن
+      </button>
+    </main>
+  </body>
+</html>
