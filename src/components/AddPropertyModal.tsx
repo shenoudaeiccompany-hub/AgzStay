@@ -31,6 +31,7 @@ import {
   uploadChaletImages,
   type RepoResult,
 } from '@/services/agzstayRepository';
+import { formatSupabaseError } from '@/utils/arabicErrors';
 import {
   MAX_PROPERTY_IMAGES,
   compressImagesWithProgress,
@@ -194,17 +195,14 @@ export function AddPropertyModal({
         return;
       }
 
-      const res = await uploadChaletImages(compressed.files);
-      if (res.error || !res.data) {
-        setError(res.error || 'تعذر رفع الصور المختارة.');
-        e.target.value = '';
-        return;
-      }
-
+      const urls = await uploadChaletImages(compressed.files, currentUser.id);
       if (compressed.skippedMessages.length > 0) {
         setError(compressed.skippedMessages.join(' • '));
       }
-      setUploadedImages((prev) => [...prev, ...res.data!].slice(0, MAX_PROPERTY_IMAGES));
+      setUploadedImages((prev) => [...prev, ...urls].slice(0, MAX_PROPERTY_IMAGES));
+    } catch (err) {
+      setError(formatSupabaseError(err, 'تعذر رفع الصور المختارة.'));
+      e.target.value = '';
     } finally {
       setIsUploadingImages(false);
       setCompressionProgress(null);

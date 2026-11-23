@@ -169,6 +169,7 @@ export function App() {
     handleExpireSubscription,
     handleMarkNotificationRead,
     handleMarkAllNotificationsRead,
+    handleBecomeHost,
     handleSignOut: signOutSession,
   } = useAgzStayData();
 
@@ -483,6 +484,7 @@ export function App() {
             onOpenAddProperty={() => setIsAddModalOpen(true)}
             onOpenVerification={() => setIsVerificationOpen(true)}
             onOpenUpgradeModal={() => setIsUpgradeModalOpen(true)}
+            onBecomeHost={handleBecomeHost}
             onApproveBookingRequest={handleApproveBookingRequest}
             onRejectBookingRequest={handleRejectBookingRequest}
             onConfirmBookingDeposit={handleConfirmBookingDeposit}

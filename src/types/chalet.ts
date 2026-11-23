@@ -341,6 +341,8 @@ export interface AppUser {
   email: string;
   phone?: string;
   role: 'guest' | 'owner' | 'admin';
+  verificationStatus?: VerificationStatus;
+  advertiserType?: 'owner' | 'broker';
 }
 
 export interface MarketBenchmarkEntry {

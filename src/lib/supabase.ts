@@ -28,6 +28,11 @@ export const supabase: SupabaseClient | null = isSupabaseConfigured
   ? createClient(rawUrl, rawAnonKey)
   : null;
 
+export function requireSupabase(): SupabaseClient {
+  if (!supabase) throw new Error('Supabase غير مضبوط');
+  return supabase;
+}
+
 export interface SupabaseConfigStatus {
   configured: boolean;
   urlPresent: boolean;

@@ -67,6 +67,7 @@ interface HostDashboardProps {
   onOpenAddProperty: () => void;
   onOpenVerification: () => void;
   onOpenUpgradeModal: () => void;
+  onBecomeHost?: (type: 'owner' | 'broker') => Promise<void> | void;
   onApproveBookingRequest: (bookingId: string) => Promise<void> | void;
   onRejectBookingRequest: (bookingId: string, reason?: string) => Promise<void> | void;
   onConfirmBookingDeposit: (bookingId: string) => Promise<void> | void;
@@ -133,6 +134,7 @@ export function HostDashboard({
   onOpenAddProperty,
   onOpenVerification,
   onOpenUpgradeModal,
+  onBecomeHost,
   onApproveBookingRequest,
   onRejectBookingRequest,
   onConfirmBookingDeposit,
@@ -290,6 +292,34 @@ export function HostDashboard({
             </div>
           </div>
         </div>
+
+        {/* Guest -> Host self-service upgrade banner */}
+        {currentUser?.role === 'guest' && onBecomeHost && (
+          <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-300/40 bg-amber-500/20 px-4 py-3 backdrop-blur-sm">
+            <div className="text-xs text-white">
+              <p className="font-extrabold">حسابك الحالي في وضع «مصيّف / مستأجر»</p>
+              <p className="mt-0.5 text-[11px] text-amber-100">
+                اختر نوع حسابك كمُعلن الآن لإضافة وحداتك وإدارة طلبات الحجز.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void onBecomeHost('owner')}
+                className="rounded-xl bg-white px-3 py-2 text-xs font-extrabold text-primary-800 hover:bg-sand-100"
+              >
+                تفعيل كمُعلن (مالك مباشر)
+              </button>
+              <button
+                type="button"
+                onClick={() => void onBecomeHost('broker')}
+                className="rounded-xl border border-white/40 bg-white/10 px-3 py-2 text-xs font-bold text-white hover:bg-white/20"
+              >
+                تفعيل كوسيط عقاري
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Freemium vs Pro Membership Banner */}
         <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-white/15 bg-white/10 px-4 py-3 backdrop-blur-sm">

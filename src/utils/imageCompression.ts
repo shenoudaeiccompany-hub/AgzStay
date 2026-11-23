@@ -52,6 +52,34 @@ async function loadImageFromFile(file: File): Promise<{
   });
 }
 
+export async function compressImage(file: File, max = MAX_IMAGE_DIMENSION): Promise<Blob> {
+  const source = await loadImageFromFile(file);
+  try {
+    const scale = Math.min(1, max / Math.max(source.width, source.height));
+    const width = Math.max(1, Math.round(source.width * scale));
+    const height = Math.max(1, Math.round(source.height * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      throw new Error('compress failed');
+    }
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    source.draw(ctx, width, height);
+    return await new Promise<Blob>((res, rej) =>
+      canvas.toBlob(
+        (b) => (b ? res(b) : rej(new Error('compress failed'))),
+        'image/webp',
+        WEBP_QUALITY
+      )
+    );
+  } finally {
+    source.cleanup();
+  }
+}
+
 export async function compressPropertyImage(file: File): Promise<File> {
   if (!file.type.startsWith('image/')) {
     throw new Error(`الملف "${file.name}" ليس صورة صالحة.`);

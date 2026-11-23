@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { requireSupabase } from '@/lib/supabase';
 import { formatSupabaseError, MESSAGES, toArabicError } from '@/utils/arabicErrors';
 
 describe('arabicErrors utilities', () => {
@@ -37,5 +38,9 @@ describe('arabicErrors utilities', () => {
     expect(formatSupabaseError({ message: 'unexpected english sql trace' }, 'تعذر الحفظ.')).toBe(
       'تعذر الحفظ.'
     );
+  });
+
+  it('requireSupabase throws clear Arabic error when Supabase is not configured', () => {
+    expect(() => requireSupabase()).toThrow('Supabase غير مضبوط');
   });
 });

@@ -1,5 +1,6 @@
-import { supabase, isSupabaseConfigured } from '@/lib/supabase';
+import { supabase, isSupabaseConfigured, requireSupabase } from '@/lib/supabase';
 import { formatSupabaseError, MESSAGES, toArabicError } from '@/utils/arabicErrors';
+import { compressImage } from '@/utils/imageCompression';
 import type {
   AppNotification,
   AppUser,
@@ -17,7 +18,7 @@ import type {
   RevealedOwnerContact,
 } from '@/types/chalet';
 
-export { MESSAGES, toArabicError };
+export { MESSAGES, toArabicError, requireSupabase };
 export type RepoResult<T> = { data: T; error: null } | { data: null; error: string };
 
 const STORAGE_KEYS = {
@@ -126,6 +127,141 @@ async function getAuthenticatedUserId(): Promise<RepoResult<string>> {
 
 // ---------- Auth & Profile ----------
 
+interface ProfileQueryRow {
+  name?: string | null;
+  phone?: string | null;
+  role?: string | null;
+  verification_status?: string | null;
+  advertiser_type?: string | null;
+}
+
+async function fetchProfileRow(
+  sb: NonNullable<typeof supabase>,
+  userId: string
+): Promise<{ profile: ProfileQueryRow | null; error: unknown | null }> {
+  const extended = await sb
+    .from('profiles')
+    .select('name, phone, role, verification_status, advertiser_type')
+    .eq('id', userId)
+    .maybeSingle();
+
+  if (!extended.error) {
+    return { profile: extended.data as ProfileQueryRow | null, error: null };
+  }
+
+  // Graceful fallback if 003_profile_host_upgrade.sql has not been applied yet
+  const errObj = extended.error as { code?: string; message?: string };
+  if (
+    errObj.code === '42703' ||
+    (errObj.message ?? '').includes('verification_status') ||
+    (errObj.message ?? '').includes('advertiser_type')
+  ) {
+    const basic = await sb
+      .from('profiles')
+      .select('name, phone, role')
+      .eq('id', userId)
+      .maybeSingle();
+    return {
+      profile: basic.data as ProfileQueryRow | null,
+      error: basic.error ?? null,
+    };
+  }
+
+  return { profile: null, error: extended.error };
+}
+
+function mapProfileToAppUser(
+  authUser: { id: string; email?: string | null },
+  profile: ProfileQueryRow | null
+): AppUser {
+  const roleRaw = profile?.role;
+  const role: AppUser['role'] =
+    roleRaw === 'admin' || roleRaw === 'owner' ? roleRaw : 'guest';
+  const verRaw = profile?.verification_status;
+  const verificationStatus: AppUser['verificationStatus'] =
+    verRaw === 'verified' || verRaw === 'pending' ? verRaw : 'unverified';
+  const advertiserType: AppUser['advertiserType'] =
+    profile?.advertiser_type === 'broker' ? 'broker' : 'owner';
+
+  return {
+    id: authUser.id,
+    name:
+      profile?.name?.trim() ||
+      authUser.email?.split('@')[0] ||
+      'مستخدم إجازة ستاي',
+    email: authUser.email ?? '',
+    phone: profile?.phone || undefined,
+    role,
+    verificationStatus,
+    advertiserType,
+  };
+}
+
+export async function signUp(p: {
+  name: string;
+  email: string;
+  password: string;
+  phone?: string;
+}): Promise<{ needsEmailConfirmation: boolean }> {
+  const sb = requireSupabase();
+  const { data, error } = await sb.auth.signUp({
+    email: p.email.trim(),
+    password: p.password,
+    options: {
+      data: {
+        name: p.name.trim(),
+        phone: p.phone?.trim() || '',
+      },
+    },
+  });
+  if (error) throw error;
+  return { needsEmailConfirmation: !data.session };
+}
+
+export async function signIn(email: string, password: string): Promise<void> {
+  const { error } = await requireSupabase().auth.signInWithPassword({
+    email: email.trim(),
+    password,
+  });
+  if (error) throw error;
+}
+
+export async function loadCurrentUser(): Promise<AppUser | null> {
+  const sb = requireSupabase();
+  const {
+    data: { user },
+  } = await sb.auth.getUser();
+  if (!user) return null;
+  const { profile, error } = await fetchProfileRow(sb, user.id);
+  if (error) throw error;
+  return mapProfileToAppUser(user, profile);
+}
+
+export async function becomeHost(type: 'owner' | 'broker' = 'owner'): Promise<void> {
+  const { error } = await requireSupabase().rpc('become_host', {
+    p_advertiser_type: type,
+  });
+  if (error) throw error;
+}
+
+export async function becomeHostAccount(
+  type: 'owner' | 'broker' = 'owner'
+): Promise<RepoResult<AppUser | null>> {
+  if (!isSupabaseConfigured || !supabase) {
+    return { data: null, error: 'الاتصال بـ Supabase غير مهيأ.' };
+  }
+  try {
+    await becomeHost(type);
+    const updated = await loadCurrentUser();
+    return { data: updated, error: null };
+  } catch (err) {
+    return {
+      data: null,
+      error: getArabicSupabaseError(err, 'تعذر تفعيل حساب المعلن.'),
+    };
+  }
+}
+
 export async function getCurrentUser(): Promise<RepoResult<AppUser | null>> {
   if (!isSupabaseConfigured || !supabase) {
     return { data: null, error: null };
@@ -140,12 +276,7 @@ export async function getCurrentUser(): Promise<RepoResult<AppUser | null>> {
       return { data: null, error: null };
     }
 
-    const { data: profile, error: profileErr } = await supabase
-      .from('profiles')
-      .select('id, name, phone, role')
-      .eq('id', authUser.id)
-      .maybeSingle();
-
+    const { profile, error: profileErr } = await fetchProfileRow(supabase, authUser.id);
     if (profileErr) {
       return {
         data: null,
@@ -153,21 +284,8 @@ export async function getCurrentUser(): Promise<RepoResult<AppUser | null>> {
       };
     }
 
-    const roleRaw = profile?.role;
-    const role: AppUser['role'] =
-      roleRaw === 'admin' || roleRaw === 'owner' ? roleRaw : 'guest';
-
     return {
-      data: {
-        id: authUser.id,
-        name:
-          (profile?.name as string | undefined)?.trim() ||
-          authUser.email?.split('@')[0] ||
-          'مستخدم إجازة ستاي',
-        email: authUser.email ?? '',
-        phone: (profile?.phone as string | undefined) || undefined,
-        role,
-      },
+      data: mapProfileToAppUser(authUser, profile),
       error: null,
     };
   } catch (err) {
@@ -208,16 +326,7 @@ export async function signInWithEmail(payload: {
     };
   }
   try {
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email: payload.email.trim(),
-      password: payload.password,
-    });
-    if (error || !data.user) {
-      return {
-        data: null,
-        error: getArabicSupabaseError(error, 'تعذر تسجيل الدخول. تأكد من البيانات.'),
-      };
-    }
+    await signIn(payload.email, payload.password);
     const profileRes = await getCurrentUser();
     if (profileRes.error || !profileRes.data) {
       return {
@@ -244,23 +353,8 @@ export async function signUpWithEmail(payload: {
     };
   }
   try {
-    const { data, error } = await supabase.auth.signUp({
-      email: payload.email.trim(),
-      password: payload.password,
-      options: {
-        data: {
-          name: payload.name.trim(),
-          phone: payload.phone?.trim() || '',
-        },
-      },
-    });
-    if (error) {
-      return {
-        data: null,
-        error: getArabicSupabaseError(error, 'تعذر إنشاء الحساب.'),
-      };
-    }
-    if (!data.session) {
+    const { needsEmailConfirmation } = await signUp(payload);
+    if (needsEmailConfirmation) {
       return {
         data: { user: null, needsEmailConfirmation: true },
         error: null,
@@ -296,45 +390,26 @@ export async function signOutUser(): Promise<RepoResult<boolean>> {
 
 // ---------- Media Uploads (Strict Validation, No Base64 Fallback) ----------
 
-export async function uploadChaletImages(files: File[]): Promise<RepoResult<string[]>> {
-  if (files.length === 0) return { data: [], error: null };
-
-  const uidRes = await getAuthenticatedUserId();
-  if (uidRes.error || !uidRes.data || !supabase) {
-    return { data: null, error: uidRes.error ?? 'يجب تسجيل الدخول لرفع الصور.' };
-  }
-
-  const validated: { file: File; ext: string }[] = [];
+export async function uploadChaletImages(
+  files: File[],
+  userId: string
+): Promise<string[]> {
+  const sb = requireSupabase();
+  const urls: string[] = [];
   for (const file of files) {
-    const check = validateFileForUpload(file, IMAGE_MIME_EXT, 'صورة الوحدة');
-    if (check.error || !check.ext) {
-      return { data: null, error: check.error ?? 'ملف غير صالح.' };
-    }
-    validated.push({ file, ext: check.ext });
-  }
-
-  const uploadedUrls: string[] = [];
-  for (const item of validated) {
-    const path = `${uidRes.data}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${item.ext}`;
-    const { error } = await supabase.storage
+    const blob = await compressImage(file);
+    const uniqueName =
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const path = `${userId}/${uniqueName}.webp`;
+    const { error } = await sb.storage
       .from('chalet-images')
-      .upload(path, item.file, { contentType: item.file.type, upsert: false });
-
-    if (error) {
-      return {
-        data: null,
-        error: getArabicSupabaseError(error, 'فشل رفع إحدى الصور إلى الخادم. حاول مرة أخرى.'),
-      };
-    }
-
-    const { data } = supabase.storage.from('chalet-images').getPublicUrl(path);
-    if (!data?.publicUrl) {
-      return { data: null, error: 'تعذر استخراج رابط الصورة المرفوعة.' };
-    }
-    uploadedUrls.push(data.publicUrl);
+      .upload(path, blob, { contentType: 'image/webp', upsert: false });
+    if (error) throw error;
+    urls.push(sb.storage.from('chalet-images').getPublicUrl(path).data.publicUrl);
   }
-
-  return { data: uploadedUrls, error: null };
+  return urls;
 }
 
 export async function uploadPaymentReceipt(
@@ -1273,11 +1348,105 @@ export async function completeBookingStayRpc(
   }
 }
 
-export async function createBooking(
+export async function createBooking(p: {
+  chaletId: string;
+  checkIn: string;
+  nights: number;
+  duration: 'daily' | 'weekly' | 'monthly';
+  guests: number;
+  guestName: string;
+  guestPhone: string;
+  notes: string;
+  channel?: string;
+}) {
+  const { data, error } = await requireSupabase().rpc('create_booking', {
+    p_chalet_id: p.chaletId,
+    p_check_in: p.checkIn,
+    p_nights: p.nights,
+    p_duration: p.duration,
+    p_guests: p.guests,
+    p_guest_name: p.guestName,
+    p_guest_phone: p.guestPhone,
+    p_notes: p.notes,
+    p_policy_accepted: true,
+    p_channel: p.channel ?? 'form',
+  });
+  if (error) throw error;
+  return data;
+}
+
+export const ownerRespond = (id: string, approve: boolean, reason?: string) =>
+  requireSupabase().rpc('owner_respond_booking', {
+    p_booking_id: id,
+    p_approve: approve,
+    p_reason: reason ?? null,
+  });
+
+export const submitReceipt = (id: string, path: string) =>
+  requireSupabase().rpc('submit_payment_receipt', {
+    p_booking_id: id,
+    p_receipt_path: path,
+  });
+
+export const reviewPayment = (id: string, confirm: boolean, reason?: string) =>
+  requireSupabase().rpc('owner_review_payment', {
+    p_booking_id: id,
+    p_confirm: confirm,
+    p_reason: reason ?? null,
+  });
+
+export const cancelBooking = (id: string, reason?: string) =>
+  requireSupabase().rpc('cancel_booking', {
+    p_booking_id: id,
+    p_reason: reason ?? null,
+  });
+
+export const completeBooking = (id: string) =>
+  requireSupabase().rpc('complete_booking', { p_booking_id: id });
+
+export async function fetchBookings() {
+  const { data, error } = await requireSupabase()
+    .from('bookings')
+    .select('*')
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  return data ?? [];
+}
+
+export async function createBookingCompat(
   payload: Omit<BookingRequest, 'id' | 'status' | 'createdAt' | 'renterId'> & {
     status?: BookingStatus;
   }
 ): Promise<RepoResult<BookingRequest>> {
+  try {
+    const data = await createBooking({
+      chaletId: payload.chaletId,
+      checkIn: payload.checkIn,
+      nights: payload.nights,
+      duration: payload.rentalDuration ?? 'daily',
+      guests: payload.guests,
+      guestName: payload.guestName,
+      guestPhone: payload.guestPhone,
+      notes: payload.notes,
+      channel: payload.inquiryChannel,
+    });
+    if (data) {
+      return { data: mapBookingFromRow(data as Record<string, unknown>), error: null };
+    }
+  } catch (err) {
+    const errObj = err as { code?: string; message?: string };
+    const isMissingNewRpc =
+      errObj?.code === 'PGRST202' ||
+      errObj?.code === '42883' ||
+      (errObj?.message ?? '').includes('create_booking(');
+    if (!isMissingNewRpc) {
+      return {
+        data: null,
+        error: getArabicSupabaseError(err, 'تعذر إرسال طلب الحجز.'),
+      };
+    }
+  }
+
   return createBookingRequestRpc({
     chaletId: payload.chaletId,
     guestName: payload.guestName,

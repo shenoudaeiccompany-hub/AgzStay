@@ -6,10 +6,11 @@ import {
 } from '@/data/chalets';
 import {
   approveBookingRequestRpc,
+  becomeHostAccount,
   cancelBookingWithPolicyRpc,
   completeBookingStayRpc,
   confirmBookingPaymentRpc,
-  createBooking,
+  createBookingCompat,
   createChalet,
   createListingReport,
   createRenterTrustReview,
@@ -377,7 +378,7 @@ export function useAgzStayData() {
       status?: BookingStatus;
     }
   ): Promise<RepoResult<BookingRequest>> => {
-    const res = await createBooking({
+    const res = await createBookingCompat({
       ...payload,
       status: payload.status ?? 'pending',
     });
@@ -696,6 +697,23 @@ export function useAgzStayData() {
     await markAllNotificationsAsRead(currentUser.id);
   };
 
+  const handleBecomeHost = async (type: 'owner' | 'broker' = 'owner') => {
+    const res = await becomeHostAccount(type);
+    if (res.error) {
+      showToast(res.error);
+      return;
+    }
+    if (res.data) {
+      setCurrentUser(res.data);
+      await loadUserScopedData(res.data);
+    }
+    showToast(
+      type === 'broker'
+        ? 'تم تفعيل حسابك كوسيط عقاري بنجاح.'
+        : 'تم تفعيل حسابك كمالك وحدة بنجاح.'
+    );
+  };
+
   const handleSignOut = async () => {
     await signOutUser();
     setCurrentUser(null);
@@ -757,6 +775,7 @@ export function useAgzStayData() {
     handleExpireSubscription,
     handleMarkNotificationRead,
     handleMarkAllNotificationsRead,
+    handleBecomeHost,
     handleSignOut,
   };
 }
