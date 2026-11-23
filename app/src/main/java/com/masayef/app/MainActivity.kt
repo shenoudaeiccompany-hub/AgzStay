@@ -18,11 +18,16 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
 
+    private companion object {
+        val ALLOWED_EXTERNAL_SCHEMES = setOf("http", "https", "tel", "mailto", "whatsapp")
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
+        setTheme(R.style.Theme_AgzStay)
         super.onCreate(savedInstanceState)
 
-        window.statusBarColor = Color.parseColor("#0A3B5C")
+        window.statusBarColor = Color.parseColor("#0B3954")
 
         val assetLoader = WebViewAssetLoader.Builder()
             .setDomain("appassets.androidplatform.net")
@@ -36,7 +41,7 @@ class MainActivity : AppCompatActivity() {
             settings.databaseEnabled = true
             settings.allowFileAccess = false
             settings.allowContentAccess = false
-            settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+            settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
 
             webViewClient = object : WebViewClient() {
                 override fun shouldInterceptRequest(
@@ -54,11 +59,15 @@ class MainActivity : AppCompatActivity() {
                     if (uri.host == "appassets.androidplatform.net") {
                         return false
                     }
+                    val scheme = uri.scheme?.lowercase() ?: return true
+                    if (scheme !in ALLOWED_EXTERNAL_SCHEMES) {
+                        return true
+                    }
                     return try {
                         startActivity(Intent(Intent.ACTION_VIEW, uri))
                         true
                     } catch (_: ActivityNotFoundException) {
-                        false
+                        true
                     }
                 }
             }

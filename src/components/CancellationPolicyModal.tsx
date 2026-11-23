@@ -1,5 +1,6 @@
 import { AlertTriangle, CalendarX2, CheckCircle2, ShieldAlert, X } from 'lucide-react';
 import { formatEGP } from '@/data/chalets';
+import { useModal } from '@/hooks/useModal';
 import type { BookingRequest } from '@/types/chalet';
 import { daysUntilDate, formatArabicDate } from '@/utils/bookingPricing';
 
@@ -16,6 +17,7 @@ export function CancellationPolicyModal({
   onClose,
   onConfirmCancel,
 }: CancellationPolicyModalProps) {
+  const modalRef = useModal<HTMLDivElement>({ onClose });
   const daysNotice = daysUntilDate(booking.checkIn);
   const isUnderTenDays = daysNotice < 10;
   const depositAmount =
@@ -24,6 +26,7 @@ export function CancellationPolicyModal({
 
   return (
     <div
+      ref={modalRef}
       className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/65 p-4 backdrop-blur-sm"
       role="dialog"
       aria-modal="true"
@@ -59,9 +62,9 @@ export function CancellationPolicyModal({
             type="button"
             onClick={onClose}
             aria-label="إغلاق"
-            className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200"
+            className="flex h-11 w-11 items-center justify-center rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200"
           >
-            <X className="h-4 w-4" />
+            <X className="h-5 w-5" />
           </button>
         </div>
 

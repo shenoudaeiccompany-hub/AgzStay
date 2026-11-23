@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Sun motif -->
+    <path
+        android:fillColor="#F4F1DE"
+        android:pathData="M73,33m-5.5,0a5.5,5.5 0,1 1,11 0a5.5,5.5 0,1 1,-11 0" />
+    <!-- Chalet house silhouette within 66dp safe zone -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,33L33,51H39V67H69V51H75L54,33Z" />
+    <!-- Window/door coastal cutout accent -->
+    <path
+        android:fillColor="#0B3954"
+        android:pathData="M49,54H59V67H49Z" />
+    <!-- Teal sea wave below chalet -->
+    <path
+        android:pathData="M29,74C34,70.5 39,70.5 44,74C49,77.5 54,77.5 59,74C64,70.5 69,70.5 74,74C76,75.4 77.5,76 79,76"
+        android:strokeWidth="4"
+        android:strokeColor="#087E8B"
+        android:strokeLineCap="round" />
+</vector>

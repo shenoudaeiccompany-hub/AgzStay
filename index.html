@@ -13,7 +13,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&family=Tajawal:wght@400;500;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap"
       rel="stylesheet"
     />
     <title>AgzStay - إجازة ستاي | شقق مفروشة وشاليهات للإيجار في مصر</title>
@@ -21,16 +21,25 @@
       name="description"
       content="منصة AgzStay - إجازة ستاي لحجز الشقق المفروشة والشاليهات والفيلات للإيجار اليومي والأسبوعي والشهري في كل محافظات مصر مباشرة من المالك الموثق أو الوسيط المعتمد."
     />
+    <meta property="og:type" content="website" />
+    <meta property="og:locale" content="ar_EG" />
+    <meta property="og:site_name" content="AgzStay - إجازة ستاي" />
+    <meta property="og:title" content="AgzStay - إجازة ستاي | شقق مفروشة وشاليهات للإيجار في مصر" />
+    <meta
+      property="og:description"
+      content="احجز شاليهك أو شقتك المفروشة في كل محافظات مصر مباشرة من المالك الموثق بأسعار شفافة وتقويم توافر لحظي."
+    />
+    <meta property="og:image" content="/icon-512.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="AgzStay - إجازة ستاي | شقق مفروشة وشاليهات للإيجار في مصر" />
+    <meta
+      name="twitter:description"
+      content="منصة مصرية لحجز الشقق المفروشة والشاليهات مباشرة من المالك الموثق بدون عمولات مخفية."
+    />
+    <meta name="twitter:image" content="/icon-512.png" />
   </head>
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
-    <script>
-      if ('serviceWorker' in navigator) {
-        window.addEventListener('load', () => {
-          navigator.serviceWorker.register('/sw.js').catch(() => {});
-        });
-      }
-    </script>
   </body>
 </html>

@@ -21,7 +21,7 @@ returns boolean
 language sql
 stable
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
   select exists (
     select 1
@@ -38,7 +38,7 @@ create or replace function public.handle_new_user()
 returns trigger
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 declare
   fallback_name text;
@@ -71,7 +71,7 @@ create or replace function public.prevent_profile_role_self_change()
 returns trigger
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 begin
   if new.role is distinct from old.role then
@@ -102,7 +102,7 @@ create policy "profiles_update_own_or_admin"
 
 -- 3. Chalets Table (Public listing data WITHOUT owner phone)
 create table if not exists public.chalets (
-  id text primary key default ('prop-' || encode(gen_random_bytes(6), 'hex')),
+  id text primary key default ('prop-' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 12)),
   owner_id uuid not null references public.profiles(id) on delete cascade,
   unit_number integer,
   title text not null,
@@ -256,7 +256,7 @@ create policy "chalet_contacts_owner_delete"
 
 -- 5. Bookings Table with DB-level Double-Booking Exclusion Constraint
 create table if not exists public.bookings (
-  id text primary key default ('booking-' || encode(gen_random_bytes(6), 'hex')),
+  id text primary key default ('booking-' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 12)),
   chalet_id text not null references public.chalets(id) on delete cascade,
   renter_id uuid not null references public.profiles(id) on delete cascade,
   chalet_title text not null,
@@ -301,7 +301,7 @@ create or replace function public.enforce_booking_update_rules()
 returns trigger
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 declare
   is_chalet_owner boolean;
@@ -399,7 +399,7 @@ returns table (
 language sql
 stable
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
   select b.chalet_id, b.check_in, b.check_out, b.status
   from public.bookings b
@@ -420,7 +420,7 @@ returns table (
 language sql
 stable
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
   select b.chalet_id, b.check_in, b.check_out, b.status
   from public.bookings b
@@ -432,7 +432,7 @@ grant execute on function public.get_all_active_booked_ranges() to anon, authent
 
 -- 7. Reviews Table (ONLY confirmed & completed bookings, max 1 review per booking)
 create table if not exists public.reviews (
-  id text primary key default ('review-' || encode(gen_random_bytes(6), 'hex')),
+  id text primary key default ('review-' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 12)),
   chalet_id text not null references public.chalets(id) on delete cascade,
   booking_id text not null unique references public.bookings(id) on delete cascade,
   renter_id uuid not null references public.profiles(id) on delete cascade,
@@ -476,7 +476,7 @@ create policy "reviews_delete_author_or_admin"
 
 -- 8. Renter Trust Reviews Table
 create table if not exists public.renter_trust_reviews (
-  id text primary key default ('trust-' || encode(gen_random_bytes(6), 'hex')),
+  id text primary key default ('trust-' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 12)),
   booking_id text not null unique references public.bookings(id) on delete cascade,
   chalet_id text not null references public.chalets(id) on delete cascade,
   host_id uuid not null references public.profiles(id) on delete cascade,
@@ -521,7 +521,7 @@ create policy "renter_trust_insert_host"
 
 -- 9. Listing Reports Table + Aggregate Count RPC
 create table if not exists public.listing_reports (
-  id text primary key default ('report-' || encode(gen_random_bytes(6), 'hex')),
+  id text primary key default ('report-' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 12)),
   chalet_id text not null references public.chalets(id) on delete cascade,
   reporter_id uuid not null references public.profiles(id) on delete cascade,
   reason text not null,
@@ -549,7 +549,7 @@ returns table (
 language sql
 stable
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
   select lr.chalet_id, count(*)::bigint as report_count
   from public.listing_reports lr
@@ -579,7 +579,7 @@ create or replace function public.handle_owner_verification_rules()
 returns trigger
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 begin
   if tg_op = 'INSERT' then
@@ -636,7 +636,7 @@ create policy "owner_verifications_update_admin_only"
 
 -- 11. Host Subscriptions Table
 create table if not exists public.host_subscriptions (
-  id text primary key default ('sub-' || encode(gen_random_bytes(6), 'hex')),
+  id text primary key default ('sub-' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 12)),
   host_id uuid not null references public.profiles(id) on delete cascade,
   host_name text not null,
   host_phone text not null,
@@ -677,7 +677,7 @@ returns jsonb
 language plpgsql
 stable
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 declare
   caller_id uuid;

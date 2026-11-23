@@ -60,7 +60,7 @@ export default {
         },
       },
       fontFamily: {
-        sans: ['Cairo', 'Tajawal', 'system-ui', 'sans-serif'],
+        sans: ['Cairo', 'system-ui', 'sans-serif'],
       },
     },
   },

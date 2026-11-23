@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Check, ShieldCheck, Star, UserCheck, X } from 'lucide-react';
 import { PROPERTY_REVIEW_TAGS, RENTER_TRUST_TAGS } from '@/data/chalets';
+import { useModal } from '@/hooks/useModal';
 import type { PropertyReviewTag, RenterTrustTag } from '@/types/chalet';
 
 type RatingModalMode =
@@ -48,6 +49,7 @@ interface RatingModalProps {
 }
 
 export function RatingModal({ config, onClose }: RatingModalProps) {
+  const modalRef = useModal<HTMLDivElement>({ onClose });
   const [rating, setRating] = useState(5);
   const [punctualityScore, setPunctualityScore] = useState(5);
   const [propertyCareScore, setPropertyCareScore] = useState(5);
@@ -113,6 +115,7 @@ export function RatingModal({ config, onClose }: RatingModalProps) {
 
   return (
     <div
+      ref={modalRef}
       className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm"
       role="dialog"
       aria-modal="true"
@@ -145,9 +148,9 @@ export function RatingModal({ config, onClose }: RatingModalProps) {
             type="button"
             onClick={onClose}
             aria-label="إغلاق"
-            className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200"
+            className="flex h-11 w-11 items-center justify-center rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200"
           >
-            <X className="h-4 w-4" />
+            <X className="h-5 w-5" />
           </button>
         </div>
 

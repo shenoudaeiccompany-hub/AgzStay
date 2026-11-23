@@ -24,6 +24,7 @@ import { CancellationPolicyModal } from '@/components/CancellationPolicyModal';
 import { ReviewForm } from '@/components/ChaletReviews';
 import { RenterTrustBadge } from '@/components/RenterTrustBadge';
 import { formatEGP } from '@/data/chalets';
+import { useModal } from '@/hooks/useModal';
 import {
   revealOwnerContact,
   type RepoResult,
@@ -121,6 +122,10 @@ export function BookingsDrawer({
   const [paymentReferences, setPaymentReferences] = useState<Record<string, string>>({});
   const [uploadingReceiptId, setUploadingReceiptId] = useState<string | null>(null);
   const [receiptUploadError, setReceiptUploadError] = useState<Record<string, string>>({});
+  const drawerRef = useModal<HTMLDivElement>({
+    onClose,
+    closeOnEscape: !cancelTargetBooking,
+  });
 
   const handleRevealContact = async (chaletId: string) => {
     setRevealingChaletId(chaletId);
@@ -190,6 +195,7 @@ export function BookingsDrawer({
 
   return (
     <div
+      ref={drawerRef}
       className="fixed inset-0 z-50 flex justify-end bg-slate-900/60 backdrop-blur-sm"
       role="dialog"
       aria-modal="true"
@@ -207,9 +213,9 @@ export function BookingsDrawer({
             type="button"
             onClick={onClose}
             aria-label="إغلاق"
-            className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200"
+            className="flex h-11 w-11 items-center justify-center rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200"
           >
-            <X className="h-4 w-4" />
+            <X className="h-5 w-5" />
           </button>
         </div>
 

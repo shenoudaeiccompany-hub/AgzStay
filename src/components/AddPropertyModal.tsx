@@ -25,11 +25,16 @@ import {
   VIEW_TYPES,
   formatEGP,
 } from '@/data/chalets';
+import { useModal } from '@/hooks/useModal';
 import { isSupabaseConfigured } from '@/lib/supabase';
 import {
   uploadChaletImages,
   type RepoResult,
 } from '@/services/agzstayRepository';
+import {
+  MAX_PROPERTY_IMAGES,
+  compressImagesWithProgress,
+} from '@/utils/imageCompression';
 import type {
   AdvertiserRole,
   AmenityId,
@@ -110,9 +115,14 @@ export function AddPropertyModal({
     'ac',
     'family',
   ]);
+  const modalRef = useModal<HTMLDivElement>({ onClose });
   const [imageUrl, setImageUrl] = useState('');
   const [uploadedImages, setUploadedImages] = useState<string[]>([]);
   const [isUploadingImages, setIsUploadingImages] = useState(false);
+  const [compressionProgress, setCompressionProgress] = useState<{
+    completed: number;
+    total: number;
+  } | null>(null);
   const [ownerName, setOwnerName] = useState(
     verification?.ownerName ?? currentUser?.name ?? ''
   );
@@ -170,16 +180,35 @@ export function AddPropertyModal({
     }
     setError('');
     setIsUploadingImages(true);
+    setCompressionProgress({ completed: 0, total: Math.min(files.length, MAX_PROPERTY_IMAGES) });
     try {
-      const res = await uploadChaletImages(files);
+      const compressed = await compressImagesWithProgress(
+        files,
+        uploadedImages.length,
+        (completed, total) => setCompressionProgress({ completed, total })
+      );
+
+      if (compressed.skippedMessages.length > 0 && compressed.files.length === 0) {
+        setError(compressed.skippedMessages[0]);
+        e.target.value = '';
+        return;
+      }
+
+      const res = await uploadChaletImages(compressed.files);
       if (res.error || !res.data) {
         setError(res.error || 'تعذر رفع الصور المختارة.');
         e.target.value = '';
         return;
       }
-      setUploadedImages((prev) => [...prev, ...res.data!].slice(0, 8));
+
+      if (compressed.skippedMessages.length > 0) {
+        setError(compressed.skippedMessages.join(' • '));
+      }
+      setUploadedImages((prev) => [...prev, ...res.data!].slice(0, MAX_PROPERTY_IMAGES));
     } finally {
       setIsUploadingImages(false);
+      setCompressionProgress(null);
+      e.target.value = '';
     }
   };
 
@@ -330,6 +359,7 @@ export function AddPropertyModal({
 
   return (
     <div
+      ref={modalRef}
       className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-3 backdrop-blur-sm sm:p-6"
       role="dialog"
       aria-modal="true"
@@ -347,7 +377,7 @@ export function AddPropertyModal({
                 <button
                   type="button"
                   onClick={onOpenVerification}
-                  className="text-xs font-bold text-accent-600 underline hover:text-accent-700"
+                  className="min-h-[36px] text-xs font-bold text-accent-600 underline hover:text-accent-700"
                 >
                   توثيق الهوية بالبطاقة
                 </button>
@@ -362,9 +392,9 @@ export function AddPropertyModal({
             type="button"
             onClick={onClose}
             aria-label="إغلاق"
-            className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200"
+            className="flex h-11 w-11 items-center justify-center rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200"
           >
-            <X className="h-4 w-4" />
+            <X className="h-5 w-5" />
           </button>
         </div>
 
@@ -863,16 +893,23 @@ export function AddPropertyModal({
 
               <div className="space-y-2 rounded-2xl border border-slate-200 bg-sand-50 p-3.5">
                 <span className="block text-xs font-bold text-slate-700">
-                  صور الوحدة (رفع من الجهاز أو رابط)
+                  صور الوحدة (ضغط WebP تلقائي حتى {MAX_PROPERTY_IMAGES} صور • بحد أقصى ٥ ميجابايت للصورة)
                 </span>
                 <div className="flex flex-wrap items-center gap-2">
-                  <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl border border-secondary-200 bg-white px-3.5 py-2 text-xs font-bold text-secondary-700 hover:bg-secondary-50">
+                  <label className="inline-flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-xl border border-secondary-200 bg-white px-3.5 py-2 text-xs font-bold text-secondary-700 hover:bg-secondary-50">
                     <ImagePlus className="h-4 w-4" />
-                    <span>{isUploadingImages ? 'جاري الرفع...' : 'اختر صور من جهازك'}</span>
+                    <span>
+                      {isUploadingImages
+                        ? compressionProgress
+                          ? `جاري الضغط (${compressionProgress.completed}/${compressionProgress.total})...`
+                          : 'جاري الرفع...'
+                        : 'اختر صور من جهازك'}
+                    </span>
                     <input
                       type="file"
                       accept="image/*"
                       multiple
+                      disabled={isUploadingImages || uploadedImages.length >= MAX_PROPERTY_IMAGES}
                       onChange={handleImageUpload}
                       className="hidden"
                     />
@@ -884,9 +921,27 @@ export function AddPropertyModal({
                     value={imageUrl}
                     onChange={(e) => setImageUrl(e.target.value)}
                     placeholder="أو رابط صورة https://..."
-                    className="min-w-[200px] flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-left text-xs focus:border-secondary-500 focus:outline-none"
+                    className="min-h-[44px] min-w-[200px] flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-left text-xs focus:border-secondary-500 focus:outline-none"
                   />
                 </div>
+
+                {compressionProgress && compressionProgress.total > 0 && (
+                  <div className="space-y-1 pt-1" role="progressbar" aria-valuenow={compressionProgress.completed} aria-valuemax={compressionProgress.total}>
+                    <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200">
+                      <div
+                        className="h-full rounded-full bg-secondary-500 transition-all duration-300"
+                        style={{
+                          width: `${Math.min(
+                            100,
+                            Math.round(
+                              (compressionProgress.completed / compressionProgress.total) * 100
+                            )
+                          )}%`,
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
 
                 {uploadedImages.length > 0 && (
                   <div className="flex flex-wrap gap-2 pt-1">
@@ -895,14 +950,22 @@ export function AddPropertyModal({
                         key={`${idx}-${src.slice(0, 24)}`}
                         className="relative h-16 w-20 overflow-hidden rounded-xl border border-slate-200"
                       >
-                        <img src={src} alt="" className="h-full w-full object-cover" />
+                        <img
+                          src={src}
+                          alt={`معاينة صورة الوحدة ${idx + 1}`}
+                          width={80}
+                          height={64}
+                          loading="lazy"
+                          decoding="async"
+                          className="h-full w-full object-cover"
+                        />
                         <button
                           type="button"
                           onClick={() =>
                             setUploadedImages((prev) => prev.filter((_, i) => i !== idx))
                           }
-                          aria-label="حذف الصورة"
-                          className="absolute left-1 top-1 rounded-full bg-slate-900/75 p-1 text-white"
+                          aria-label={`حذف الصورة ${idx + 1}`}
+                          className="absolute left-1 top-1 flex h-6 w-6 items-center justify-center rounded-full bg-slate-900/75 text-white"
                         >
                           <Trash2 className="h-3 w-3" />
                         </button>

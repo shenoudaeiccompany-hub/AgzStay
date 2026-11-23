@@ -10,8 +10,8 @@ android {
         applicationId = "com.masayef.app"
         minSdk = 24
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = (findProperty("VERSION_CODE") as? String)?.toIntOrNull() ?: 1
+        versionName = (findProperty("VERSION_NAME") as? String) ?: "1.0.0"
     }
 
     signingConfigs {
@@ -34,7 +34,12 @@ android {
             signingConfig = signingConfigs.getByName("debugConfig")
         }
         getByName("release") {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
             signingConfig = signingConfigs.getByName("release")
         }
     }

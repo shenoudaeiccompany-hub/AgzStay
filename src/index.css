@@ -4,7 +4,7 @@
 
 @layer base {
   html {
-    font-family: 'Cairo', 'Tajawal', system-ui, -apple-system, sans-serif;
+    font-family: 'Cairo', system-ui, -apple-system, sans-serif;
     scroll-behavior: smooth;
   }
 
@@ -24,10 +24,10 @@
 }
 
 .leaflet-container {
-  font-family: 'Cairo', 'Tajawal', system-ui, sans-serif;
+  font-family: 'Cairo', system-ui, sans-serif;
 }
 
-.masayef-price-marker {
+.agzstay-price-marker {
   background: transparent;
   border: none;
 }

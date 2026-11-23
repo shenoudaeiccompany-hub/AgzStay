@@ -32,6 +32,7 @@ import {
   calculateNightsBetween,
   calculateStayPricing,
 } from '@/utils/bookingPricing';
+import { buildResponsiveImageAttributes } from '@/utils/imageOptimization';
 
 interface PropertyCardProps {
   property: Chalet;
@@ -76,6 +77,11 @@ export function PropertyCard({
 
   const isProPartner = property.hostTier === 'pro';
 
+  const responsiveImage = buildResponsiveImageAttributes(
+    property.images[0] ?? '',
+    '(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 400px'
+  );
+
   return (
     <article
       className={`group flex flex-col overflow-hidden rounded-2xl border bg-white shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg ${
@@ -83,11 +89,16 @@ export function PropertyCard({
       }`}
     >
       <div className="relative aspect-[16/10] w-full overflow-hidden bg-primary-100">
-        {!imageError && property.images[0] ? (
+        {!imageError && responsiveImage.src ? (
           <img
-            src={property.images[0]}
+            src={responsiveImage.src}
+            srcSet={responsiveImage.srcSet}
+            sizes={responsiveImage.sizes}
             alt={property.title}
+            width={640}
+            height={400}
             loading="lazy"
+            decoding="async"
             onError={() => setImageError(true)}
             className="h-full w-full object-cover transition duration-500 group-hover:scale-105"
           />
@@ -128,7 +139,7 @@ export function PropertyCard({
               onToggleCompare(property.id);
             }}
             aria-label={isCompared ? 'إزالة من المقارنة' : 'إضافة للمقارنة'}
-            className={`inline-flex h-9 items-center gap-1 rounded-full px-2.5 text-[11px] font-bold shadow-sm backdrop-blur-sm transition ${
+            className={`inline-flex h-11 items-center gap-1 rounded-full px-3 text-[11px] font-bold shadow-sm backdrop-blur-sm transition ${
               isCompared
                 ? 'bg-primary-600 text-white'
                 : 'bg-white/95 text-slate-700 hover:bg-white'
@@ -145,7 +156,7 @@ export function PropertyCard({
               onToggleFavorite(property.id);
             }}
             aria-label={isFavorite ? 'إزالة من المفضلة' : 'إضافة إلى المفضلة'}
-            className="flex h-9 w-9 items-center justify-center rounded-full bg-white/95 text-slate-700 shadow-sm backdrop-blur-sm transition hover:scale-105 hover:bg-white"
+            className="flex h-11 w-11 items-center justify-center rounded-full bg-white/95 text-slate-700 shadow-sm backdrop-blur-sm transition hover:scale-105 hover:bg-white"
           >
             <Heart className={`h-4 w-4 ${isFavorite ? 'fill-accent-500 text-accent-500' : ''}`} />
           </button>
@@ -319,7 +330,7 @@ export function PropertyCard({
             <button
               type="button"
               onClick={() => onSelect(property)}
-              className="mt-2.5 min-h-[40px] w-full rounded-xl bg-secondary-500 px-4 py-2 text-xs font-bold text-white shadow-sm transition hover:bg-secondary-600 sm:text-sm"
+              className="mt-2.5 min-h-[44px] w-full rounded-xl bg-secondary-500 px-4 py-2 text-xs font-bold text-white shadow-sm transition hover:bg-secondary-600 sm:text-sm"
             >
               احجز الآن وراجع تفاصيل الليالي
             </button>
@@ -339,7 +350,7 @@ export function PropertyCard({
             <button
               type="button"
               onClick={() => onSelect(property)}
-              className="min-h-[40px] rounded-xl bg-secondary-500 px-4 py-2 text-xs font-bold text-white shadow-sm transition hover:bg-secondary-600 sm:text-sm"
+              className="min-h-[44px] rounded-xl bg-secondary-500 px-4 py-2 text-xs font-bold text-white shadow-sm transition hover:bg-secondary-600 sm:text-sm"
             >
               التفاصيل والحجز
             </button>

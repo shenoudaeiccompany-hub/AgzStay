@@ -31,7 +31,7 @@ export function MapPinPicker({ coordinates, onChange }: MapPinPickerProps) {
     }).addTo(map);
 
     const pinIcon = L.divIcon({
-      className: 'masayef-price-marker',
+      className: 'agzstay-price-marker',
       iconSize: [32, 32],
       iconAnchor: [16, 32],
       html: `<div style="width:32px;height:32px;display:flex;align-items:center;justify-content:center;border-radius:9999px;background:#FF7A00;color:#fff;border:3px solid #fff;box-shadow:0 4px 12px rgba(15,23,42,0.35);font-weight:bold;">📍</div>`,

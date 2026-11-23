@@ -43,6 +43,32 @@ export function saveLocalJson<T>(key: string, value: T): void {
   }
 }
 
+export function migrateLegacyStorageKeys(): void {
+  if (typeof window === 'undefined' || typeof localStorage === 'undefined') return;
+  try {
+    const migrations: [string[], string][] = [
+      [['masayef_favorites_v1', 'masayef_favorites'], STORAGE_KEYS.favorites],
+      [['masayef_compare_v1', 'masayef_compare_ids'], STORAGE_KEYS.compareIds],
+      [['masayef_pwa_banner_dismissed_v1', 'masayef_pwa_dismissed'], STORAGE_KEYS.pwaDismissed],
+    ];
+
+    migrations.forEach(([legacyKeys, targetKey]) => {
+      const existingNew = localStorage.getItem(targetKey);
+      for (const oldKey of legacyKeys) {
+        const oldVal = localStorage.getItem(oldKey);
+        if (oldVal !== null) {
+          if (existingNew === null) {
+            localStorage.setItem(targetKey, oldVal);
+          }
+          localStorage.removeItem(oldKey);
+        }
+      }
+    });
+  } catch {
+    // Ignore storage access errors
+  }
+}
+
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024; // 5MB strict cap matching Supabase Storage
 
 const IMAGE_MIME_EXT: Record<string, string> = {

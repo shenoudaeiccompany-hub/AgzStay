@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { formatEGP, getRentalPriceForDuration } from '@/data/chalets';
 import type { Chalet, RentalDuration } from '@/types/chalet';
+import { buildResponsiveImageAttributes } from '@/utils/imageOptimization';
 
 interface ChaletsMapViewProps {
   chalets: Chalet[];
@@ -118,7 +119,7 @@ export function ChaletsMapView({
       const bgColor = isFocused ? '#087E8B' : '#0B3954';
 
       const icon = L.divIcon({
-        className: 'masayef-price-marker',
+        className: 'agzstay-price-marker',
         iconSize: [115, 34],
         iconAnchor: [57, 17],
         html: `<div style="display:inline-flex;align-items:center;justify-content:center;padding:4px 10px;border-radius:9999px;font-weight:700;font-size:12px;white-space:nowrap;box-shadow:0 4px 12px rgba(15,23,42,0.28);border:2px solid #ffffff;cursor:pointer;transition:transform 0.15s ease;background:${bgColor};color:#ffffff;transform:${
@@ -196,8 +197,12 @@ export function ChaletsMapView({
                 <div className="relative h-24 w-24 shrink-0 overflow-hidden rounded-xl bg-primary-100">
                   {imageErrorId !== focusedChalet.id && focusedChalet.images[0] ? (
                     <img
-                      src={focusedChalet.images[0]}
+                      {...buildResponsiveImageAttributes(focusedChalet.images[0], '96px')}
                       alt={focusedChalet.title}
+                      width={96}
+                      height={96}
+                      loading="lazy"
+                      decoding="async"
                       onError={() => setImageErrorId(focusedChalet.id)}
                       className="h-full w-full object-cover"
                     />
@@ -214,10 +219,10 @@ export function ChaletsMapView({
                         ? 'إزالة من المفضلة'
                         : 'إضافة إلى المفضلة'
                     }
-                    className="absolute left-1.5 top-1.5 flex h-7 w-7 items-center justify-center rounded-full bg-white/90 text-slate-700 shadow-sm"
+                    className="absolute left-1 top-1 flex h-9 w-9 items-center justify-center rounded-full bg-white/95 text-slate-700 shadow-sm"
                   >
                     <Heart
-                      className={`h-3.5 w-3.5 ${
+                      className={`h-4 w-4 ${
                         favorites.includes(focusedChalet.id)
                           ? 'fill-accent-500 text-accent-500'
                           : ''
@@ -243,9 +248,9 @@ export function ChaletsMapView({
                       type="button"
                       onClick={() => setFocusedChaletId(null)}
                       aria-label="إغلاق المعاينة"
-                      className="rounded-full p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                      className="flex h-11 w-11 -m-2 items-center justify-center rounded-full text-slate-500 hover:bg-slate-100 hover:text-slate-700"
                     >
-                      <X className="h-3.5 w-3.5" />
+                      <X className="h-4 w-4" />
                     </button>
                   </div>
 
@@ -278,7 +283,7 @@ export function ChaletsMapView({
                     <button
                       type="button"
                       onClick={() => onSelectChalet(focusedChalet)}
-                      className="rounded-xl bg-secondary-500 px-3 py-1.5 text-xs font-bold text-white transition hover:bg-secondary-600"
+                      className="min-h-[44px] rounded-xl bg-secondary-500 px-3.5 py-2 text-xs font-bold text-white transition hover:bg-secondary-600"
                     >
                       التفاصيل
                     </button>

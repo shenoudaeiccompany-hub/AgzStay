@@ -16,24 +16,23 @@ export function ChaletShareActions({ chalet }: ChaletShareActionsProps) {
     return () => window.clearTimeout(timer);
   }, [copied]);
 
-  const unitSlug = chalet.unitNumber ? String(chalet.unitNumber) : chalet.id;
-  const displayPersonalLink = `agzstay.com/unit/${unitSlug}`;
+  const encodedId = encodeURIComponent(chalet.id);
+  const displayPersonalLink = `agzstay.com/chalet/${chalet.unitNumber ?? chalet.id}`;
 
   const getDirectLink = (): string => {
-    const url = new URL(window.location.href);
-    url.searchParams.delete('chalet');
-    url.searchParams.set('unit', chalet.id);
-    return url.toString();
+    try {
+      return `${window.location.origin}/chalet/${encodedId}`;
+    } catch {
+      return `https://agzstay.com/chalet/${encodedId}`;
+    }
   };
 
   const shareUrl = getDirectLink();
   const priceLabel = `${formatEGP(chalet.pricePerNight)} / ليلة`;
 
-  const shareSummary = `${chalet.title} — ${chalet.resort} (${priceLabel}) عبر منصة AgzStay - إجازة ستاي\nالرابط المباشر للوحدة: ${displayPersonalLink}`;
+  const shareSummary = `${chalet.title} — ${chalet.resort} (${priceLabel}) عبر منصة AgzStay - إجازة ستاي\nالرابط المباشر للوحدة: ${shareUrl}`;
 
-  const whatsappShareHref = `https://wa.me/?text=${encodeURIComponent(
-    `${shareSummary}\n${shareUrl}`
-  )}`;
+  const whatsappShareHref = `https://wa.me/?text=${encodeURIComponent(shareSummary)}`;
 
   const facebookShareHref = `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(
     shareUrl
@@ -83,7 +82,8 @@ export function ChaletShareActions({ chalet }: ChaletShareActionsProps) {
           <button
             type="button"
             onClick={handleCopyLink}
-            className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-bold transition ${
+            aria-label="نسخ رابط الوحدة المباشر"
+            className={`inline-flex min-h-[44px] items-center gap-1.5 rounded-xl border px-3.5 py-2 text-xs font-bold transition ${
               copied
                 ? 'border-success-500/30 bg-success-50 text-success-700'
                 : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100'
@@ -106,8 +106,8 @@ export function ChaletShareActions({ chalet }: ChaletShareActionsProps) {
             href={whatsappShareHref}
             target="_blank"
             rel="noreferrer"
-            aria-label="مشاركة عبر واتساب"
-            className="inline-flex items-center gap-1.5 rounded-xl bg-success-500 px-3 py-1.5 text-xs font-bold text-white transition hover:bg-success-700"
+            aria-label="مشاركة الوحدة عبر واتساب"
+            className="inline-flex min-h-[44px] items-center gap-1.5 rounded-xl bg-success-500 px-3.5 py-2 text-xs font-bold text-white transition hover:bg-success-700"
           >
             <MessageCircle className="h-3.5 w-3.5" />
             <span>واتساب</span>
@@ -117,8 +117,8 @@ export function ChaletShareActions({ chalet }: ChaletShareActionsProps) {
             href={facebookShareHref}
             target="_blank"
             rel="noreferrer"
-            aria-label="مشاركة عبر فيسبوك"
-            className="inline-flex items-center gap-1.5 rounded-xl bg-primary-600 px-3 py-1.5 text-xs font-bold text-white transition hover:bg-primary-700"
+            aria-label="مشاركة الوحدة عبر فيسبوك"
+            className="inline-flex min-h-[44px] items-center gap-1.5 rounded-xl bg-primary-600 px-3.5 py-2 text-xs font-bold text-white transition hover:bg-primary-700"
           >
             <Facebook className="h-3.5 w-3.5" />
             <span>فيسبوك</span>

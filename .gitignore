@@ -21,3 +21,22 @@ dist-ssr
 *.sln
 *.sw?
 .env
+
+# Android build caches, generated web assets, and keystores
+.gradle/
+.build-outputs/
+build/
+app/build/
+local.properties
+debug.keystore
+*.jks
+*.keystore
+
+# Synced Vite build artifacts (generated on build via syncWebAssets)
+app/src/main/assets/assets/
+app/src/main/assets/index.html
+app/src/main/assets/sw.js
+app/src/main/assets/offline.html
+app/src/main/assets/robots.txt
+app/src/main/assets/manifest.*
+app/src/main/assets/icon*

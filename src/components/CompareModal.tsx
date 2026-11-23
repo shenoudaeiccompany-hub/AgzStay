@@ -6,6 +6,7 @@ import {
   getUnitTypeLabel,
   getViewTypeLabel,
 } from '@/data/chalets';
+import { useModal } from '@/hooks/useModal';
 import type { Chalet } from '@/types/chalet';
 
 interface CompareModalProps {
@@ -21,8 +22,11 @@ export function CompareModal({
   onRemoveChalet,
   onSelectChalet,
 }: CompareModalProps) {
+  const modalRef = useModal<HTMLDivElement>({ onClose });
+
   return (
     <div
+      ref={modalRef}
       className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-3 backdrop-blur-sm sm:p-6"
       role="dialog"
       aria-modal="true"
@@ -48,9 +52,9 @@ export function CompareModal({
             type="button"
             onClick={onClose}
             aria-label="إغلاق المقارنة"
-            className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200"
+            className="flex h-11 w-11 items-center justify-center rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200"
           >
-            <X className="h-4 w-4" />
+            <X className="h-5 w-5" />
           </button>
         </div>
 

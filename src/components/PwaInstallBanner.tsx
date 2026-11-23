@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Download, Share, Smartphone, X } from 'lucide-react';
+import { useModal } from '@/hooks/useModal';
 import { agzstayStorageKeys, loadLocalJson, saveLocalJson } from '@/services/agzstayRepository';
 
 interface BeforeInstallPromptEvent extends Event {
@@ -14,6 +15,10 @@ export function PwaInstallBanner() {
   const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [isGuideOpen, setIsGuideOpen] = useState(false);
   const [isStandalone, setIsStandalone] = useState(false);
+  const guideModalRef = useModal<HTMLDivElement>({
+    isOpen: isGuideOpen,
+    onClose: () => setIsGuideOpen(false),
+  });
 
   useEffect(() => {
     const standalone =
@@ -85,6 +90,7 @@ export function PwaInstallBanner() {
 
       {isGuideOpen && (
         <div
+          ref={guideModalRef}
           className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm"
           role="dialog"
           aria-modal="true"
@@ -107,9 +113,9 @@ export function PwaInstallBanner() {
                 type="button"
                 onClick={() => setIsGuideOpen(false)}
                 aria-label="إغلاق"
-                className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200"
+                className="flex h-11 w-11 items-center justify-center rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200"
               >
-                <X className="h-4 w-4" />
+                <X className="h-5 w-5" />
               </button>
             </div>
 

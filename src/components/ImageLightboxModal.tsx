@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ChevronLeft, ChevronRight, Waves, X, ZoomIn, ZoomOut } from 'lucide-react';
+import { useModal } from '@/hooks/useModal';
+import { buildResponsiveImageAttributes } from '@/utils/imageOptimization';
 
 interface ImageLightboxModalProps {
   images: string[];
@@ -16,6 +18,7 @@ export function ImageLightboxModal({
   onClose,
   onIndexChange,
 }: ImageLightboxModalProps) {
+  const modalRef = useModal<HTMLDivElement>({ onClose });
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
   const [zoomed, setZoomed] = useState(false);
   const [failedIndices, setFailedIndices] = useState<Record<number, boolean>>({});
@@ -49,8 +52,11 @@ export function ImageLightboxModal({
   const currentSrc = images[currentIndex];
   const hasError = Boolean(failedIndices[currentIndex]);
 
+  const mainResponsive = buildResponsiveImageAttributes(currentSrc ?? '', '100vw');
+
   return (
     <div
+      ref={modalRef}
       className="fixed inset-0 z-[60] flex flex-col bg-slate-950/95 text-white backdrop-blur-md"
       role="dialog"
       aria-modal="true"
@@ -88,7 +94,7 @@ export function ImageLightboxModal({
             type="button"
             onClick={onClose}
             aria-label="إغلاق معرض الصور"
-            className="flex h-9 w-9 items-center justify-center rounded-xl border border-white/15 bg-white/10 text-white transition hover:bg-white/20"
+            className="flex h-11 w-11 items-center justify-center rounded-xl border border-white/15 bg-white/10 text-white transition hover:bg-white/20"
           >
             <X className="h-5 w-5" />
           </button>
@@ -122,8 +128,13 @@ export function ImageLightboxModal({
         >
           {!hasError && currentSrc ? (
             <img
-              src={currentSrc}
+              src={mainResponsive.src}
+              srcSet={mainResponsive.srcSet}
+              sizes={mainResponsive.sizes}
               alt={`${title} - صورة ${currentIndex + 1}`}
+              width={1200}
+              height={800}
+              decoding="async"
               onError={() =>
                 setFailedIndices((prev) => ({ ...prev, [currentIndex]: true }))
               }
@@ -168,7 +179,11 @@ export function ImageLightboxModal({
                 >
                   <img
                     src={src}
-                    alt=""
+                    alt={`مصغرة ${idx + 1}`}
+                    width={80}
+                    height={56}
+                    loading="lazy"
+                    decoding="async"
                     className="h-full w-full object-cover"
                   />
                 </button>

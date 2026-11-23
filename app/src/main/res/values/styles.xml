@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.AgzStay" parent="Theme.AppCompat.Light.NoActionBar">
+        <item name="android:windowBackground">@color/agzstay_sand</item>
+        <item name="android:statusBarColor">@color/agzstay_primary</item>
+    </style>
+
+    <style name="Theme.AgzStay.Splash" parent="Theme.AgzStay">
+        <item name="android:windowBackground">@drawable/splash_background</item>
+    </style>
+</resources>

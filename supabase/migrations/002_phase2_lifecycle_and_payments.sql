@@ -14,7 +14,7 @@ create or replace function public.enforce_chalet_verified_owner_publish()
 returns trigger
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 declare
   owner_is_verified boolean;
@@ -59,7 +59,7 @@ create or replace function public.handle_owner_verification_rules()
 returns trigger
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 begin
   if tg_op = 'INSERT' then
@@ -171,7 +171,7 @@ create or replace function public.create_app_notification(
 returns void
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 begin
   if p_user_id is null then
@@ -190,7 +190,7 @@ create or replace function public.admin_review_owner_verification(
 returns jsonb
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 declare
   v_row public.owner_verifications%rowtype;
@@ -347,7 +347,7 @@ returns table (
 language sql
 stable
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
   select b.chalet_id, b.check_in, b.check_out, b.status
   from public.bookings b
@@ -369,7 +369,7 @@ returns table (
 language sql
 stable
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
   select b.chalet_id, b.check_in, b.check_out, b.status
   from public.bookings b
@@ -386,7 +386,7 @@ returns jsonb
 language plpgsql
 stable
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 declare
   caller_id uuid;
@@ -449,7 +449,7 @@ returns jsonb
 language plpgsql
 stable
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 declare
   v_chalet public.chalets%rowtype;
@@ -562,7 +562,7 @@ create or replace function public.sync_booking_lifecycle_statuses()
 returns integer
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 declare
   v_row record;
@@ -627,7 +627,7 @@ create or replace function public.create_booking_request(
 returns jsonb
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 declare
   v_caller uuid;
@@ -735,7 +735,7 @@ create or replace function public.approve_booking_request(p_booking_id text)
 returns jsonb
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 declare
   v_caller uuid;
@@ -747,11 +747,10 @@ begin
     raise exception 'يرجى تسجيل الدخول أولاً.';
   end if;
 
-  select b.*, c.owner_id
+  select *
   into v_booking
-  from public.bookings b
-  join public.chalets c on c.id = b.chalet_id
-  where b.id = p_booking_id;
+  from public.bookings
+  where id = p_booking_id;
 
   if not found then
     raise exception 'طلب الحجز غير موجود.';
@@ -803,7 +802,7 @@ create or replace function public.submit_booking_payment_receipt(
 returns jsonb
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 declare
   v_caller uuid;
@@ -863,7 +862,7 @@ create or replace function public.confirm_booking_payment(p_booking_id text)
 returns jsonb
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 declare
   v_caller uuid;
@@ -919,7 +918,7 @@ create or replace function public.reject_booking_request(
 returns jsonb
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 declare
   v_caller uuid;
@@ -979,7 +978,7 @@ create or replace function public.complete_booking_stay(p_booking_id text)
 returns jsonb
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 declare
   v_caller uuid;
@@ -1035,7 +1034,7 @@ create or replace function public.cancel_booking_with_policy(p_booking_id text)
 returns jsonb
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 declare
   v_caller uuid;
@@ -1104,7 +1103,7 @@ create or replace function public.enforce_booking_update_rules()
 returns trigger
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 begin
   if current_user in ('postgres', 'supabase_admin', 'service_role') or public.is_admin() then
@@ -1141,7 +1140,7 @@ create or replace function public.recalculate_chalet_rating_stats()
 returns trigger
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 declare
   v_chalet_id text;

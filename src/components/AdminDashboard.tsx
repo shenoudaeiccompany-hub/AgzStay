@@ -20,6 +20,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { formatEGP } from '@/data/chalets';
+import { useModal } from '@/hooks/useModal';
 import {
   getSupabaseConfigStatus,
   testSupabaseUnitsConnection,
@@ -117,6 +118,10 @@ export function AdminDashboard({
     isSignedUrl: boolean;
     error?: string;
   } | null>(null);
+  const receiptModalRef = useModal<HTMLDivElement>({
+    isOpen: Boolean(receiptModalState),
+    onClose: () => setReceiptModalState(null),
+  });
 
   const supabaseConfig = useMemo(() => getSupabaseConfigStatus(), []);
 
@@ -1083,6 +1088,7 @@ export function AdminDashboard({
 
       {receiptModalState && (
         <div
+          ref={receiptModalRef}
           className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 p-4 backdrop-blur-sm"
           role="dialog"
           aria-modal="true"
@@ -1102,9 +1108,9 @@ export function AdminDashboard({
                 type="button"
                 onClick={() => setReceiptModalState(null)}
                 aria-label="إغلاق المعاينة"
-                className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200"
+                className="flex h-11 w-11 items-center justify-center rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200"
               >
-                <X className="h-4 w-4" />
+                <X className="h-5 w-5" />
               </button>
             </div>
 
@@ -1120,6 +1126,10 @@ export function AdminDashboard({
                   <img
                     src={receiptModalState.imageUrl}
                     alt="معاينة المستند"
+                    width={512}
+                    height={320}
+                    loading="lazy"
+                    decoding="async"
                     className="max-h-80 w-full rounded-2xl border border-slate-200 bg-sand-50 object-contain"
                   />
                 </div>
