@@ -426,14 +426,25 @@ export async function uploadPaymentReceipt(
   }
 
   const path = `${uidRes.data}/pay-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${check.ext}`;
-  const { error } = await supabase.storage
+  const receiptsUpload = await supabase.storage
+    .from('receipts')
+    .upload(path, file, { contentType: file.type, upsert: false });
+
+  if (!receiptsUpload.error) {
+    return { data: { path }, error: null };
+  }
+
+  const fallbackUpload = await supabase.storage
     .from('payment-receipts')
     .upload(path, file, { contentType: file.type, upsert: false });
 
-  if (error) {
+  if (fallbackUpload.error) {
     return {
       data: null,
-      error: getArabicSupabaseError(error, 'تعذر رفع صورة الإيصال. يمكنك المحاولة مرة أخرى.'),
+      error: getArabicSupabaseError(
+        receiptsUpload.error ?? fallbackUpload.error,
+        'تعذر رفع صورة الإيصال. يمكنك المحاولة مرة أخرى.'
+      ),
     };
   }
 
@@ -513,7 +524,7 @@ export async function getBookingReceiptSignedUrl(
   }
   try {
     const primary = await supabase.storage
-      .from('payment-receipts')
+      .from('receipts')
       .createSignedUrl(receiptPath, 300);
 
     if (!primary.error && primary.data?.signedUrl) {
@@ -521,7 +532,7 @@ export async function getBookingReceiptSignedUrl(
     }
 
     const legacy = await supabase.storage
-      .from('receipts')
+      .from('payment-receipts')
       .createSignedUrl(receiptPath, 300);
 
     if (legacy.error || !legacy.data?.signedUrl) {
@@ -600,9 +611,12 @@ function mapChaletFromRow(
   row: Record<string, unknown>,
   privateContact?: { owner_phone?: string; insta_pay_handle?: string }
 ): Chalet {
-  const coordinates = (row.coordinates as Chalet['coordinates'] | undefined) ?? {
-    lat: 30.0444,
-    lng: 31.2357,
+  const rawCoords = row.coordinates as Partial<Chalet['coordinates']> | null | undefined;
+  const parsedLat = Number(rawCoords?.lat);
+  const parsedLng = Number(rawCoords?.lng);
+  const coordinates: Chalet['coordinates'] = {
+    lat: Number.isFinite(parsedLat) ? parsedLat : 30.0444,
+    lng: Number.isFinite(parsedLng) ? parsedLng : 31.2357,
   };
   return {
     id: String(row.id),
@@ -755,6 +769,7 @@ export async function fetchPublicChalets(): Promise<RepoResult<Chalet[]>> {
       .from('chalets')
       .select('*')
       .eq('availability_status', 'active')
+      .order('featured', { ascending: false })
       .order('created_at', { ascending: false });
 
     if (error) {
@@ -1418,6 +1433,85 @@ export async function createBookingCompat(
     status?: BookingStatus;
   }
 ): Promise<RepoResult<BookingRequest>> {
+  if (payload.receiptPath) {
+    const uidRes = await getAuthenticatedUserId();
+    if (uidRes.error || !uidRes.data || !supabase) {
+      return { data: null, error: uidRes.error ?? 'يجب تسجيل الدخول قبل إرسال طلب الحجز.' };
+    }
+
+    try {
+      const checkOut = payload.checkOut ?? payload.checkIn;
+      let totalPrice = payload.totalPrice;
+      let depositAmount = payload.depositAmount ?? Math.round(payload.totalPrice * 0.25);
+      let remainingAmount =
+        payload.remainingAmount ?? Math.max(0, payload.totalPrice - depositAmount);
+      let securityDeposit = payload.securityDeposit ?? 0;
+      let nights = payload.nights;
+
+      const quoteRes = await supabase.rpc('calculate_booking_quote', {
+        p_chalet_id: payload.chaletId,
+        p_check_in: payload.checkIn,
+        p_check_out: checkOut,
+        p_rental_duration: payload.rentalDuration ?? 'daily',
+      });
+
+      if (!quoteRes.error && quoteRes.data) {
+        const quote = quoteRes.data as Record<string, unknown>;
+        nights = Number(quote.nights ?? nights);
+        totalPrice = Number(quote.total_price ?? totalPrice);
+        depositAmount = Number(quote.deposit_amount ?? depositAmount);
+        remainingAmount = Number(quote.remaining_amount ?? remainingAmount);
+        securityDeposit = Number(quote.security_deposit ?? securityDeposit);
+      }
+
+      const { data, error } = await supabase
+        .from('bookings')
+        .insert({
+          chalet_id: payload.chaletId,
+          renter_id: uidRes.data,
+          chalet_title: payload.chaletTitle,
+          resort: payload.resort,
+          destination_label: payload.destinationLabel,
+          owner_name: payload.ownerName,
+          guest_name: payload.guestName,
+          guest_phone: payload.guestPhone,
+          check_in: payload.checkIn,
+          check_out: checkOut,
+          nights,
+          rental_duration: payload.rentalDuration ?? 'daily',
+          inquiry_channel: payload.inquiryChannel ?? 'form',
+          guests: payload.guests,
+          total_price: totalPrice,
+          deposit_amount: depositAmount,
+          remaining_amount: remainingAmount,
+          security_deposit: securityDeposit,
+          policy_accepted: true,
+          receipt_path: payload.receiptPath,
+          payment_provider: 'manual_transfer',
+          payment_reference: payload.paymentReference ?? null,
+          payment_submitted_at: new Date().toISOString(),
+          notes: payload.notes ?? '',
+          status: 'pending_verification',
+        })
+        .select('*')
+        .single();
+
+      if (error || !data) {
+        return {
+          data: null,
+          error: getArabicSupabaseError(error, 'تعذر حفظ الحجز وإيصال التحويل.'),
+        };
+      }
+
+      return { data: mapBookingFromRow(data as Record<string, unknown>), error: null };
+    } catch (err) {
+      return {
+        data: null,
+        error: getArabicSupabaseError(err, 'تعذر حفظ الحجز وإيصال التحويل.'),
+      };
+    }
+  }
+
   try {
     const data = await createBooking({
       chaletId: payload.chaletId,

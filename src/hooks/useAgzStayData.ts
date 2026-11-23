@@ -97,6 +97,8 @@ export function useAgzStayData() {
   const [notificationsLoading, setNotificationsLoading] = useState(false);
   const [notificationsError, setNotificationsError] = useState<string | null>(null);
   const [isInitialLoading, setIsInitialLoading] = useState(true);
+  const [isPublicRefreshing, setIsPublicRefreshing] = useState(false);
+  const [hideFallbackDemos, setHideFallbackDemos] = useState(false);
   const [publicLoadError, setPublicLoadError] = useState<string | null>(null);
   const [scopedDataLoading, setScopedDataLoading] = useState(false);
   const [scopedDataError, setScopedDataError] = useState<string | null>(null);
@@ -110,6 +112,7 @@ export function useAgzStayData() {
   }, []);
 
   const loadPublicData = useCallback(async () => {
+    setIsPublicRefreshing(true);
     setPublicLoadError(null);
     try {
       const [chaletsRes, rangesRes, reviewsRes, reportsRes, trustRes] = await Promise.all([
@@ -133,6 +136,7 @@ export function useAgzStayData() {
       setPublicLoadError('تعذر تحميل بيانات الوحدات من الخادم. يرجى المحاولة مجدداً.');
     } finally {
       setIsInitialLoading(false);
+      setIsPublicRefreshing(false);
     }
   }, []);
 
@@ -233,21 +237,27 @@ export function useAgzStayData() {
     }
   }, []);
 
-  // Initial hydration + auth state listener
+  // Initial hydration + auth state listener (do not block public chalets on auth-only sync)
   useEffect(() => {
     let active = true;
-    void syncBookingLifecycleStatusesRpc().then(() => {
-      if (active) void loadPublicData();
-    });
+    void loadPublicData();
+
     void getCurrentUser().then((res) => {
       if (!active) return;
-      setCurrentUser(res.data ?? null);
-      void loadUserScopedData(res.data ?? null);
+      const user = res.data ?? null;
+      setCurrentUser(user);
+      if (user) {
+        void syncBookingLifecycleStatusesRpc();
+      }
+      void loadUserScopedData(user);
     });
 
     const unsubAuth = onAuthStateChange((user) => {
       if (!active) return;
       setCurrentUser(user);
+      if (user) {
+        void syncBookingLifecycleStatusesRpc();
+      }
       void loadUserScopedData(user);
     });
 
@@ -290,9 +300,14 @@ export function useAgzStayData() {
       ? 'pro'
       : 'free';
 
+  const isUsingFallbackDemos =
+    !isInitialLoading &&
+    publicChalets.length === 0 &&
+    !hideFallbackDemos &&
+    import.meta.env.VITE_SHOW_DEMO !== 'false';
+
   const showDemoListings =
-    import.meta.env.VITE_SHOW_DEMO === 'true' ||
-    (import.meta.env.DEV && publicChalets.length === 0);
+    import.meta.env.VITE_SHOW_DEMO === 'true' || isUsingFallbackDemos;
 
   const allChalets = useMemo<Chalet[]>(() => {
     const seenIds = new Set<string>();
@@ -389,7 +404,11 @@ export function useAgzStayData() {
       if (currentUser) {
         void loadNotifications(currentUser.id);
       }
-      showToast('تم إرسال طلب الحجز بنجاح وبانتظار موافقة المالك.');
+      showToast(
+        res.data.status === 'pending_verification'
+          ? 'تم إرسال طلب الحجز مع إيصال InstaPay وبانتظار المراجعة والتأكيد.'
+          : 'تم إرسال طلب الحجز بنجاح وبانتظار موافقة المالك.'
+      );
     }
     return res;
   };
@@ -449,15 +468,23 @@ export function useAgzStayData() {
   };
 
   const handleRejectBookingAdmin = async (bookingId: string, reason?: string) => {
-    const res = await rejectBookingRequestRpc(
-      bookingId,
-      reason || 'تم رفض طلب الحجز من مراجعة الإدارة'
-    );
+    const target = allKnownBookings.find((b) => b.id === bookingId);
+    const res =
+      target?.status === 'confirmed'
+        ? await cancelBookingWithPolicyRpc(bookingId)
+        : await rejectBookingRequestRpc(
+            bookingId,
+            reason || 'تم رفض طلب الحجز من مراجعة الإدارة'
+          );
     if (res.error) {
       showToast(res.error);
       return;
     }
-    showToast('تم رفض الطلب من الإدارة.');
+    showToast(
+      target?.status === 'confirmed'
+        ? 'تم إلغاء الحجز المؤكد وإعادة فتح التواريخ.'
+        : 'تم رفض الطلب من الإدارة وإعادة فتح التواريخ.'
+    );
     await refreshBookedRangesAndUser();
   };
 
@@ -744,6 +771,10 @@ export function useAgzStayData() {
     notificationsLoading,
     notificationsError,
     isInitialLoading,
+    isPublicRefreshing,
+    isUsingFallbackDemos,
+    hideFallbackDemos,
+    setHideFallbackDemos,
     publicLoadError,
     scopedDataLoading,
     scopedDataError,

@@ -283,7 +283,7 @@ export function AvailabilityCalendar({
           </span>
           <span className="inline-flex items-center gap-1">
             <span className="h-2.5 w-2.5 rounded-sm bg-error-50 ring-1 ring-error-500/40" />
-            {toggleMode || onSelectRangeDate ? 'مغلق / محجوز' : 'محجوز'}
+            {toggleMode || onSelectRangeDate ? 'مغلق / محجوز' : 'محجوز / قيد المراجعة'}
           </span>
           <span className="inline-flex items-center gap-1">
             <span className="h-2.5 w-2.5 rounded-sm bg-amber-100 ring-1 ring-amber-400" />

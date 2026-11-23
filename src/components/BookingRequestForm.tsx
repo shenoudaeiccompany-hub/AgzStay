@@ -10,11 +10,13 @@ import {
   MessageSquareText,
   Phone,
   ShieldAlert,
+  Upload,
+  X,
 } from 'lucide-react';
 import { AvailabilityCalendar } from '@/components/AvailabilityCalendar';
 import { formatEGP } from '@/data/chalets';
 import { isSupabaseConfigured } from '@/lib/supabase';
-import type { RepoResult } from '@/services/agzstayRepository';
+import { uploadPaymentReceipt, type RepoResult } from '@/services/agzstayRepository';
 import type {
   AppUser,
   BookingRequest,
@@ -92,11 +94,22 @@ export function BookingRequestForm({
   const [notes, setNotes] = useState('');
   const [splitFamilies, setSplitFamilies] = useState(2);
   const [policyAccepted, setPolicyAccepted] = useState(false);
+  const [receiptFile, setReceiptFile] = useState<File | null>(null);
+  const [paymentReference, setPaymentReference] = useState('');
   const [isSubmittingBooking, setIsSubmittingBooking] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [submittedStatus, setSubmittedStatus] = useState<BookingStatus>('pending');
   const [summaryCopied, setSummaryCopied] = useState(false);
   const [instaPayCopied, setInstaPayCopied] = useState(false);
   const [formError, setFormError] = useState('');
+
+  const supportWhatsapp =
+    (import.meta.env.VITE_SUPPORT_WHATSAPP as string | undefined)?.replace(/\D/g, '') || '';
+  const directWhatsappTarget =
+    canSeeOwnerContact && whatsappNumber ? whatsappNumber : supportWhatsapp;
+  const directWhatsappHref = directWhatsappTarget
+    ? `https://wa.me/${directWhatsappTarget}?text=${encodeURIComponent(whatsappDirectMessage)}`
+    : `https://wa.me/?text=${encodeURIComponent(whatsappDirectMessage)}`;
 
   const daysBeforeCheckIn = daysUntilDate(checkIn, today);
   const conflicts = useMemo(
@@ -220,6 +233,20 @@ export function BookingRequestForm({
     setFormError('');
     setIsSubmittingBooking(true);
     try {
+      let uploadedReceiptPath: string | undefined;
+      if (receiptFile) {
+        const uploadRes = await uploadPaymentReceipt(receiptFile);
+        if (uploadRes.error || !uploadRes.data) {
+          setFormError(uploadRes.error || 'تعذر رفع إيصال InstaPay.');
+          return;
+        }
+        uploadedReceiptPath = uploadRes.data.path;
+      }
+
+      const targetStatus: BookingStatus = uploadedReceiptPath
+        ? 'pending_verification'
+        : 'pending';
+
       const bookingResult = await onSubmitBooking({
         chaletId: chalet.id,
         chaletTitle: chalet.title,
@@ -241,7 +268,9 @@ export function BookingRequestForm({
         remainingAmount: freshPricing.remainingBalance,
         securityDeposit: freshPricing.securityDeposit,
         policyAccepted: true,
-        status: 'pending',
+        receiptPath: uploadedReceiptPath,
+        paymentReference: paymentReference.trim() || undefined,
+        status: targetStatus,
         notes: notes.trim(),
       });
 
@@ -250,6 +279,7 @@ export function BookingRequestForm({
         return;
       }
 
+      setSubmittedStatus(bookingResult.data?.status ?? targetStatus);
       setSubmitted(true);
     } finally {
       setIsSubmittingBooking(false);
@@ -299,12 +329,29 @@ export function BookingRequestForm({
         ))}
       </div>
 
+      <div className="grid grid-cols-2 gap-2 rounded-xl border border-primary-100 bg-primary-50/70 p-2.5 text-xs">
+        <div>
+          <span className="block text-[11px] text-slate-600">
+            الإجمالي ({nights.toLocaleString('ar-EG')} ليالٍ)
+          </span>
+          <strong className="text-sm font-extrabold text-primary-800">
+            {formatEGP(pricing.subtotal)}
+          </strong>
+        </div>
+        <div className="border-r border-primary-200 pr-2.5">
+          <span className="block text-[11px] text-secondary-700">
+            عربون الحجز ({pricing.depositLabel})
+          </span>
+          <strong className="text-sm font-extrabold text-secondary-700">
+            {formatEGP(pricing.downPaymentAmount)}
+          </strong>
+        </div>
+      </div>
+
       {canSeeOwnerContact && effectiveOwnerPhone ? (
         <div className="grid grid-cols-2 gap-2">
           <a
-            href={`https://wa.me/${whatsappNumber}?text=${encodeURIComponent(
-              whatsappDirectMessage
-            )}`}
+            href={directWhatsappHref}
             target="_blank"
             rel="noreferrer"
             className="inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-xl bg-success-500 px-3 py-2.5 text-xs font-bold text-white shadow-sm transition hover:bg-success-700"
@@ -321,8 +368,20 @@ export function BookingRequestForm({
           </a>
         </div>
       ) : (
-        <div className="rounded-xl border border-primary-100 bg-primary-50/70 p-3 text-center text-xs font-semibold text-primary-900">
-          بيانات اتصال المعلن وواتساب محمية وتُفتح تلقائياً فور تسجيل الدخول وإرسال طلب الحجز.
+        <div className="space-y-2 rounded-xl border border-emerald-200 bg-emerald-50/70 p-2.5">
+          <a
+            href={directWhatsappHref}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-3 py-2.5 text-xs font-bold text-white shadow-sm transition hover:bg-emerald-700"
+          >
+            <MessageCircle className="h-4 w-4" />
+            <span>واتساب مباشر برسالة جاهزة (اسم الوحدة والتواريخ)</span>
+          </a>
+          <p className="text-center text-[11px] font-semibold text-emerald-900">
+            يجهّز رسالة تتضمن «{chalet.resort}» وتواريخ {formatArabicDate(checkIn)} ←{' '}
+            {formatArabicDate(checkOut)} وعربون {formatEGP(pricing.downPaymentAmount)}.
+          </p>
         </div>
       )}
 
@@ -333,13 +392,19 @@ export function BookingRequestForm({
               <CheckCircle2 className="h-8 w-8 text-success-500" />
             </div>
             <span className="mt-2 inline-block rounded-full bg-warning-50 px-3 py-0.5 text-[11px] font-bold text-warning-800">
-              حالة الطلب: بانتظار موافقة المالك (مهلة ٢٤ ساعة)
+              {submittedStatus === 'pending_verification'
+                ? 'حالة الحجز: قيد التحقق من الإيصال (pending_verification)'
+                : 'حالة الطلب: بانتظار موافقة المالك (مهلة ٢٤ ساعة)'}
             </span>
             <h3 className="mt-2 text-lg font-bold text-slate-900">
-              تم إرسال طلب الحجز بنجاح
+              {submittedStatus === 'pending_verification'
+                ? 'تم إرسال الحجز وإيصال InstaPay للمراجعة'
+                : 'تم إرسال طلب الحجز بنجاح'}
             </h3>
             <p className="mt-1 text-xs leading-relaxed text-slate-600">
-              سيراجع المالك طلبك خلال ٢٤ ساعة. فور الموافقة سيصلك إشعار وتظهر بيانات التحويل لرفع إيصال العربون ({formatEGP(pricing.downPaymentAmount)}) داخل قائمة &quot;طلباتي&quot;.
+              {submittedStatus === 'pending_verification'
+                ? `تم حفظ الإيصال في حاوية receipts وإغلاق التواريخ مؤقتاً لحين مراجعة الإدارة والمالك وتأكيد العربون (${formatEGP(pricing.downPaymentAmount)}).`
+                : `سيراجع المالك طلبك خلال ٢٤ ساعة. فور الموافقة سيصلك إشعار وتظهر بيانات التحويل لرفع إيصال العربون (${formatEGP(pricing.downPaymentAmount)}) داخل قائمة "طلباتي".`}
             </p>
           </div>
 
@@ -388,19 +453,15 @@ export function BookingRequestForm({
                 )}
                 <span>{summaryCopied ? 'تم النسخ!' : 'نسخ الملخص'}</span>
               </button>
-              {whatsappNumber && (
-                <a
-                  href={`https://wa.me/${whatsappNumber}?text=${encodeURIComponent(
-                    agreementSummaryText
-                  )}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-xl bg-success-500 py-2 text-xs font-bold text-white hover:bg-success-700"
-                >
-                  <MessageCircle className="h-3.5 w-3.5" />
-                  <span>إرسال عبر واتساب</span>
-                </a>
-              )}
+              <a
+                href={directWhatsappHref}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-xl bg-success-500 py-2 text-xs font-bold text-white hover:bg-success-700"
+              >
+                <MessageCircle className="h-3.5 w-3.5" />
+                <span>إرسال عبر واتساب</span>
+              </a>
             </div>
           </div>
 
@@ -609,19 +670,72 @@ export function BookingRequestForm({
             </div>
           </div>
 
-          <div className="space-y-1.5 rounded-xl border border-secondary-200 bg-sand-50 p-3 text-xs">
+          <div className="space-y-2.5 rounded-xl border border-secondary-200 bg-sand-50 p-3 text-xs">
             <div className="flex items-center justify-between gap-2 font-bold text-slate-800">
               <span className="inline-flex items-center gap-1.5">
                 <CreditCard className="h-4 w-4 text-secondary-600" />
-                آلية دفع العربون ({pricing.depositLabel}):
+                دفع عربون جدية الحجز ({pricing.depositLabel}):
               </span>
               <span className="font-extrabold text-secondary-700">
                 {formatEGP(pricing.downPaymentAmount)}
               </span>
             </div>
             <p className="text-[11px] leading-relaxed text-slate-600">
-              ١. أرسل طلب الحجز الآن مجاناً • ٢. يوافق المالك خلال ٢٤ ساعة وتظهر بيانات InstaPay ورقم الهاتف • ٣. ارفع صورة الإيصال من &quot;طلباتي&quot; لتأكيد الحجز وإغلاق التواريخ.
+              يمكنك إرسال طلب الحجز مجاناً أولاً، أو إرفاق صورة إيصال InstaPay الآن ليُحفظ الحجز مباشرة بحالة{' '}
+              <code className="rounded bg-white px-1 py-0.5 font-mono text-[10px] font-bold text-primary-700" dir="ltr">
+                pending_verification
+              </code>{' '}
+              وتُغلق التواريخ لحين مراجعة الإدارة.
             </p>
+
+            {!chalet.isDemo && isSupabaseConfigured && (
+              <div className="space-y-2 border-t border-secondary-200/70 pt-2">
+                <input
+                  type="text"
+                  dir="ltr"
+                  value={paymentReference}
+                  onChange={(e) => setPaymentReference(e.target.value)}
+                  placeholder="رقم مرجع تحويل InstaPay (اختياري)"
+                  className="min-h-[40px] w-full rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-left text-xs text-slate-900 focus:border-secondary-500 focus:outline-none"
+                />
+
+                {receiptFile ? (
+                  <div className="flex items-center justify-between gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-[11px] font-bold text-emerald-900">
+                    <span className="truncate">تم اختيار الإيصال: {receiptFile.name}</span>
+                    <button
+                      type="button"
+                      onClick={() => setReceiptFile(null)}
+                      aria-label="إزالة ملف الإيصال"
+                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-white text-slate-600 hover:bg-slate-100"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ) : (
+                  <label className="flex min-h-[42px] cursor-pointer items-center justify-center gap-2 rounded-xl border border-dashed border-secondary-400 bg-white px-3 py-2 text-[11px] font-bold text-secondary-800 hover:bg-secondary-50">
+                    <Upload className="h-4 w-4 text-secondary-600" />
+                    <span>إرفاق إيصال InstaPay إلى حاوية receipts (اختياري)</span>
+                    <input
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp,application/pdf"
+                      className="sr-only"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        if (file.size > 5 * 1024 * 1024) {
+                          setFormError('الحد الأقصى لحجم إيصال InstaPay هو ٥ ميجابايت.');
+                          e.target.value = '';
+                          return;
+                        }
+                        setFormError('');
+                        setReceiptFile(file);
+                        e.target.value = '';
+                      }}
+                    />
+                  </label>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950">
@@ -716,8 +830,12 @@ export function BookingRequestForm({
             className="min-h-[44px] w-full rounded-xl bg-primary-600 py-3 text-sm font-bold text-white shadow-sm transition hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {isSubmittingBooking
-              ? 'جاري تسجيل طلب الحجز...'
-              : `إرسال طلب الحجز للمالك (عربون متوقع ${formatEGP(pricing.downPaymentAmount)})`}
+              ? receiptFile
+                ? 'جاري رفع الإيصال وحفظ الحجز...'
+                : 'جاري تسجيل طلب الحجز...'
+              : receiptFile
+              ? `إرسال الحجز وإيصال InstaPay (${formatEGP(pricing.downPaymentAmount)})`
+              : `إرسال طلب الحجز للمالك (عربون ${pricing.depositLabel}: ${formatEGP(pricing.downPaymentAmount)})`}
           </button>
         </form>
       )}

@@ -166,6 +166,12 @@ describe('bookingPricing utilities', () => {
         chaletId: chalet.id,
         checkIn: '2026-06-15',
         checkOut: '2026-06-17',
+        status: 'pending_verification',
+      },
+      {
+        chaletId: chalet.id,
+        checkIn: '2026-06-27',
+        checkOut: '2026-06-29',
         status: 'pending',
       },
       {
@@ -185,6 +191,7 @@ describe('bookingPricing utilities', () => {
     expect(isChaletAvailableForRange(chalet, ranges, '2026-06-11', '2026-06-14')).toBe(false);
     expect(isChaletAvailableForRange(chalet, ranges, '2026-06-16', '2026-06-18')).toBe(false);
     expect(isChaletAvailableForRange(chalet, ranges, '2026-06-24', '2026-06-26')).toBe(false);
+    expect(isChaletAvailableForRange(chalet, ranges, '2026-06-28', '2026-06-30')).toBe(false);
     expect(isChaletAvailableForRange(chalet, ranges, '2026-06-18', '2026-06-23')).toBe(true);
 
     const conflicts = findConflictingDates('2026-06-09', 3, new Set(['2026-06-10', '2026-06-11']));

@@ -101,6 +101,9 @@ export function AdminDashboard({
   onBackToBrowse,
 }: AdminDashboardProps) {
   const [statusFilter, setStatusFilter] = useState<'all' | SubscriptionStatus>('all');
+  const [bookingFilter, setBookingFilter] = useState<
+    'pending_review' | 'confirmed' | 'cancelled' | 'all'
+  >('pending_review');
   const [supabaseResult, setSupabaseResult] = useState<SupabaseUnitsTestResult | null>(null);
   const [isTestingSupabase, setIsTestingSupabase] = useState(false);
   const [showSqlGuide, setShowSqlGuide] = useState(false);
@@ -141,6 +144,19 @@ export function AdminDashboard({
       ),
     [bookings]
   );
+
+  const displayedBookings = useMemo(() => {
+    if (bookingFilter === 'pending_review') return pendingBookings;
+    if (bookingFilter === 'confirmed') {
+      return bookings.filter((b) => b.status === 'confirmed' || b.status === 'completed');
+    }
+    if (bookingFilter === 'cancelled') {
+      return bookings.filter(
+        (b) => b.status === 'cancelled' || b.status === 'rejected' || b.status === 'expired'
+      );
+    }
+    return bookings;
+  }, [bookingFilter, bookings, pendingBookings]);
 
   const pendingSubscriptions = useMemo(
     () => subscriptions.filter((s) => s.status === 'pending-verification'),
@@ -690,23 +706,53 @@ export function AdminDashboard({
               مراجعة الحجوزات المعلقة وإيصالات InstaPay (pending_verification)
             </h2>
             <p className="text-xs text-slate-500">
-              اعرض إيصال العربون (٢٥٪) بأمان عبر Signed URL من باكت receipts، ثم اعتمد الحجز لإغلاق التواريخ نهائياً أو ارفضه لإعادة فتحها.
+              اعرض إيصال العربون (٢٥٪) بأمان عبر Signed URL من باكت receipts، ثم اعتمد الحجز لإغلاق التواريخ نهائياً أو ارفضه/ألغِه لإعادة فتحها.
             </p>
           </div>
-          <span className="rounded-full bg-warning-50 px-3 py-1 text-xs font-bold text-warning-800">
-            {pendingBookings.length} حجز بانتظار المراجعة
-          </span>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {(
+              [
+                { id: 'pending_review', label: `بانتظار المراجعة (${pendingBookings.length})` },
+                { id: 'confirmed', label: 'المؤكدة (confirmed)' },
+                { id: 'cancelled', label: 'الملغاة / المرفوضة' },
+                { id: 'all', label: `الكل (${bookings.length})` },
+              ] as const
+            ).map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setBookingFilter(tab.id)}
+                className={`rounded-xl px-3 py-1.5 text-xs font-bold transition ${
+                  bookingFilter === tab.id
+                    ? 'bg-primary-600 text-white'
+                    : 'bg-sand-50 text-slate-700 hover:bg-sand-100'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
         </div>
 
-        {pendingBookings.length === 0 ? (
+        {displayedBookings.length === 0 ? (
           <div className="mt-4 rounded-2xl border border-dashed border-slate-200 bg-sand-50 p-6 text-center text-xs text-slate-500">
-            لا توجد حجوزات معلقة بانتظار المراجعة حالياً.
+            لا توجد حجوزات ضمن هذا التصنيف حالياً.
           </div>
         ) : (
           <div className="mt-4 space-y-3">
-            {pendingBookings.map((booking) => {
+            {displayedBookings.map((booking) => {
               const deposit = booking.depositAmount ?? Math.round(booking.totalPrice * 0.25);
               const isLoadingReceipt = loadingReceiptBookingId === booking.id;
+              const canConfirmBooking =
+                booking.status === 'pending_verification' ||
+                booking.status === 'payment_submitted' ||
+                booking.status === 'approved';
+              const canCancelBooking =
+                booking.status === 'pending' ||
+                booking.status === 'approved' ||
+                booking.status === 'pending_verification' ||
+                booking.status === 'payment_submitted' ||
+                booking.status === 'confirmed';
 
               return (
                 <div
@@ -715,11 +761,33 @@ export function AdminDashboard({
                 >
                   <div className="space-y-1.5">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="rounded-full bg-warning-100 px-2.5 py-0.5 text-[11px] font-bold text-warning-900">
-                        {booking.status === 'payment_submitted' || booking.status === 'pending_verification'
+                      <span
+                        className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${
+                          booking.status === 'confirmed' || booking.status === 'completed'
+                            ? 'bg-success-50 text-success-700'
+                            : booking.status === 'cancelled' ||
+                              booking.status === 'rejected' ||
+                              booking.status === 'expired'
+                            ? 'bg-error-50 text-error-700'
+                            : 'bg-warning-100 text-warning-900'
+                        }`}
+                      >
+                        {booking.status === 'pending_verification'
+                          ? 'إيصال مرفق — قيد المراجعة (pending_verification)'
+                          : booking.status === 'payment_submitted'
                           ? 'إيصال عربون مرفق (payment_submitted)'
                           : booking.status === 'approved'
                           ? 'موافق مبدئياً — بانتظار رفع الإيصال (approved)'
+                          : booking.status === 'confirmed'
+                          ? 'مؤكد (confirmed)'
+                          : booking.status === 'completed'
+                          ? 'مكتمل (completed)'
+                          : booking.status === 'cancelled'
+                          ? 'ملغي (cancelled)'
+                          : booking.status === 'rejected'
+                          ? 'مرفوض (rejected)'
+                          : booking.status === 'expired'
+                          ? 'منتهي المهلة (expired)'
                           : 'طلب حجز مبدئي (pending)'}
                       </span>
                       <span className="text-sm font-extrabold text-slate-900">
@@ -748,6 +816,12 @@ export function AdminDashboard({
                       </span>
                     </div>
 
+                    {booking.paymentReference && (
+                      <p className="text-[11px] font-bold text-primary-700">
+                        مرجع InstaPay: <span dir="ltr">{booking.paymentReference}</span>
+                      </p>
+                    )}
+
                     {booking.notes && (
                       <p className="text-[11px] text-slate-500">ملاحظات: {booking.notes}</p>
                     )}
@@ -758,7 +832,7 @@ export function AdminDashboard({
                       type="button"
                       onClick={() => handlePreviewBookingReceipt(booking)}
                       disabled={isLoadingReceipt}
-                      className="inline-flex items-center gap-1.5 rounded-xl border border-primary-200 bg-white px-3 py-2 text-xs font-bold text-primary-700 hover:bg-primary-50 disabled:opacity-60"
+                      className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-primary-200 bg-white px-3 py-2 text-xs font-bold text-primary-700 hover:bg-primary-50 disabled:opacity-60"
                     >
                       <Eye className="h-3.5 w-3.5" />
                       <span>
@@ -770,23 +844,31 @@ export function AdminDashboard({
                       </span>
                     </button>
 
-                    <button
-                      type="button"
-                      onClick={() => onApproveBooking(booking.id)}
-                      className="inline-flex items-center gap-1.5 rounded-xl bg-success-500 px-3.5 py-2 text-xs font-bold text-white shadow-sm transition hover:bg-success-700"
-                    >
-                      <CheckCircle2 className="h-4 w-4" />
-                      <span>قبول الحجز (confirmed)</span>
-                    </button>
+                    {canConfirmBooking && (
+                      <button
+                        type="button"
+                        onClick={() => onApproveBooking(booking.id)}
+                        className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl bg-success-500 px-3.5 py-2 text-xs font-bold text-white shadow-sm transition hover:bg-success-700"
+                      >
+                        <CheckCircle2 className="h-4 w-4" />
+                        <span>تأكيد الحجز (confirmed)</span>
+                      </button>
+                    )}
 
-                    <button
-                      type="button"
-                      onClick={() => onRejectBooking(booking.id)}
-                      className="inline-flex items-center gap-1 rounded-xl border border-error-200 bg-white px-3 py-2 text-xs font-bold text-error-700 hover:bg-error-50"
-                    >
-                      <XCircle className="h-3.5 w-3.5" />
-                      <span>رفض الحجز (cancelled)</span>
-                    </button>
+                    {canCancelBooking && (
+                      <button
+                        type="button"
+                        onClick={() => onRejectBooking(booking.id)}
+                        className="inline-flex min-h-[40px] items-center gap-1 rounded-xl border border-error-200 bg-white px-3 py-2 text-xs font-bold text-error-700 hover:bg-error-50"
+                      >
+                        <XCircle className="h-3.5 w-3.5" />
+                        <span>
+                          {booking.status === 'confirmed'
+                            ? 'إلغاء الحجز (cancelled)'
+                            : 'رفض / إلغاء (cancelled)'}
+                        </span>
+                      </button>
+                    )}
                   </div>
                 </div>
               );
@@ -1132,6 +1214,16 @@ export function AdminDashboard({
                     decoding="async"
                     className="max-h-80 w-full rounded-2xl border border-slate-200 bg-sand-50 object-contain"
                   />
+                  <div className="flex justify-end">
+                    <a
+                      href={receiptModalState.imageUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-[11px] font-bold text-primary-700 underline hover:text-primary-800"
+                    >
+                      فتح الملف أو PDF في نافذة جديدة
+                    </a>
+                  </div>
                 </div>
               ) : (
                 <div className="rounded-2xl border border-dashed border-slate-300 bg-sand-50 p-6 text-center text-xs text-slate-600">
@@ -1144,29 +1236,41 @@ export function AdminDashboard({
             </div>
 
             {receiptModalState.booking && (
-              <div className="mt-4 grid grid-cols-2 gap-2 border-t border-slate-100 pt-4">
-                <button
-                  type="button"
-                  onClick={() => {
-                    onApproveBooking(receiptModalState.booking!.id);
-                    setReceiptModalState(null);
-                  }}
-                  className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-success-500 py-2.5 text-xs font-bold text-white hover:bg-success-700"
-                >
-                  <CheckCircle2 className="h-4 w-4" />
-                  <span>قبول الحجز (confirmed)</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    onRejectBooking(receiptModalState.booking!.id);
-                    setReceiptModalState(null);
-                  }}
-                  className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-error-200 bg-error-50 py-2.5 text-xs font-bold text-error-700 hover:bg-error-100"
-                >
-                  <XCircle className="h-4 w-4" />
-                  <span>رفض الحجز (cancelled)</span>
-                </button>
+              <div className="mt-4 flex flex-wrap gap-2 border-t border-slate-100 pt-4">
+                {(receiptModalState.booking.status === 'pending_verification' ||
+                  receiptModalState.booking.status === 'payment_submitted' ||
+                  receiptModalState.booking.status === 'approved') && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onApproveBooking(receiptModalState.booking!.id);
+                      setReceiptModalState(null);
+                    }}
+                    className="inline-flex min-h-[44px] flex-1 items-center justify-center gap-1.5 rounded-xl bg-success-500 px-3 py-2.5 text-xs font-bold text-white hover:bg-success-700"
+                  >
+                    <CheckCircle2 className="h-4 w-4" />
+                    <span>تأكيد الحجز (confirmed)</span>
+                  </button>
+                )}
+                {receiptModalState.booking.status !== 'cancelled' &&
+                  receiptModalState.booking.status !== 'rejected' &&
+                  receiptModalState.booking.status !== 'completed' && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onRejectBooking(receiptModalState.booking!.id);
+                        setReceiptModalState(null);
+                      }}
+                      className="inline-flex min-h-[44px] flex-1 items-center justify-center gap-1.5 rounded-xl border border-error-200 bg-error-50 px-3 py-2.5 text-xs font-bold text-error-700 hover:bg-error-100"
+                    >
+                      <XCircle className="h-4 w-4" />
+                      <span>
+                        {receiptModalState.booking.status === 'confirmed'
+                          ? 'إلغاء الحجز (cancelled)'
+                          : 'رفض / إلغاء (cancelled)'}
+                      </span>
+                    </button>
+                  )}
               </div>
             )}
           </div>

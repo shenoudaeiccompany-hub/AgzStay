@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   CalendarCheck2,
   Home,
+  MessageCircle,
   RefreshCw,
   Scale,
   ShieldCheck,
@@ -71,6 +72,9 @@ const AdminDashboard = lazy(() =>
 const MarketPriceGuide = lazy(() =>
   import('@/components/MarketPriceGuide').then((m) => ({ default: m.MarketPriceGuide }))
 );
+const SupportContactModal = lazy(() =>
+  import('@/components/SupportContactModal').then((m) => ({ default: m.SupportContactModal }))
+);
 
 const DEFAULT_FILTERS: FilterState = {
   searchQuery: '',
@@ -138,6 +142,10 @@ export function App() {
     notificationsLoading,
     notificationsError,
     isInitialLoading,
+    isPublicRefreshing,
+    isUsingFallbackDemos,
+    hideFallbackDemos,
+    setHideFallbackDemos,
     publicLoadError,
     scopedDataLoading,
     scopedDataError,
@@ -196,6 +204,7 @@ export function App() {
   const [isUpgradeModalOpen, setIsUpgradeModalOpen] = useState(false);
   const [isAuthOpen, setIsAuthOpen] = useState(false);
   const [isCompareOpen, setIsCompareOpen] = useState(false);
+  const [isSupportOpen, setIsSupportOpen] = useState(false);
 
   useEffect(() => saveLocalJson(agzstayStorageKeys.favorites, favorites), [favorites]);
   useEffect(() => saveLocalJson(agzstayStorageKeys.compareIds, compareIds), [compareIds]);
@@ -590,19 +599,85 @@ export function App() {
 
           <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-8 sm:px-6">
             {publicLoadError && (
-              <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-error-200 bg-error-50 px-4 py-3 text-xs font-bold text-error-800">
+              <div
+                className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-error-200 bg-error-50 px-4 py-3 text-xs font-bold text-error-800"
+                role="alert"
+              >
                 <span className="inline-flex items-center gap-2">
                   <AlertTriangle className="h-4 w-4 shrink-0" />
                   {publicLoadError}
                 </span>
-                <button
-                  type="button"
-                  onClick={() => void loadPublicData()}
-                  className="inline-flex min-h-[44px] items-center gap-1 rounded-xl bg-white px-3 py-1.5 text-xs font-bold text-error-700 shadow-sm hover:bg-error-100"
-                >
-                  <RefreshCw className="h-3.5 w-3.5" />
-                  إعادة المحاولة
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={isPublicRefreshing}
+                    onClick={() => void loadPublicData()}
+                    className="inline-flex min-h-[44px] items-center gap-1.5 rounded-xl bg-white px-3.5 py-1.5 text-xs font-bold text-error-700 shadow-sm hover:bg-error-100 disabled:opacity-60"
+                  >
+                    <RefreshCw className={`h-3.5 w-3.5 ${isPublicRefreshing ? 'animate-spin' : ''}`} />
+                    {isPublicRefreshing ? 'جاري التحديث...' : 'إعادة المحاولة'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsSupportOpen(true)}
+                    className="inline-flex min-h-[44px] items-center gap-1.5 rounded-xl border border-error-200 bg-white px-3.5 py-1.5 text-xs font-bold text-slate-700 shadow-sm hover:bg-slate-50"
+                  >
+                    <MessageCircle className="h-3.5 w-3.5 text-primary-600" />
+                    تواصل معنا
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {isUsingFallbackDemos && (
+              <div
+                className="mb-6 flex flex-col justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50/90 px-4 py-3.5 text-xs text-amber-950 sm:flex-row sm:items-center"
+                role="status"
+              >
+                <div className="flex items-start gap-2.5">
+                  <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+                  <div>
+                    <p className="font-extrabold">
+                      عرض وحدات تجريبية مؤقتة للمعاينة
+                    </p>
+                    <p className="mt-0.5 leading-relaxed text-amber-900">
+                      لا توجد وحدات نشطة منشورة في قاعدة البيانات حالياً، لذا نعرض نماذج احتياطية مؤقتة لتجربة التصفح والبحث. بمجرد نشر أول وحدة حقيقية ستظهر مباشرة بدلاً منها.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    disabled={isPublicRefreshing}
+                    onClick={() => void loadPublicData()}
+                    className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-amber-300 bg-white px-3 py-1.5 text-xs font-bold text-amber-900 hover:bg-amber-100 disabled:opacity-60"
+                  >
+                    <RefreshCw className={`h-3.5 w-3.5 ${isPublicRefreshing ? 'animate-spin' : ''}`} />
+                    إعادة المحاولة
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsSupportOpen(true)}
+                    className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-amber-300 bg-white px-3 py-1.5 text-xs font-bold text-primary-700 hover:bg-amber-100"
+                  >
+                    <MessageCircle className="h-3.5 w-3.5" />
+                    تواصل معنا
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsAddModalOpen(true)}
+                    className="inline-flex min-h-[40px] items-center gap-1 rounded-xl bg-secondary-500 px-3 py-1.5 text-xs font-bold text-white hover:bg-secondary-600"
+                  >
+                    أضف أول وحدة
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setHideFallbackDemos(true)}
+                    className="inline-flex min-h-[40px] items-center rounded-xl px-2.5 py-1.5 text-xs font-semibold text-amber-800 hover:bg-amber-100"
+                  >
+                    إخفاء المعاينة
+                  </button>
+                </div>
               </div>
             )}
 
@@ -616,6 +691,8 @@ export function App() {
                 <p className="text-xs text-slate-500 sm:text-sm">
                   {isInitialLoading
                     ? 'جاري تحميل الوحدات من الخادم...'
+                    : isUsingFallbackDemos
+                    ? `يتم عرض ${filteredChalets.length} وحدة معاينة مؤقتة من أصل ${activeBrowseChaletsCount} نموذج تجريبي`
                     : `يتم عرض ${filteredChalets.length} وحدة مطابقة من إجمالي ${activeBrowseChaletsCount} وحدة نشطة في مصر`}
                 </p>
               </div>
@@ -687,26 +764,39 @@ export function App() {
                     <AlertTriangle className="h-7 w-7" />
                   </div>
                   <h3 className="mt-4 text-lg font-extrabold text-slate-900">
-                    قاعدة البيانات غير مربوطة بهذا النشر بعد
+                    لا توجد وحدات متاحة للعرض حالياً
                   </h3>
                   <p className="mx-auto mt-2 max-w-xl text-sm leading-relaxed text-slate-600">
-                    لعرض الوحدات الحية في الإنتاج، أضف متغيرات البيئة{' '}
-                    <code className="rounded bg-slate-100 px-1.5 py-0.5 text-xs font-bold text-primary-700" dir="ltr">
-                      VITE_SUPABASE_URL
-                    </code>{' '}
-                    و{' '}
-                    <code className="rounded bg-slate-100 px-1.5 py-0.5 text-xs font-bold text-primary-700" dir="ltr">
-                      VITE_SUPABASE_ANON_KEY
-                    </code>{' '}
-                    في إعدادات Vercel ثم أعد النشر (Redeploy)، وتأكد من تشغيل ملفات الترحيل في Supabase SQL Editor.
+                    الاتصال بقاعدة البيانات غير مكتمل في هذه البيئة. يمكنك إعادة المحاولة أو إظهار الوحدات التجريبية مؤقتاً للمعاينة أو التواصل معنا للمساعدة.
                   </p>
-                  <p className="mt-2 text-xs text-slate-500">
-                    للمعاينة السريعة بوحدات تجريبية مؤقتة فقط، يمكنك ضبط{' '}
-                    <code className="rounded bg-slate-100 px-1.5 py-0.5 font-bold text-slate-700" dir="ltr">
-                      VITE_SHOW_DEMO=true
-                    </code>{' '}
-                    في متغيرات بيئة Vercel ثم إعادة البناء.
-                  </p>
+                  <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
+                    <button
+                      type="button"
+                      disabled={isPublicRefreshing}
+                      onClick={() => void loadPublicData()}
+                      className="inline-flex min-h-[44px] items-center gap-1.5 rounded-xl bg-primary-600 px-5 py-2.5 text-sm font-bold text-white hover:bg-primary-700 disabled:opacity-60"
+                    >
+                      <RefreshCw className={`h-4 w-4 ${isPublicRefreshing ? 'animate-spin' : ''}`} />
+                      {isPublicRefreshing ? 'جاري المحاولة...' : 'إعادة المحاولة'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIsSupportOpen(true)}
+                      className="inline-flex min-h-[44px] items-center gap-1.5 rounded-xl border border-primary-200 bg-primary-50 px-5 py-2.5 text-sm font-bold text-primary-700 hover:bg-primary-100"
+                    >
+                      <MessageCircle className="h-4 w-4" />
+                      تواصل معنا
+                    </button>
+                    {hideFallbackDemos && import.meta.env.VITE_SHOW_DEMO !== 'false' && (
+                      <button
+                        type="button"
+                        onClick={() => setHideFallbackDemos(false)}
+                        className="min-h-[44px] rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-slate-700 hover:bg-slate-50"
+                      >
+                        عرض وحدات تجريبية مؤقتة
+                      </button>
+                    )}
+                  </div>
                 </div>
               ) : activeBrowseChaletsCount === 0 ? (
                 <div className="rounded-3xl border border-dashed border-slate-300 bg-white p-8 text-center sm:p-10">
@@ -714,12 +804,29 @@ export function App() {
                     <Home className="h-7 w-7" />
                   </div>
                   <h3 className="mt-4 text-lg font-extrabold text-slate-900">
-                    لا توجد وحدات نشطة منشورة في قاعدة البيانات حتى الآن
+                    لا توجد وحدات متاحة حالياً
                   </h3>
                   <p className="mx-auto mt-2 max-w-xl text-sm leading-relaxed text-slate-500">
-                    قاعدة البيانات متصلة بنجاح، لكن جدول الوحدات لا يحتوي بعد على وحدات بحالة نشطة (active). سجّل الدخول وأضف أول وحدة، ثم اعتمد توثيق المالك من لوحة الإدارة لتظهر للزوار.
+                    لم يتم نشر وحدات نشطة بعد أو تعذر تحميل القائمة مؤقتاً. يمكنك إعادة المحاولة لتحديث الوحدات، أو التواصل معنا لطلب وحدة مناسبة، أو إضافة أول وحدة لك كمضيف.
                   </p>
                   <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
+                    <button
+                      type="button"
+                      disabled={isPublicRefreshing}
+                      onClick={() => void loadPublicData()}
+                      className="inline-flex min-h-[44px] items-center gap-1.5 rounded-xl bg-primary-600 px-5 py-2.5 text-sm font-bold text-white hover:bg-primary-700 disabled:opacity-60"
+                    >
+                      <RefreshCw className={`h-4 w-4 ${isPublicRefreshing ? 'animate-spin' : ''}`} />
+                      {isPublicRefreshing ? 'جاري التحديث...' : 'إعادة المحاولة'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIsSupportOpen(true)}
+                      className="inline-flex min-h-[44px] items-center gap-1.5 rounded-xl border border-primary-200 bg-primary-50 px-5 py-2.5 text-sm font-bold text-primary-700 hover:bg-primary-100"
+                    >
+                      <MessageCircle className="h-4 w-4" />
+                      تواصل معنا
+                    </button>
                     <button
                       type="button"
                       onClick={() => setIsAddModalOpen(true)}
@@ -727,14 +834,15 @@ export function App() {
                     >
                       أضف أول وحدة الآن
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => void loadPublicData()}
-                      className="inline-flex min-h-[44px] items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-slate-700 hover:bg-slate-50"
-                    >
-                      <RefreshCw className="h-4 w-4" />
-                      تحديث القائمة
-                    </button>
+                    {hideFallbackDemos && import.meta.env.VITE_SHOW_DEMO !== 'false' && (
+                      <button
+                        type="button"
+                        onClick={() => setHideFallbackDemos(false)}
+                        className="min-h-[44px] rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-slate-700 hover:bg-slate-50"
+                      >
+                        عرض بيانات تجريبية مؤقتة
+                      </button>
+                    )}
                   </div>
                 </div>
               ) : (
@@ -746,15 +854,34 @@ export function App() {
                     لا توجد وحدات مطابقة لشروط البحث والتواريخ الحالية
                   </h3>
                   <p className="mt-1 text-sm text-slate-500">
-                    جرّب تعديل تواريخ الوصول والمغادرة أو اختيار محافظة أخرى لعرض الوحدات المتاحة.
+                    جرّب تعديل تواريخ الوصول والمغادرة أو اختيار محافظة أخرى، أو تواصل معنا لنساعدك في إيجاد الوحدة المناسبة.
                   </p>
-                  <button
-                    type="button"
-                    onClick={resetFilters}
-                    className="mt-5 min-h-[44px] rounded-xl bg-secondary-500 px-5 py-2.5 text-sm font-bold text-white hover:bg-secondary-600"
-                  >
-                    عرض كل وحدات الإيجار في مصر
-                  </button>
+                  <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
+                    <button
+                      type="button"
+                      onClick={resetFilters}
+                      className="min-h-[44px] rounded-xl bg-secondary-500 px-5 py-2.5 text-sm font-bold text-white hover:bg-secondary-600"
+                    >
+                      عرض كل وحدات الإيجار في مصر
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isPublicRefreshing}
+                      onClick={() => void loadPublicData()}
+                      className="inline-flex min-h-[44px] items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+                    >
+                      <RefreshCw className={`h-4 w-4 ${isPublicRefreshing ? 'animate-spin' : ''}`} />
+                      إعادة المحاولة
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIsSupportOpen(true)}
+                      className="inline-flex min-h-[44px] items-center gap-1.5 rounded-xl border border-primary-200 bg-primary-50 px-4 py-2.5 text-sm font-bold text-primary-700 hover:bg-primary-100"
+                    >
+                      <MessageCircle className="h-4 w-4" />
+                      تواصل معنا
+                    </button>
+                  </div>
                 </div>
               )
             ) : viewMode === 'map' ? (
@@ -867,7 +994,17 @@ export function App() {
               AgzStay - إجازة ستاي — منصة مصر الشاملة للإيجار المفروش والشاليهات اليومي والأسبوعي والشهري
             </span>
           </div>
-          <div>القاهرة الكبرى • الإسكندرية • الساحل • السخنة • البحر الأحمر • الدلتا والصعيد</div>
+          <div className="flex flex-wrap items-center justify-center gap-3">
+            <span>القاهرة الكبرى • الإسكندرية • الساحل • السخنة • البحر الأحمر • الدلتا والصعيد</span>
+            <button
+              type="button"
+              onClick={() => setIsSupportOpen(true)}
+              className="inline-flex min-h-[36px] items-center gap-1 rounded-xl border border-primary-200 bg-primary-50 px-3 py-1 text-xs font-bold text-primary-700 hover:bg-primary-100"
+            >
+              <MessageCircle className="h-3.5 w-3.5" />
+              تواصل معنا
+            </button>
+          </div>
         </div>
       </footer>
 
@@ -964,6 +1101,15 @@ export function App() {
             onClose={() => setIsCompareOpen(false)}
             onRemoveChalet={handleToggleCompare}
             onSelectChalet={(c) => setSelectedChaletId(c.id)}
+          />
+        </Suspense>
+      )}
+
+      {isSupportOpen && (
+        <Suspense fallback={null}>
+          <SupportContactModal
+            onClose={() => setIsSupportOpen(false)}
+            onOpenAddProperty={() => setIsAddModalOpen(true)}
           />
         </Suspense>
       )}
