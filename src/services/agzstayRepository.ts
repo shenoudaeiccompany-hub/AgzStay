@@ -1,4 +1,5 @@
 import { supabase, isSupabaseConfigured } from '@/lib/supabase';
+import { formatSupabaseError, MESSAGES, toArabicError } from '@/utils/arabicErrors';
 import type {
   AppNotification,
   AppUser,
@@ -16,6 +17,7 @@ import type {
   RevealedOwnerContact,
 } from '@/types/chalet';
 
+export { MESSAGES, toArabicError };
 export type RepoResult<T> = { data: T; error: null } | { data: null; error: string };
 
 const STORAGE_KEYS = {
@@ -108,33 +110,7 @@ function validateFileForUpload(
 }
 
 function getArabicSupabaseError(err: unknown, fallback: string): string {
-  if (!err) return fallback;
-  const obj = err as { code?: string; message?: string; details?: string };
-  const code = obj.code ?? '';
-  const msg = (obj.message ?? '').toLowerCase();
-
-  if (code === '23P01' || msg.includes('bookings_no_overlap')) {
-    return 'عذراً، تم حجز هذه التواريخ للتو من مستأجر آخر. يرجى اختيار مواعيد أخرى.';
-  }
-  if (code === '42501' || msg.includes('row-level security') || msg.includes('permission denied')) {
-    return 'ليست لديك الصلاحية المطلوبة لتنفيذ هذا الإجراء.';
-  }
-  if (msg.includes('invalid login credentials')) {
-    return 'البريد الإلكتروني أو كلمة المرور غير صحيحة.';
-  }
-  if (msg.includes('email not confirmed')) {
-    return 'يرجى تأكيد بريدك الإلكتروني أولاً عبر الرابط المرسل إليك.';
-  }
-  if (msg.includes('user already registered')) {
-    return 'هذا البريد الإلكتروني مسجل بالفعل. يمكنك تسجيل الدخول مباشرة.';
-  }
-  if (msg.includes('password should be at least')) {
-    return 'كلمة المرور يجب أن تتكون من ٦ أحرف على الأقل.';
-  }
-  if (obj.message) {
-    return obj.message;
-  }
-  return fallback;
+  return formatSupabaseError(err, fallback);
 }
 
 async function getAuthenticatedUserId(): Promise<RepoResult<string>> {

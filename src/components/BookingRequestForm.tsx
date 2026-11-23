@@ -22,6 +22,7 @@ import type {
   Chalet,
   RentalDuration,
 } from '@/types/chalet';
+import { toArabicError } from '@/utils/arabicErrors';
 import {
   addDaysIso,
   calculateStayPricing,
@@ -179,12 +180,24 @@ export function BookingRequestForm({
       return;
     }
     if (!currentUser) {
-      setFormError('يرجى تسجيل الدخول أولاً قبل إرسال طلب الحجز.');
+      setFormError(toArabicError({ message: 'not_authenticated' }));
+      return;
+    }
+    if (chalet.ownerId && chalet.ownerId === currentUser.id) {
+      setFormError(toArabicError({ message: 'cannot_book_own' }));
+      return;
+    }
+    if (!checkIn || !checkOut || checkOut <= checkIn || nights <= 0) {
+      setFormError(toArabicError({ message: 'invalid_dates' }));
+      return;
+    }
+    if (guests < 1 || guests > chalet.maxGuests) {
+      setFormError(toArabicError({ message: 'invalid_guests' }));
       return;
     }
     if (conflicts.length > 0) {
       setFormError(
-        `التواريخ المختارة تتعارض مع مواعيد محجوزة أو مغلقة (${conflicts.map(formatArabicDate).join('، ')}). يرجى اختيار موعد متاح من التقويم.`
+        `${toArabicError({ message: 'dates_unavailable' })} (${conflicts.map(formatArabicDate).join('، ')}). يرجى اختيار موعد متاح من التقويم.`
       );
       return;
     }
@@ -193,13 +206,11 @@ export function BookingRequestForm({
       return;
     }
     if (!/^01[0125][0-9]{8}$/.test(guestPhone.trim())) {
-      setFormError('يرجى إدخال رقم هاتف مصري صحيح مكون من ١١ رقماً.');
+      setFormError(toArabicError({ message: 'phone_invalid' }));
       return;
     }
     if (!policyAccepted) {
-      setFormError(
-        'يرجى الموافقة على سياسة الإلغاء وعدم استرداد جدية الحجز قبل الوصول بأقل من ١٠ أيام.'
-      );
+      setFormError(toArabicError({ message: 'policy_not_accepted' }));
       return;
     }
 
