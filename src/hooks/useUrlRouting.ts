@@ -1,11 +1,15 @@
 import { useEffect, useState } from 'react';
-import type { AppSectionTab } from '@/types/chalet';
+import type { RouteSection } from '@/types/chalet';
 
-function readSectionFromLocation(): AppSectionTab {
+function readSectionFromLocation(): RouteSection {
   try {
-    return window.location.pathname === '/admin' ? 'admin' : 'browse';
+    const path = window.location.pathname;
+    if (path === '/pricing') return 'pricing';
+    if (path === '/owner') return 'owner';
+    if (path === '/admin') return 'admin';
+    return 'home';
   } catch {
-    return 'browse';
+    return 'home';
   }
 }
 
@@ -22,40 +26,38 @@ function readChaletIdFromLocation(): string | null {
 }
 
 export function useUrlRouting() {
-  const [activeSection, setActiveSection] = useState<AppSectionTab>(readSectionFromLocation);
+  const [activeSection, setActiveSection] = useState<RouteSection>(readSectionFromLocation);
   const [selectedChaletId, setSelectedChaletId] = useState<string | null>(readChaletIdFromLocation);
 
-  // Listen to browser back / forward buttons
   useEffect(() => {
     const handlePopState = () => {
-      const nextSection = readSectionFromLocation();
-      const nextChaletId = readChaletIdFromLocation();
-      setActiveSection((prev) => (nextSection === 'admin' ? 'admin' : prev === 'admin' ? 'browse' : prev));
-      setSelectedChaletId(nextChaletId);
+      setActiveSection(readSectionFromLocation());
+      setSelectedChaletId(readChaletIdFromLocation());
     };
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
-  // Keep clean canonical URL path (/admin or /chalet/:id or /)
   useEffect(() => {
     try {
       const url = new URL(window.location.href);
       url.searchParams.delete('unit');
       url.searchParams.delete('chalet');
 
-      let targetPath = url.pathname;
-      if (activeSection === 'admin') {
-        targetPath = '/admin';
-      } else if (selectedChaletId) {
+      let targetPath = '/';
+      if (selectedChaletId) {
         targetPath = `/chalet/${encodeURIComponent(selectedChaletId)}`;
-      } else if (url.pathname === '/admin' || /^\/(?:unit|chalet)\//.test(url.pathname)) {
-        targetPath = '/';
+      } else if (activeSection === 'pricing') {
+        targetPath = '/pricing';
+      } else if (activeSection === 'owner') {
+        targetPath = '/owner';
+      } else if (activeSection === 'admin') {
+        targetPath = '/admin';
       }
 
       if (targetPath !== url.pathname || window.location.search !== url.search) {
         const nextUrl = `${targetPath}${url.search}`;
-        if (activeSection === 'admin' || selectedChaletId) {
+        if (selectedChaletId || activeSection !== 'home') {
           window.history.pushState(null, '', nextUrl);
         } else {
           window.history.replaceState(null, '', nextUrl);
@@ -66,10 +68,26 @@ export function useUrlRouting() {
     }
   }, [activeSection, selectedChaletId]);
 
+  const navigateToSection = (section: RouteSection) => {
+    setSelectedChaletId(null);
+    setActiveSection(section);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const openChaletDetail = (chaletId: string) => {
+    setSelectedChaletId(chaletId);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const closeChaletDetail = () => {
+    setSelectedChaletId(null);
+  };
+
   return {
     activeSection,
-    setActiveSection,
     selectedChaletId,
-    setSelectedChaletId,
+    navigateToSection,
+    openChaletDetail,
+    closeChaletDetail,
   };
 }

@@ -1,61 +1,70 @@
 import {
-  BarChart3,
+  ArrowUpDown,
+  Briefcase,
+  Building2,
   Calendar,
-  CalendarClock,
+  LayoutGrid,
+  Map as MapIcon,
   MapPin,
   Navigation,
+  RotateCcw,
   Search,
-  ShieldCheck,
-  Sparkles,
-  Users,
-  X,
 } from 'lucide-react';
-import { GOVERNORATES, RENTAL_DURATIONS } from '@/data/chalets';
-import type { GovernorateId, RentalDuration } from '@/types/chalet';
+import { ADVERTISER_ROLES, PROPERTY_TYPES, formatEGP } from '@/data/chalets';
 import {
-  addDaysIso,
-  calculateNightsBetween,
-  formatArabicDate,
-  formatIsoDate,
-} from '@/utils/bookingPricing';
+  ALL_GOVERNORATE_NAMES,
+  getAreasForCity,
+  getCitiesForGovernorate,
+} from '@/data/egyptLocations';
+import type {
+  AdvertiserRoleLabel,
+  FilterState,
+  PropertyType,
+  SortOption,
+  ViewMode,
+} from '@/types/chalet';
+import { addDaysIso, formatIsoDate } from '@/utils/bookingPricing';
 
 interface HeroSearchProps {
-  searchQuery: string;
-  rentalDuration: RentalDuration;
-  checkInDate: string;
-  checkOutDate: string;
-  governorate: GovernorateId;
-  area: string;
-  minGuests: number;
-  onSearchChange: (value: string) => void;
-  onRentalDurationChange: (duration: RentalDuration) => void;
-  onDateRangeChange: (checkIn: string, checkOut: string) => void;
-  onGovernorateChange: (gov: GovernorateId) => void;
+  filters: FilterState;
+  viewMode: ViewMode;
+  totalResults: number;
+  totalAvailable: number;
+  onSearchChange: (val: string) => void;
+  onGovernorateChange: (gov: string) => void;
+  onCityChange: (city: string) => void;
   onAreaChange: (area: string) => void;
-  onMinGuestsChange: (guests: number) => void;
-  onOpenPriceGuide: () => void;
+  onPropertyTypeChange: (type: PropertyType | 'الكل') => void;
+  onAdvertiserRoleChange: (role: AdvertiserRoleLabel | 'الكل') => void;
+  onMaxPriceChange: (maxPrice: number | null) => void;
+  onDateRangeChange: (checkIn: string, checkOut: string) => void;
+  onSortChange: (sort: SortOption) => void;
+  onViewModeChange: (mode: ViewMode) => void;
+  onReset: () => void;
 }
 
+const MAX_BUDGET_SLIDER = 30000;
+
 export function HeroSearch({
-  searchQuery,
-  rentalDuration,
-  checkInDate,
-  checkOutDate,
-  governorate,
-  area,
-  minGuests,
+  filters,
+  viewMode,
+  totalResults,
+  totalAvailable,
   onSearchChange,
-  onRentalDurationChange,
-  onDateRangeChange,
   onGovernorateChange,
+  onCityChange,
   onAreaChange,
-  onMinGuestsChange,
-  onOpenPriceGuide,
+  onPropertyTypeChange,
+  onAdvertiserRoleChange,
+  onMaxPriceChange,
+  onDateRangeChange,
+  onSortChange,
+  onViewModeChange,
+  onReset,
 }: HeroSearchProps) {
-  const activeGovernorate = GOVERNORATES.find((g) => g.id === governorate);
-  const availableAreas = activeGovernorate?.areas ?? [];
+  const cities = getCitiesForGovernorate(filters.governorate);
+  const areas = getAreasForCity(filters.governorate, filters.city);
   const todayIso = formatIsoDate(new Date());
-  const stayNights = calculateNightsBetween(checkInDate, checkOutDate);
 
   const handleCheckInChange = (nextCheckIn: string) => {
     if (!nextCheckIn) {
@@ -64,16 +73,18 @@ export function HeroSearch({
     }
     const minOut = addDaysIso(nextCheckIn, 1);
     const nextCheckOut =
-      checkOutDate && checkOutDate > nextCheckIn ? checkOutDate : addDaysIso(nextCheckIn, 4);
+      filters.checkOutDate && filters.checkOutDate > nextCheckIn
+        ? filters.checkOutDate
+        : addDaysIso(nextCheckIn, 3);
     onDateRangeChange(nextCheckIn, nextCheckOut >= minOut ? nextCheckOut : minOut);
   };
 
   const handleCheckOutChange = (nextCheckOut: string) => {
     if (!nextCheckOut) {
-      onDateRangeChange(checkInDate, '');
+      onDateRangeChange(filters.checkInDate, '');
       return;
     }
-    const baseIn = checkInDate || todayIso;
+    const baseIn = filters.checkInDate || todayIso;
     if (nextCheckOut <= baseIn) {
       onDateRangeChange(baseIn, addDaysIso(baseIn, 1));
     } else {
@@ -81,152 +92,115 @@ export function HeroSearch({
     }
   };
 
+  const hasAnyFilter =
+    filters.searchQuery.trim() !== '' ||
+    filters.governorate !== 'الكل' ||
+    filters.city !== 'الكل' ||
+    filters.areaOrVillage !== 'الكل' ||
+    filters.propertyType !== 'الكل' ||
+    filters.advertiserRole !== 'الكل' ||
+    filters.maxPrice !== null ||
+    filters.checkInDate !== '' ||
+    filters.checkOutDate !== '' ||
+    filters.favoritesOnly;
+
+  const sliderVal =
+    filters.maxPrice !== null
+      ? Math.min(MAX_BUDGET_SLIDER, Math.max(500, filters.maxPrice))
+      : MAX_BUDGET_SLIDER;
+
   return (
-    <section className="relative overflow-hidden bg-gradient-to-bl from-primary-600 via-primary-700 to-primary-900 text-white">
-      <div
-        className="pointer-events-none absolute -left-24 -top-24 h-72 w-72 rounded-full bg-secondary-500/25 blur-3xl"
-        aria-hidden="true"
-      />
-      <div
-        className="pointer-events-none absolute -bottom-24 -right-24 h-72 w-72 rounded-full bg-sand-100/10 blur-3xl"
-        aria-hidden="true"
-      />
-
-      <div className="relative mx-auto max-w-7xl px-4 py-7 sm:px-6 sm:py-10">
-        <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-end">
-          <div className="max-w-3xl">
-            <div className="mb-2.5 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3.5 py-1 text-xs font-semibold text-sand-100 backdrop-blur-sm">
-              <Sparkles className="h-3.5 w-3.5 text-accent-300" />
-              <span>منصة مصر الشاملة للإيجار المفروش والشاليهات بتسعير ديناميكي شفاف</span>
-            </div>
-            <h1 className="text-2xl font-extrabold leading-snug sm:text-4xl">
-              احجز شقتك المفروشة أو شاليهك بتواريخ مؤكدة وسعر شامل لكل ليلة
-            </h1>
-            <p className="mt-2 text-sm leading-relaxed text-primary-100 sm:text-base">
-              اختر تواريخ الوصول والمغادرة لإخفاء الوحدات المحجوزة تلقائياً وحساب التكلفة الإجمالية، جدية الحجز، والمتبقي عند الاستلام بشفافية كاملة.
-            </p>
-          </div>
-
-          <button
-            type="button"
-            onClick={onOpenPriceGuide}
-            className="inline-flex min-h-[44px] shrink-0 items-center gap-2 self-start rounded-2xl border border-sand-200/30 bg-white/10 px-4 py-2.5 text-xs font-bold text-sand-100 backdrop-blur-sm transition hover:bg-white/20"
-          >
-            <BarChart3 className="h-4 w-4 text-secondary-200" />
-            <span>مؤشر أسعار السوق الاسترشادي</span>
-          </button>
+    <section className="border-b border-stone-200/70 bg-[#FAF9F6] py-10 sm:py-14">
+      <div className="mx-auto max-w-7xl px-4 sm:px-6">
+        {/* Serene Minimalist Hero Heading */}
+        <div className="mx-auto max-w-2xl text-center">
+          <span className="inline-flex items-center gap-2 rounded-full border border-stone-200/70 bg-white px-4 py-1.5 text-xs font-semibold text-[#1E3A5F] shadow-xs">
+            ٢٧ محافظة مصرية • تواصل مباشر عبر واتساب
+          </span>
+          <h1 className="mt-5 text-2xl font-bold leading-snug text-[#1E3A5F] sm:text-4xl">
+            ابحث عن وحدتك المناسبة في مصر بهدوء ووضوح
+          </h1>
+          <p className="mt-3 text-sm leading-relaxed text-[#6B7280] sm:text-base">
+            شقق مفروشة، شقق فاضية، شاليهات، وفيلات مباشرة من الملاك والمكاتب العقارية بدون تعقيد.
+          </p>
         </div>
 
-        <div className="mt-6 rounded-3xl border border-white/15 bg-white p-4 text-slate-900 shadow-2xl sm:p-5">
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-3.5">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="inline-flex items-center gap-1.5 text-xs font-extrabold text-primary-700">
-                <CalendarClock className="h-4 w-4 text-secondary-500" />
-                اختر نظام الإيجار:
-              </span>
-              <div
-                className="inline-flex rounded-xl border border-slate-200 bg-sand-100 p-1"
-                role="tablist"
-                aria-label="مدة الإيجار"
+        {/* Unified White Search & Filter Card */}
+        <div className="mx-auto mt-8 max-w-6xl rounded-2xl border border-stone-200/70 bg-white p-5 shadow-xs sm:p-6">
+          {/* Row 1: 3 Cascading Locations + Keyword Search */}
+          <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 lg:grid-cols-4">
+            {/* Level 1: Governorate */}
+            <div>
+              <label
+                htmlFor="hero-gov"
+                className="mb-1.5 block text-xs font-semibold text-[#6B7280]"
               >
-                {RENTAL_DURATIONS.map((dur) => {
-                  const active = rentalDuration === dur.id;
-                  return (
-                    <button
-                      key={dur.id}
-                      type="button"
-                      role="tab"
-                      aria-selected={active}
-                      onClick={() => onRentalDurationChange(dur.id)}
-                      className={`min-h-[36px] rounded-lg px-4 py-1.5 text-xs font-bold transition sm:text-sm ${
-                        active
-                          ? 'bg-secondary-500 text-white shadow-sm'
-                          : 'text-slate-700 hover:bg-white'
-                      }`}
-                    >
-                      {dur.label}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2">
-              {stayNights > 0 ? (
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-primary-50 px-3 py-1 text-xs font-bold text-primary-700">
-                  <Calendar className="h-3.5 w-3.5 text-secondary-500" />
-                  <span>
-                    {formatArabicDate(checkInDate)} ← {formatArabicDate(checkOutDate)} (
-                    {stayNights.toLocaleString('ar-EG')} ليالٍ)
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => onDateRangeChange('', '')}
-                    aria-label="مسح التواريخ"
-                    className="rounded-full p-0.5 text-primary-600 hover:bg-primary-100"
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                </span>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() =>
-                    onDateRangeChange(addDaysIso(todayIso, 3), addDaysIso(todayIso, 7))
-                  }
-                  className="inline-flex items-center gap-1.5 rounded-full border border-secondary-200 bg-secondary-50 px-3 py-1 text-xs font-bold text-secondary-700 transition hover:bg-secondary-100"
-                >
-                  <Calendar className="h-3.5 w-3.5" />
-                  <span>جرب البحث لفترة ٤ ليالٍ ({formatArabicDate(addDaysIso(todayIso, 3))})</span>
-                </button>
-              )}
-
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-success-50 px-3 py-1 text-xs font-bold text-success-700">
-                <ShieldCheck className="h-3.5 w-3.5 text-success-500" />
-                <span>تواصل مباشر بدون عمولات خفية</span>
-              </span>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-12">
-            <div className="md:col-span-2">
-              <label htmlFor="gov-select" className="mb-1.5 block text-xs font-bold text-slate-600">
-                المحافظة / النطاق
+                المحافظة
               </label>
               <div className="relative">
-                <MapPin className="pointer-events-none absolute right-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-secondary-500" />
+                <MapPin className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#C5A880]" />
                 <select
-                  id="gov-select"
-                  value={governorate}
-                  onChange={(e) => onGovernorateChange(e.target.value as GovernorateId)}
-                  className="h-11 w-full appearance-none rounded-xl border border-slate-200 bg-sand-50 pl-2 pr-8 text-xs font-semibold text-slate-900 focus:border-secondary-500 focus:bg-white focus:outline-none sm:text-sm"
+                  id="hero-gov"
+                  value={filters.governorate}
+                  onChange={(e) => onGovernorateChange(e.target.value)}
+                  className="h-11 w-full appearance-none rounded-xl border border-stone-200/80 bg-[#FAF9F6] pl-3 pr-9 text-xs font-semibold text-[#1F2937] transition focus:border-[#1E3A5F] focus:bg-white focus:outline-none sm:text-sm"
                 >
-                  {GOVERNORATES.map((gov) => (
-                    <option key={gov.id} value={gov.id}>
-                      {gov.label}
+                  <option value="الكل">كل المحافظات</option>
+                  {ALL_GOVERNORATE_NAMES.map((gov) => (
+                    <option key={gov} value={gov}>
+                      {gov}
                     </option>
                   ))}
                 </select>
               </div>
             </div>
 
-            <div className="md:col-span-2">
-              <label htmlFor="area-select" className="mb-1.5 block text-xs font-bold text-slate-600">
-                المنطقة / القرية
+            {/* Level 2: City */}
+            <div>
+              <label
+                htmlFor="hero-city"
+                className="mb-1.5 block text-xs font-semibold text-[#6B7280]"
+              >
+                المدينة / المركز
               </label>
               <div className="relative">
-                <Navigation className="pointer-events-none absolute right-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-secondary-500" />
+                <Navigation className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#C5A880]" />
                 <select
-                  id="area-select"
-                  value={area}
-                  disabled={availableAreas.length === 0}
-                  onChange={(e) => onAreaChange(e.target.value)}
-                  className="h-11 w-full appearance-none rounded-xl border border-slate-200 bg-sand-50 pl-2 pr-8 text-xs font-semibold text-slate-900 focus:border-secondary-500 focus:bg-white focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 sm:text-sm"
+                  id="hero-city"
+                  value={filters.city}
+                  disabled={cities.length === 0}
+                  onChange={(e) => onCityChange(e.target.value)}
+                  className="h-11 w-full appearance-none rounded-xl border border-stone-200/80 bg-[#FAF9F6] pl-3 pr-9 text-xs font-semibold text-[#1F2937] transition focus:border-[#1E3A5F] focus:bg-white focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 sm:text-sm"
                 >
-                  <option value="all">
-                    {availableAreas.length === 0 ? 'كل المناطق' : 'كل المناطق والقرى'}
-                  </option>
-                  {availableAreas.map((a) => (
+                  <option value="الكل">كل المدن</option>
+                  {cities.map((c) => (
+                    <option key={c.name} value={c.name}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* Level 3: Area / Village / Resort */}
+            <div>
+              <label
+                htmlFor="hero-area"
+                className="mb-1.5 block text-xs font-semibold text-[#6B7280]"
+              >
+                القرية / المنطقة
+              </label>
+              <div className="relative">
+                <MapPin className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#6B7280]" />
+                <select
+                  id="hero-area"
+                  value={filters.areaOrVillage}
+                  disabled={areas.length === 0}
+                  onChange={(e) => onAreaChange(e.target.value)}
+                  className="h-11 w-full appearance-none rounded-xl border border-stone-200/80 bg-[#FAF9F6] pl-3 pr-9 text-xs font-semibold text-[#1F2937] transition focus:border-[#1E3A5F] focus:bg-white focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 sm:text-sm"
+                >
+                  <option value="الكل">كل القرى والمناطق</option>
+                  {areas.map((a) => (
                     <option key={a} value={a}>
                       {a}
                     </option>
@@ -235,102 +209,239 @@ export function HeroSearch({
               </div>
             </div>
 
-            <div className="md:col-span-2">
+            {/* Keyword search */}
+            <div>
               <label
-                htmlFor="hero-checkin"
-                className="mb-1.5 block text-xs font-bold text-slate-600"
+                htmlFor="hero-search"
+                className="mb-1.5 block text-xs font-semibold text-[#6B7280]"
               >
-                تاريخ الوصول
-              </label>
-              <input
-                id="hero-checkin"
-                type="date"
-                min={todayIso}
-                value={checkInDate}
-                onChange={(e) => handleCheckInChange(e.target.value)}
-                className="h-11 w-full rounded-xl border border-slate-200 bg-sand-50 px-2.5 text-xs font-bold text-slate-900 focus:border-secondary-500 focus:bg-white focus:outline-none"
-              />
-            </div>
-
-            <div className="md:col-span-2">
-              <label
-                htmlFor="hero-checkout"
-                className="mb-1.5 block text-xs font-bold text-slate-600"
-              >
-                تاريخ المغادرة
-              </label>
-              <input
-                id="hero-checkout"
-                type="date"
-                min={checkInDate ? addDaysIso(checkInDate, 1) : addDaysIso(todayIso, 1)}
-                value={checkOutDate}
-                onChange={(e) => handleCheckOutChange(e.target.value)}
-                className="h-11 w-full rounded-xl border border-slate-200 bg-sand-50 px-2.5 text-xs font-bold text-slate-900 focus:border-secondary-500 focus:bg-white focus:outline-none"
-              />
-            </div>
-
-            <div className="md:col-span-2">
-              <label htmlFor="search-chalets" className="mb-1.5 block text-xs font-bold text-slate-600">
-                ابحث بالمنطقة أو الكمبوند
+                كلمة بحث
               </label>
               <div className="relative">
-                <Search className="pointer-events-none absolute right-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                <Search className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#6B7280]" />
                 <input
-                  id="search-chalets"
+                  id="hero-search"
                   type="text"
-                  value={searchQuery}
+                  value={filters.searchQuery}
                   onChange={(e) => onSearchChange(e.target.value)}
-                  placeholder="مثال: مراسي، الجونة..."
-                  className="h-11 w-full rounded-xl border border-slate-200 bg-sand-50 pl-2 pr-8 text-xs text-slate-900 placeholder:text-slate-400 focus:border-secondary-500 focus:bg-white focus:outline-none sm:text-sm"
+                  placeholder="مثال: مراسي، السخنة، التجمع..."
+                  className="h-11 w-full rounded-xl border border-stone-200/80 bg-[#FAF9F6] pl-3 pr-9 text-xs text-[#1F2937] placeholder:text-[#6B7280]/70 transition focus:border-[#1E3A5F] focus:bg-white focus:outline-none sm:text-sm"
                 />
-              </div>
-            </div>
-
-            <div className="md:col-span-2">
-              <label htmlFor="guests-select" className="mb-1.5 block text-xs font-bold text-slate-600">
-                عدد الأفراد
-              </label>
-              <div className="relative">
-                <Users className="pointer-events-none absolute right-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                <select
-                  id="guests-select"
-                  value={minGuests}
-                  onChange={(e) => onMinGuestsChange(Number(e.target.value))}
-                  className="h-11 w-full appearance-none rounded-xl border border-slate-200 bg-sand-50 pl-2 pr-8 text-xs font-semibold text-slate-900 focus:border-secondary-500 focus:bg-white focus:outline-none sm:text-sm"
-                >
-                  <option value={1}>أي عدد</option>
-                  <option value={2}>٢ أفراد+</option>
-                  <option value={4}>٤ أفراد+</option>
-                  <option value={6}>٦ أفراد+</option>
-                  <option value={8}>٨ أفراد+</option>
-                </select>
               </div>
             </div>
           </div>
 
-          <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-3">
-            <div className="no-scrollbar flex items-center gap-1.5 overflow-x-auto pb-0.5">
-              {GOVERNORATES.map((gov) => {
-                const active = governorate === gov.id;
+          {/* Row 2: Property Type + Advertiser Role + Max Price + Dates */}
+          <div className="mt-4 grid grid-cols-1 gap-3.5 border-t border-stone-100 pt-4 sm:grid-cols-2 lg:grid-cols-5">
+            {/* Property Type */}
+            <div>
+              <label
+                htmlFor="filter-property-type"
+                className="mb-1.5 block text-xs font-semibold text-[#6B7280]"
+              >
+                نوع الوحدة
+              </label>
+              <div className="relative">
+                <Building2 className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#C5A880]" />
+                <select
+                  id="filter-property-type"
+                  value={filters.propertyType}
+                  onChange={(e) => onPropertyTypeChange(e.target.value as PropertyType | 'الكل')}
+                  className="h-11 w-full appearance-none rounded-xl border border-stone-200/80 bg-[#FAF9F6] pl-3 pr-9 text-xs font-semibold text-[#1F2937] transition focus:border-[#1E3A5F] focus:bg-white focus:outline-none sm:text-sm"
+                >
+                  {PROPERTY_TYPES.map((type) => (
+                    <option key={type} value={type}>
+                      {type === 'الكل' ? 'كل أنواع الوحدات' : type}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* Advertiser Role */}
+            <div>
+              <label
+                htmlFor="filter-advertiser-role"
+                className="mb-1.5 block text-xs font-semibold text-[#6B7280]"
+              >
+                صفة المعلن
+              </label>
+              <div className="relative">
+                <Briefcase className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#C5A880]" />
+                <select
+                  id="filter-advertiser-role"
+                  value={filters.advertiserRole}
+                  onChange={(e) =>
+                    onAdvertiserRoleChange(e.target.value as AdvertiserRoleLabel | 'الكل')
+                  }
+                  className="h-11 w-full appearance-none rounded-xl border border-stone-200/80 bg-[#FAF9F6] pl-3 pr-9 text-xs font-semibold text-[#1F2937] transition focus:border-[#1E3A5F] focus:bg-white focus:outline-none sm:text-sm"
+                >
+                  {ADVERTISER_ROLES.map((role) => (
+                    <option key={role} value={role}>
+                      {role === 'الكل' ? 'كل المعلنين' : role}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* Max Price Slider */}
+            <div>
+              <div className="mb-1.5 flex items-center justify-between text-xs">
+                <label htmlFor="filter-max-price" className="font-semibold text-[#6B7280]">
+                  الحد الأقصى للسعر
+                </label>
+                <span className="font-bold text-[#1E3A5F]">
+                  {filters.maxPrice === null ? 'الكل' : formatEGP(sliderVal)}
+                </span>
+              </div>
+              <div className="flex h-11 items-center rounded-xl border border-stone-200/80 bg-[#FAF9F6] px-3">
+                <input
+                  id="filter-max-price"
+                  type="range"
+                  min={500}
+                  max={MAX_BUDGET_SLIDER}
+                  step={500}
+                  value={sliderVal}
+                  onChange={(e) => {
+                    const val = Number(e.target.value);
+                    onMaxPriceChange(val >= MAX_BUDGET_SLIDER ? null : val);
+                  }}
+                  className="w-full accent-[#1E3A5F]"
+                />
+              </div>
+            </div>
+
+            {/* Check-in Date */}
+            <div>
+              <label
+                htmlFor="hero-checkin"
+                className="mb-1.5 block text-xs font-semibold text-[#6B7280]"
+              >
+                تاريخ الوصول
+              </label>
+              <div className="relative">
+                <Calendar className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#6B7280]" />
+                <input
+                  id="hero-checkin"
+                  type="date"
+                  min={todayIso}
+                  value={filters.checkInDate}
+                  onChange={(e) => handleCheckInChange(e.target.value)}
+                  className="h-11 w-full rounded-xl border border-stone-200/80 bg-[#FAF9F6] pl-2 pr-9 text-xs font-semibold text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
+                />
+              </div>
+            </div>
+
+            {/* Check-out Date */}
+            <div>
+              <label
+                htmlFor="hero-checkout"
+                className="mb-1.5 block text-xs font-semibold text-[#6B7280]"
+              >
+                تاريخ المغادرة
+              </label>
+              <div className="relative">
+                <Calendar className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#6B7280]" />
+                <input
+                  id="hero-checkout"
+                  type="date"
+                  min={filters.checkInDate ? addDaysIso(filters.checkInDate, 1) : addDaysIso(todayIso, 1)}
+                  value={filters.checkOutDate}
+                  onChange={(e) => handleCheckOutChange(e.target.value)}
+                  className="h-11 w-full rounded-xl border border-stone-200/80 bg-[#FAF9F6] pl-2 pr-9 text-xs font-semibold text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Row 3: Quick Property Pills + Result Count + Sort + Reset + View Switch */}
+          <div className="mt-4 flex flex-col gap-3 border-t border-stone-100 pt-4 lg:flex-row lg:items-center lg:justify-between">
+            <div className="no-scrollbar flex items-center gap-1.5 overflow-x-auto pb-1 lg:pb-0">
+              {PROPERTY_TYPES.map((type) => {
+                const active = filters.propertyType === type;
                 return (
                   <button
-                    key={gov.id}
+                    key={type}
                     type="button"
-                    onClick={() => onGovernorateChange(gov.id)}
-                    className={`shrink-0 rounded-full px-3.5 py-1.5 text-xs font-bold transition ${
+                    onClick={() => onPropertyTypeChange(type)}
+                    className={`shrink-0 rounded-xl px-3.5 py-2 text-xs font-semibold transition ${
                       active
-                        ? 'bg-primary-600 text-white shadow-sm'
-                        : 'bg-sand-100 text-slate-700 hover:bg-sand-200'
+                        ? 'bg-[#1E3A5F] text-white shadow-xs'
+                        : 'border border-stone-200/70 bg-[#FAF9F6] text-[#1F2937] hover:border-[#C5A880]'
                     }`}
                   >
-                    {gov.label}
+                    {type}
                   </button>
                 );
               })}
             </div>
-            <span className="hidden text-[11px] font-bold text-primary-600 xl:inline">
-              تصفية صارمة للتوافر حسب التواريخ • أسعار بالجنيه المصري
-            </span>
+
+            <div className="flex flex-wrap items-center justify-between gap-2.5 lg:justify-end">
+              <span className="inline-flex h-10 items-center rounded-xl bg-[#FAF9F6] px-3.5 text-xs font-semibold text-[#6B7280]">
+                النتائج:{' '}
+                <strong className="mx-1 text-[#1E3A5F]">
+                  {totalResults.toLocaleString('ar-EG')}
+                </strong>
+                من {totalAvailable.toLocaleString('ar-EG')}
+              </span>
+
+              <div className="flex h-10 items-center gap-1.5 rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-3">
+                <ArrowUpDown className="h-3.5 w-3.5 text-[#6B7280]" />
+                <select
+                  aria-label="ترتيب الوحدات"
+                  value={filters.sortBy}
+                  onChange={(e) => onSortChange(e.target.value as SortOption)}
+                  className="bg-transparent text-xs font-semibold text-[#1F2937] focus:outline-none"
+                >
+                  <option value="featured">المميزة أولاً</option>
+                  <option value="price-asc">الأقل سعراً</option>
+                  <option value="price-desc">الأعلى سعراً</option>
+                </select>
+              </div>
+
+              {hasAnyFilter && (
+                <button
+                  type="button"
+                  onClick={onReset}
+                  className="inline-flex h-10 items-center gap-1.5 rounded-xl border border-[#C5A880] bg-[#FAF9F6] px-3.5 text-xs font-semibold text-[#1E3A5F] transition hover:bg-[#C5A880]/15"
+                >
+                  <RotateCcw className="h-3.5 w-3.5" />
+                  <span>إعادة ضبط</span>
+                </button>
+              )}
+
+              <div
+                className="inline-flex h-10 items-center rounded-xl border border-stone-200/70 bg-[#FAF9F6] p-1"
+                role="group"
+                aria-label="طريقة العرض"
+              >
+                <button
+                  type="button"
+                  onClick={() => onViewModeChange('grid')}
+                  className={`inline-flex h-8 items-center gap-1 rounded-lg px-3 text-xs font-semibold transition ${
+                    viewMode === 'grid'
+                      ? 'bg-white text-[#1E3A5F] shadow-xs'
+                      : 'text-[#6B7280] hover:text-[#1F2937]'
+                  }`}
+                >
+                  <LayoutGrid className="h-3.5 w-3.5" />
+                  <span>شبكة</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onViewModeChange('map')}
+                  className={`inline-flex h-8 items-center gap-1 rounded-lg px-3 text-xs font-semibold transition ${
+                    viewMode === 'map'
+                      ? 'bg-[#1E3A5F] text-white shadow-xs'
+                      : 'text-[#6B7280] hover:text-[#1F2937]'
+                  }`}
+                >
+                  <MapIcon className="h-3.5 w-3.5" />
+                  <span>خريطة</span>
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       </div>

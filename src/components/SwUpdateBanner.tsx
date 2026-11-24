@@ -17,17 +17,17 @@ export function SwUpdateBanner() {
     <div
       role="status"
       aria-live="polite"
-      className="fixed bottom-4 right-4 z-[80] flex items-center gap-3 rounded-2xl border border-secondary-300 bg-primary-700 px-4 py-3 text-xs font-bold text-white shadow-2xl"
+      className="fixed bottom-4 right-4 z-[80] flex items-center gap-3 rounded-2xl border border-[#C5A880] bg-[#1E3A5F] px-4 py-3 text-xs font-bold text-white shadow-xl"
     >
-      <Sparkles className="h-4 w-4 shrink-0 text-amber-300" />
-      <span>تحديث متاح للنظام</span>
+      <Sparkles className="h-4 w-4 shrink-0 text-[#C5A880]" />
+      <span>تحديث متاح للتطبيق</span>
       <button
         type="button"
         onClick={() => applyUpdate()}
-        className="inline-flex min-h-[44px] items-center gap-1.5 rounded-xl bg-secondary-500 px-3.5 py-2 text-xs font-extrabold text-white transition hover:bg-secondary-600"
+        className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl bg-[#C5A880] px-3.5 py-2 text-xs font-bold text-[#1F2937] transition hover:bg-[#b5976d]"
       >
         <RefreshCw className="h-3.5 w-3.5" />
-        <span>إعادة التحميل</span>
+        <span>تحديث الآن</span>
       </button>
     </div>
   );

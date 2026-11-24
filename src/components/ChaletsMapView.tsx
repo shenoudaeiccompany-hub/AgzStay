@@ -1,24 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import {
-  BedDouble,
-  Heart,
-  Home,
-  LocateFixed,
-  MapPin,
-  ShieldCheck,
-  Star,
-  Users,
-  X,
-} from 'lucide-react';
-import { formatEGP, getRentalPriceForDuration } from '@/data/chalets';
-import type { Chalet, RentalDuration } from '@/types/chalet';
+import { BedDouble, Heart, Home, LocateFixed, MapPin, Users, X } from 'lucide-react';
+import { formatEGP, getShortPriceUnitLabel } from '@/data/chalets';
+import type { Chalet } from '@/types/chalet';
 import { buildResponsiveImageAttributes } from '@/utils/imageOptimization';
 
 interface ChaletsMapViewProps {
   chalets: Chalet[];
-  rentalDuration?: RentalDuration;
   favorites: string[];
   onToggleFavorite: (id: string) => void;
   onSelectChalet: (chalet: Chalet) => void;
@@ -35,14 +24,8 @@ function escapeHtml(input: string): string {
     .replace(/'/g, '&#39;');
 }
 
-function getMarkerPriceText(chalet: Chalet, duration: RentalDuration): string {
-  const { price } = getRentalPriceForDuration(chalet, duration);
-  return formatEGP(price);
-}
-
 export function ChaletsMapView({
   chalets,
-  rentalDuration = 'daily',
   favorites,
   onToggleFavorite,
   onSelectChalet,
@@ -92,7 +75,6 @@ export function ChaletsMapView({
     }).addTo(map);
 
     const layerGroup = L.layerGroup().addTo(map);
-
     mapInstanceRef.current = map;
     markersLayerRef.current = layerGroup;
 
@@ -112,18 +94,21 @@ export function ChaletsMapView({
 
     chalets.forEach((chalet) => {
       const isFocused = chalet.id === focusedChaletId;
-      const priceText = escapeHtml(getMarkerPriceText(chalet, rentalDuration));
+      const priceText = escapeHtml(formatEGP(chalet.pricePerNight));
       const titleText = escapeHtml(chalet.title);
-      const resortText = escapeHtml(chalet.resort);
+      const locationText = escapeHtml(
+        chalet.areaOrVillage || chalet.city || chalet.governorate
+      );
 
-      const bgColor = isFocused ? '#087E8B' : '#0B3954';
+      const bgColor = isFocused ? '#C5A880' : '#1E3A5F';
+      const textColor = isFocused ? '#1F2937' : '#FFFFFF';
 
       const icon = L.divIcon({
         className: 'agzstay-price-marker',
         iconSize: [115, 34],
         iconAnchor: [57, 17],
-        html: `<div style="display:inline-flex;align-items:center;justify-content:center;padding:4px 10px;border-radius:9999px;font-weight:700;font-size:12px;white-space:nowrap;box-shadow:0 4px 12px rgba(15,23,42,0.28);border:2px solid #ffffff;cursor:pointer;transition:transform 0.15s ease;background:${bgColor};color:#ffffff;transform:${
-          isFocused ? 'scale(1.1)' : 'scale(1)'
+        html: `<div style="display:inline-flex;align-items:center;justify-content:center;padding:4px 10px;border-radius:9999px;font-weight:700;font-size:12px;white-space:nowrap;box-shadow:0 4px 12px rgba(15,23,42,0.22);border:2px solid #ffffff;cursor:pointer;background:${bgColor};color:${textColor};transform:${
+          isFocused ? 'scale(1.08)' : 'scale(1)'
         };">${priceText}</div>`,
       });
 
@@ -133,9 +118,9 @@ export function ChaletsMapView({
       });
 
       marker.bindTooltip(
-        `<div dir="rtl" style="font-family:Cairo,sans-serif;text-align:right;">
-          <div style="font-weight:700;font-size:12px;color:#0B3954;">${titleText}</div>
-          <div style="font-size:11px;color:#475569;">${resortText}</div>
+        `<div dir="rtl" style="font-family:'IBM Plex Sans Arabic',sans-serif;text-align:right;">
+          <div style="font-weight:700;font-size:12px;color:#1E3A5F;">${titleText}</div>
+          <div style="font-size:11px;color:#475569;">${locationText}</div>
         </div>`,
         { direction: 'top', offset: [0, -14] }
       );
@@ -147,13 +132,12 @@ export function ChaletsMapView({
 
       marker.addTo(layerGroup);
     });
-  }, [chalets, focusedChaletId, rentalDuration]);
+  }, [chalets, focusedChaletId]);
 
   useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map) return;
     fitMapToChalets(map, chalets);
-
     if (chalets.length > 0 && !chalets.some((c) => c.id === focusedChaletId)) {
       setFocusedChaletId(chalets[0].id);
     }
@@ -167,34 +151,34 @@ export function ChaletsMapView({
 
   return (
     <div className="space-y-4">
-      <div className="relative overflow-hidden rounded-3xl border border-slate-200 bg-slate-100 shadow-sm">
+      <div className="relative overflow-hidden rounded-2xl border border-stone-200/70 bg-white shadow-xs">
         <div
           ref={mapContainerRef}
-          className="h-[520px] w-full sm:h-[580px]"
+          className="h-[500px] w-full sm:h-[560px]"
           aria-label="خريطة الوحدات العقارية في مصر"
         />
 
         <div className="pointer-events-none absolute right-3 top-3 z-[400] flex flex-wrap items-center gap-2 sm:right-4 sm:top-4">
-          <span className="pointer-events-auto inline-flex items-center gap-1.5 rounded-full bg-white/95 px-3.5 py-1.5 text-xs font-bold text-primary-700 shadow-md backdrop-blur-sm">
-            <MapPin className="h-3.5 w-3.5 text-secondary-500" />
+          <span className="pointer-events-auto inline-flex items-center gap-1.5 rounded-full bg-white/95 px-3.5 py-1.5 text-xs font-bold text-[#1E3A5F] shadow-xs backdrop-blur-sm">
+            <MapPin className="h-3.5 w-3.5 text-[#C5A880]" />
             <span>{chalets.length} وحدة على الخريطة</span>
           </span>
 
           <button
             type="button"
             onClick={handleRecenter}
-            className="pointer-events-auto inline-flex items-center gap-1.5 rounded-full bg-white/95 px-3 py-1.5 text-xs font-bold text-slate-700 shadow-md backdrop-blur-sm transition hover:bg-white"
+            className="pointer-events-auto inline-flex items-center gap-1.5 rounded-full bg-white/95 px-3 py-1.5 text-xs font-bold text-[#1F2937] shadow-xs backdrop-blur-sm transition hover:bg-white"
           >
-            <LocateFixed className="h-3.5 w-3.5 text-primary-600" />
+            <LocateFixed className="h-3.5 w-3.5 text-[#1E3A5F]" />
             <span>عرض كل مصر</span>
           </button>
         </div>
 
         {focusedChalet && (
           <div className="absolute bottom-3 left-3 right-3 z-[400] sm:bottom-4 sm:left-auto sm:right-4 sm:w-96">
-            <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl">
+            <div className="overflow-hidden rounded-2xl border border-stone-200/70 bg-white shadow-xl">
               <div className="flex gap-3 p-3">
-                <div className="relative h-24 w-24 shrink-0 overflow-hidden rounded-xl bg-primary-100">
+                <div className="relative h-24 w-24 shrink-0 overflow-hidden rounded-xl bg-slate-100">
                   {imageErrorId !== focusedChalet.id && focusedChalet.images[0] ? (
                     <img
                       {...buildResponsiveImageAttributes(focusedChalet.images[0], '96px')}
@@ -207,8 +191,8 @@ export function ChaletsMapView({
                       className="h-full w-full object-cover"
                     />
                   ) : (
-                    <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-primary-600 to-secondary-500 text-white">
-                      <Home className="h-7 w-7 text-sand-100" />
+                    <div className="flex h-full w-full items-center justify-center bg-[#1E3A5F] text-white">
+                      <Home className="h-7 w-7 text-[#C5A880]" />
                     </div>
                   )}
                   <button
@@ -219,12 +203,12 @@ export function ChaletsMapView({
                         ? 'إزالة من المفضلة'
                         : 'إضافة إلى المفضلة'
                     }
-                    className="absolute left-1 top-1 flex h-9 w-9 items-center justify-center rounded-full bg-white/95 text-slate-700 shadow-sm"
+                    className="absolute left-1 top-1 flex h-8 w-8 items-center justify-center rounded-full bg-white/95 text-slate-700 shadow-xs"
                   >
                     <Heart
                       className={`h-4 w-4 ${
                         favorites.includes(focusedChalet.id)
-                          ? 'fill-accent-500 text-accent-500'
+                          ? 'fill-[#C5A880] text-[#C5A880]'
                           : ''
                       }`}
                     />
@@ -233,57 +217,48 @@ export function ChaletsMapView({
 
                 <div className="flex min-w-0 flex-1 flex-col">
                   <div className="flex items-start justify-between gap-2">
-                    <div className="flex flex-wrap items-center gap-1">
-                      <span className="rounded-full bg-primary-50 px-2 py-0.5 text-[10px] font-bold text-primary-700">
-                        {focusedChalet.area || focusedChalet.destinationLabel}
-                      </span>
-                      {focusedChalet.owner.verified && (
-                        <span className="inline-flex items-center gap-0.5 text-[10px] font-bold text-success-700">
-                          <ShieldCheck className="h-3 w-3 text-success-500" />
-                          موثق
-                        </span>
-                      )}
-                    </div>
+                    <span className="rounded-full bg-[#FAF9F6] px-2 py-0.5 text-[10px] font-bold text-[#1E3A5F]">
+                      {focusedChalet.areaOrVillage || focusedChalet.city || focusedChalet.governorate}
+                    </span>
                     <button
                       type="button"
                       onClick={() => setFocusedChaletId(null)}
                       aria-label="إغلاق المعاينة"
-                      className="flex h-11 w-11 -m-2 items-center justify-center rounded-full text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+                      className="flex h-8 w-8 items-center justify-center rounded-full text-slate-400 hover:bg-slate-100 hover:text-slate-700"
                     >
                       <X className="h-4 w-4" />
                     </button>
                   </div>
 
-                  <h3 className="mt-1 line-clamp-1 text-sm font-bold text-slate-900">
+                  <h3 className="mt-1 line-clamp-1 text-sm font-bold text-[#1F2937]">
                     {focusedChalet.title}
                   </h3>
-                  <p className="line-clamp-1 text-xs text-slate-500">{focusedChalet.resort}</p>
+                  <p className="line-clamp-1 text-xs text-[#6B7280]">
+                    {focusedChalet.governorate} • {focusedChalet.city}
+                  </p>
 
-                  <div className="mt-1.5 flex items-center gap-3 text-[11px] font-semibold text-slate-600">
+                  <div className="mt-1.5 flex items-center gap-3 text-[11px] font-medium text-[#6B7280]">
                     <span className="inline-flex items-center gap-1">
-                      <Star className="h-3 w-3 fill-warning-500 text-warning-500" />
-                      {focusedChalet.reviewsCount > 0
-                        ? focusedChalet.rating.toFixed(1)
-                        : 'جديد'}
-                    </span>
-                    <span className="inline-flex items-center gap-1">
-                      <BedDouble className="h-3 w-3 text-primary-500" />
+                      <BedDouble className="h-3 w-3 text-[#1E3A5F]" />
                       {focusedChalet.bedrooms} غرف
                     </span>
                     <span className="inline-flex items-center gap-1">
-                      <Users className="h-3 w-3 text-primary-500" />
+                      <Users className="h-3 w-3 text-[#1E3A5F]" />
                       حتى {focusedChalet.maxGuests}
                     </span>
                   </div>
 
                   <div className="mt-auto flex items-center justify-between gap-2 pt-2">
-                    <span className="text-sm font-bold text-primary-700">
-                      {getMarkerPriceText(focusedChalet, rentalDuration)}
+                    <span className="text-sm font-bold text-[#1E3A5F]">
+                      {formatEGP(focusedChalet.pricePerNight)}{' '}
+                      <span className="text-[11px] font-normal text-[#6B7280]">
+                        {getShortPriceUnitLabel(focusedChalet)}
+                      </span>
                     </span>
                     <button
                       type="button"
                       onClick={() => onSelectChalet(focusedChalet)}
-                      className="min-h-[44px] rounded-xl bg-secondary-500 px-3.5 py-2 text-xs font-bold text-white transition hover:bg-secondary-600"
+                      className="min-h-[38px] rounded-xl bg-[#1E3A5F] px-3.5 py-1.5 text-xs font-semibold text-white transition hover:bg-[#172E4D]"
                     >
                       التفاصيل
                     </button>
@@ -294,38 +269,6 @@ export function ChaletsMapView({
           </div>
         )}
       </div>
-
-      {chalets.length > 0 && (
-        <div className="no-scrollbar flex items-center gap-2.5 overflow-x-auto pb-1">
-          {chalets.map((chalet) => {
-            const active = chalet.id === focusedChaletId;
-            return (
-              <button
-                key={chalet.id}
-                type="button"
-                onClick={() => {
-                  setFocusedChaletId(chalet.id);
-                  mapInstanceRef.current?.setView(
-                    [chalet.coordinates.lat, chalet.coordinates.lng],
-                    12,
-                    { animate: true }
-                  );
-                }}
-                className={`shrink-0 rounded-2xl border px-3.5 py-2 text-right transition ${
-                  active
-                    ? 'border-secondary-500 bg-secondary-50 text-secondary-900 shadow-sm'
-                    : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300'
-                }`}
-              >
-                <div className="text-xs font-bold">{chalet.resort}</div>
-                <div className="mt-0.5 text-[11px] font-semibold text-primary-700">
-                  {getMarkerPriceText(chalet, rentalDuration)}
-                </div>
-              </button>
-            );
-          })}
-        </div>
-      )}
     </div>
   );
 }

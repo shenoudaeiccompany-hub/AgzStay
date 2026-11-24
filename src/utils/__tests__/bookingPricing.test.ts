@@ -1,60 +1,49 @@
 import { describe, expect, it } from 'vitest';
-import type { BookingRequest, Chalet } from '@/types/chalet';
 import {
-  addDaysIso,
-  calculateFinancialMetrics,
+  ALL_GOVERNORATE_NAMES,
+  getAreasForCity,
+  getCitiesForGovernorate,
+} from '@/data/egyptLocations';
+import { resolveOwnerQuota } from '@/data/subscriptions';
+import type { Chalet, SubscriptionRecord } from '@/types/chalet';
+import {
+  buildWhatsAppPhoneUrl,
+  calculateInformationalQuote,
   calculateNightsBetween,
-  calculateStayPricing,
-  daysUntilDate,
   findConflictingDates,
-  getNightlyRateInfo,
   isChaletAvailableForRange,
-  type BookingRangeLike,
 } from '@/utils/bookingPricing';
 
 function makeMockChalet(overrides: Partial<Chalet> = {}): Chalet {
   return {
     id: 'chalet-test-1',
     title: 'شاليه اختبار بالساحل',
-    listingMode: 'rent',
-    supportedDurations: ['daily', 'weekly', 'monthly'],
-    destination: 'north-coast',
-    destinationLabel: 'الساحل الشمالي',
-    resort: 'مراسي',
-    unitType: 'chalet',
-    viewType: 'sea-front',
-    includesPasses: true,
-    pricePerNight: 2000,
-    weekendPricePerNight: 2400,
-    peakPricePerNight: 3000,
-    weeklyPrice: 12000,
-    monthlyPrice: 44000,
-    securityDeposit: 3000,
+    description: 'وحدة للاختبار',
+    governorate: 'مطروح',
+    city: 'الساحل الشمالي - العلمين وسيدي عبد الرحمن',
+    areaOrVillage: 'مراسي',
+    propertyType: 'شاليه',
+    advertiserRole: 'مالك مباشر',
+    ownerName: 'أحمد علي',
+    ownerPhone: '01012345678',
+    isFeatured: true,
     depositType: 'percent',
-    downPaymentPercent: 25,
+    depositValue: 20,
+    pricePerNight: 2000,
     bedrooms: 2,
     bathrooms: 2,
     maxGuests: 5,
-    beachDistanceMeters: 150,
     coordinates: { lat: 30.97, lng: 28.78 },
-    rating: 4.9,
-    reviewsCount: 10,
     images: ['https://example.com/1.jpg'],
     amenities: ['wifi', 'ac'],
-    description: 'وحدة للاختبار',
+    blockedDates: [],
     rules: ['الالتزام بالهدوء'],
-    owner: {
-      name: 'أحمد علي',
-      verified: true,
-      roleType: 'owner',
-      responseTime: 'خلال دقائق',
-      memberSince: '٢٠٢٥',
-    },
+    availabilityStatus: 'active',
     ...overrides,
   };
 }
 
-describe('bookingPricing utilities', () => {
+describe('V2 AgzStay bookingPricing, locations, and quota utilities', () => {
   it('calculates exact nights between ISO dates', () => {
     expect(calculateNightsBetween('2026-06-10', '2026-06-14')).toBe(4);
     expect(calculateNightsBetween('2026-06-30', '2026-07-02')).toBe(2);
@@ -62,196 +51,76 @@ describe('bookingPricing utilities', () => {
     expect(calculateNightsBetween('', '2026-06-14')).toBe(0);
   });
 
-  it('evaluates 10-day cancellation boundary accurately', () => {
-    expect(daysUntilDate('2026-06-20', '2026-06-10')).toBe(10); // >= 10 refundable
-    expect(daysUntilDate('2026-06-19', '2026-06-10')).toBe(9); // < 10 non-refundable
-    expect(daysUntilDate('2026-06-10', '2026-06-12')).toBe(-2);
+  it('computes informational quote for nightly chalets and monthly unfurnished apartments', () => {
+    const percentChalet = makeMockChalet({
+      propertyType: 'شاليه',
+      pricePerNight: 2500,
+      depositType: 'percent',
+      depositValue: 20,
+    });
+    const nightlyQuote = calculateInformationalQuote(percentChalet, 4);
+    expect(nightlyQuote.isMonthlyOnly).toBe(false);
+    expect(nightlyQuote.subtotal).toBe(10000);
+    expect(nightlyQuote.hasInformationalDeposit).toBe(true);
+    expect(nightlyQuote.depositAmount).toBe(2000);
+
+    const unfurnishedMonthly = makeMockChalet({
+      propertyType: 'شقة فاضية',
+      pricePerNight: 15000,
+      monthlyPrice: 15000,
+      depositType: 'fixed',
+      depositValue: 15000,
+    });
+    const monthlyQuote = calculateInformationalQuote(unfurnishedMonthly, 3);
+    expect(monthlyQuote.isMonthlyOnly).toBe(true);
+    expect(monthlyQuote.subtotal).toBe(15000);
+    expect(monthlyQuote.depositAmount).toBe(15000);
   });
 
-  it('applies standard, Thursday/Friday weekend, July/August peak, and custom dateRules rates', () => {
+  it('detects blockedDates conflicts accurately', () => {
     const chalet = makeMockChalet({
-      dateRules: {
-        '2026-06-16': {
-          status: 'available',
-          nightlyPrice: 3500,
-          note: 'عرض خاص بالعيد',
-        },
-      },
+      blockedDates: ['2026-06-25', '2026-06-26'],
     });
+    expect(isChaletAvailableForRange(chalet, '2026-06-20', '2026-06-24')).toBe(true);
+    expect(isChaletAvailableForRange(chalet, '2026-06-24', '2026-06-27')).toBe(false);
 
-    // 2026-06-15 is Monday (standard)
-    expect(getNightlyRateInfo(chalet, '2026-06-15')).toMatchObject({
-      rate: 2000,
-      source: 'standard',
-    });
-
-    // 2026-06-18 is Thursday (weekend)
-    expect(getNightlyRateInfo(chalet, '2026-06-18')).toMatchObject({
-      rate: 2400,
-      source: 'weekend',
-    });
-
-    // 2026-06-19 is Friday (weekend)
-    expect(getNightlyRateInfo(chalet, '2026-06-19')).toMatchObject({
-      rate: 2400,
-      source: 'weekend',
-    });
-
-    // 2026-07-13 is July (peak)
-    expect(getNightlyRateInfo(chalet, '2026-07-13')).toMatchObject({
-      rate: 3000,
-      source: 'peak',
-    });
-
-    // 2026-06-16 custom price overrides standard
-    expect(getNightlyRateInfo(chalet, '2026-06-16')).toMatchObject({
-      rate: 3500,
-      source: 'custom',
-      note: 'عرض خاص بالعيد',
-    });
+    const conflicts = findConflictingDates('2026-06-24', 3, new Set(chalet.blockedDates));
+    expect(conflicts).toEqual(['2026-06-25', '2026-06-26']);
   });
 
-  it('computes stay breakdown with percentage deposit, weekly/monthly discounts, and fixed period deposits', () => {
-    const chalet = makeMockChalet();
-
-    // 3 daily nights: Mon 2026-06-15 (2000), Tue 2026-06-16 (2000), Wed 2026-06-17 (2000)
-    const dailyBreakdown = calculateStayPricing(chalet, '2026-06-15', 3, 'daily');
-    expect(dailyBreakdown.subtotal).toBe(6000);
-    expect(dailyBreakdown.downPaymentAmount).toBe(1500); // 25%
-    expect(dailyBreakdown.remainingBalance).toBe(4500);
-    expect(dailyBreakdown.durationDiscountApplied).toBe(false);
-
-    // Weekly discount applies cleanly for 7 nights without custom rules
-    const weeklyBreakdown = calculateStayPricing(chalet, '2026-06-15', 7, 'weekly');
-    expect(weeklyBreakdown.subtotal).toBe(12000);
-    expect(weeklyBreakdown.downPaymentAmount).toBe(3000);
-    expect(weeklyBreakdown.durationDiscountApplied).toBe(true);
-
-    // Monthly discount applies cleanly for 30 nights without custom rules
-    const monthlyBreakdown = calculateStayPricing(chalet, '2026-06-01', 30, 'monthly');
-    expect(monthlyBreakdown.subtotal).toBe(44000);
-    expect(monthlyBreakdown.downPaymentAmount).toBe(11000);
-    expect(monthlyBreakdown.durationDiscountApplied).toBe(true);
-
-    // Fixed deposit from dateRules overrides percentage deposit and caps at subtotal
-    const fixedRuleChalet = makeMockChalet({
-      dateRules: {
-        '2026-06-15': {
-          status: 'available',
-          depositType: 'fixed',
-          depositValue: 2500,
-          note: 'عربون ثابت للعيد',
-        },
-      },
-    });
-    const fixedBreakdown = calculateStayPricing(fixedRuleChalet, '2026-06-15', 2, 'daily');
-    expect(fixedBreakdown.downPaymentAmount).toBe(2500);
-    expect(fixedBreakdown.depositLabel).toBe('مبلغ ثابت');
-    expect(fixedBreakdown.periodNotes).toContain('عربون ثابت للعيد');
+  it('builds valid wa.me WhatsApp links for Egyptian phone numbers', () => {
+    const url = buildWhatsAppPhoneUrl('01012345678', 'مرحباً');
+    expect(url.startsWith('https://wa.me/201012345678?text=')).toBe(true);
   });
 
-  it('prevents double-booking for blocked dates and active statuses while allowing cancelled/rejected dates', () => {
-    const chalet = makeMockChalet({
-      blockedDates: ['2026-06-25'],
-    });
+  it('covers all 27 Egyptian governorates and resolves 3-level cascading locations', () => {
+    expect(ALL_GOVERNORATE_NAMES).toHaveLength(27);
+    const matrouhCities = getCitiesForGovernorate('مطروح');
+    expect(matrouhCities.length).toBeGreaterThan(0);
+    const northCoastAreas = getAreasForCity('مطروح', matrouhCities[0].name);
+    expect(northCoastAreas).toContain('مراسي');
+  });
 
-    const ranges: BookingRangeLike[] = [
+  it('resolves owner unit quota from free default or active paid subscription', () => {
+    const subs: SubscriptionRecord[] = [
       {
-        chaletId: chalet.id,
-        checkIn: '2026-06-10',
-        checkOut: '2026-06-13',
-        status: 'confirmed',
-      },
-      {
-        chaletId: chalet.id,
-        checkIn: '2026-06-15',
-        checkOut: '2026-06-17',
-        status: 'pending_verification',
-      },
-      {
-        chaletId: chalet.id,
-        checkIn: '2026-06-27',
-        checkOut: '2026-06-29',
-        status: 'pending',
-      },
-      {
-        chaletId: chalet.id,
-        checkIn: '2026-06-18',
-        checkOut: '2026-06-20',
-        status: 'cancelled',
-      },
-      {
-        chaletId: chalet.id,
-        checkIn: '2026-06-21',
-        checkOut: '2026-06-23',
-        status: 'rejected',
+        id: 'sub-1',
+        ownerName: 'أحمد',
+        ownerPhone: '01012345678',
+        planId: 'starter',
+        planName: 'باقة البداية (Starter)',
+        price: 500,
+        maxUnits: 5,
+        status: 'active',
+        createdAt: '2026-01-01T00:00:00Z',
       },
     ];
+    const activeQuota = resolveOwnerQuota('+201012345678', subs);
+    expect(activeQuota.maxUnits).toBe(5);
+    expect(activeQuota.activePlan.isFeaturedEligible).toBe(true);
 
-    expect(isChaletAvailableForRange(chalet, ranges, '2026-06-11', '2026-06-14')).toBe(false);
-    expect(isChaletAvailableForRange(chalet, ranges, '2026-06-16', '2026-06-18')).toBe(false);
-    expect(isChaletAvailableForRange(chalet, ranges, '2026-06-24', '2026-06-26')).toBe(false);
-    expect(isChaletAvailableForRange(chalet, ranges, '2026-06-28', '2026-06-30')).toBe(false);
-    expect(isChaletAvailableForRange(chalet, ranges, '2026-06-18', '2026-06-23')).toBe(true);
-
-    const conflicts = findConflictingDates('2026-06-09', 3, new Set(['2026-06-10', '2026-06-11']));
-    expect(conflicts).toEqual(['2026-06-10', '2026-06-11']);
-  });
-
-  it('aggregates host financial revenue, forfeited deposits, and occupancy rate accurately', () => {
-    const chalet = makeMockChalet();
-    const bookings: BookingRequest[] = [
-      {
-        id: 'b-1',
-        chaletId: chalet.id,
-        chaletTitle: chalet.title,
-        resort: chalet.resort,
-        destinationLabel: chalet.destinationLabel,
-        ownerName: chalet.owner.name,
-        guestName: 'عميل ١',
-        guestPhone: '01000000001',
-        checkIn: '2026-06-01',
-        checkOut: addDaysIso('2026-06-01', 3),
-        nights: 3,
-        inquiryChannel: 'form',
-        guests: 2,
-        totalPrice: 6000,
-        depositAmount: 1500,
-        remainingAmount: 4500,
-        status: 'confirmed',
-        notes: '',
-        createdAt: '2026-05-20T10:00:00Z',
-      },
-      {
-        id: 'b-2',
-        chaletId: chalet.id,
-        chaletTitle: chalet.title,
-        resort: chalet.resort,
-        destinationLabel: chalet.destinationLabel,
-        ownerName: chalet.owner.name,
-        guestName: 'عميل ٢',
-        guestPhone: '01000000002',
-        checkIn: '2026-06-10',
-        checkOut: addDaysIso('2026-06-10', 2),
-        nights: 2,
-        inquiryChannel: 'form',
-        guests: 2,
-        totalPrice: 4000,
-        depositAmount: 1000,
-        status: 'cancelled',
-        notes: '',
-        depositForfeited: true,
-        forfeitedAmount: 1000,
-        createdAt: '2026-06-08T10:00:00Z',
-      },
-    ];
-
-    const metrics = calculateFinancialMetrics([chalet], bookings, 2026, 5, chalet.id); // June (index 5)
-    expect(metrics.monthlyIncome).toBe(6000);
-    expect(metrics.monthlyForfeitedIncome).toBe(1000);
-    expect(metrics.collectedDepositsInMonth).toBe(1500);
-    expect(metrics.remainingAtCheckInInMonth).toBe(4500);
-    expect(metrics.totalBookedNightsInMonth).toBe(3);
-    expect(metrics.occupancyRate).toBe(10); // 3 of 30 days = 10%
+    const freeQuota = resolveOwnerQuota('01199999999', subs);
+    expect(freeQuota.maxUnits).toBe(1);
+    expect(freeQuota.activePlan.id).toBe('free');
   });
 });

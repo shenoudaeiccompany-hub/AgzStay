@@ -1,1281 +1,942 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
-  ArrowRight,
   Building2,
-  CalendarCheck2,
   Check,
   CheckCircle2,
-  Clock3,
   Copy,
   Crown,
   Database,
+  Edit3,
+  ExternalLink,
   Eye,
-  Image as ImageIcon,
+  EyeOff,
+  Lock,
+  LogOut,
   RefreshCw,
-  ShieldAlert,
-  ShieldCheck,
-  Wallet,
+  Search,
+  Sparkles,
+  Trash2,
   X,
   XCircle,
 } from 'lucide-react';
-import { formatEGP } from '@/data/chalets';
-import { useModal } from '@/hooks/useModal';
 import {
-  getSupabaseConfigStatus,
+  EDITABLE_ADVERTISER_ROLES,
+  EDITABLE_PROPERTY_TYPES,
+  THREE_REAL_EGYPT_SAMPLE_UNITS,
+  formatEGP,
+  getPriceUnitLabel,
+} from '@/data/chalets';
+import { ALL_GOVERNORATE_NAMES } from '@/data/egyptLocations';
+import {
+  isSupabaseConfigured,
   testSupabaseUnitsConnection,
   type SupabaseUnitsTestResult,
 } from '@/lib/supabase';
 import {
-  getBookingReceiptSignedUrl,
-  getVerificationDocSignedUrl,
-  type RepoResult,
+  agzstayStorageKeys,
+  deleteChaletRecord,
+  fetchAllChaletsFromDb,
+  fetchAllSubscriptions,
+  insertChaletRecord,
+  resolveReceiptPreviewUrl,
+  reviewSubscriptionAdmin,
+  updateChaletRecord,
 } from '@/services/agzstayRepository';
 import type {
-  AppUser,
-  BookingRequest,
+  AdvertiserRoleLabel,
   Chalet,
-  HostSubscriptionRecord,
-  OwnerVerificationSubmission,
-  PaymentMethod,
-  SubscriptionStatus,
+  PropertyType,
+  SubscriptionRecord,
 } from '@/types/chalet';
-import { formatArabicDate } from '@/utils/bookingPricing';
 
 interface AdminDashboardProps {
-  currentUser: AppUser | null;
-  chalets: Chalet[];
-  bookings: BookingRequest[];
-  subscriptions: HostSubscriptionRecord[];
-  verifications: OwnerVerificationSubmission[];
-  loading?: boolean;
-  error?: string | null;
-  onRetry?: () => void;
-  onApproveBooking: (bookingId: string) => Promise<void> | void;
-  onRejectBooking: (bookingId: string, reason?: string) => Promise<void> | void;
-  onApproveSubscription: (subscriptionId: string) => Promise<void> | void;
-  onExpireSubscription: (subscriptionId: string) => Promise<void> | void;
-  onReviewVerification: (
-    verificationId: string,
-    decision: 'verified' | 'unverified',
-    rejectionReason?: string
-  ) => Promise<RepoResult<OwnerVerificationSubmission>> | void;
-  onBackToBrowse: () => void;
+  onDataChanged?: () => void;
 }
 
-const SUPABASE_SETUP_SQL = `-- شغّل ملف الترحيل الكامل في Supabase SQL Editor:
--- supabase/migrations/001_init.sql
--- يتضمن: profiles, chalets, chalet_contacts, bookings (btree_gist no overlap),
--- reviews, renter_trust_reviews, listing_reports, owner_verifications, host_subscriptions
--- مع سياسات RLS الكاملة وباكتات chalet-images و verification-docs و receipts`;
+const ADMIN_PIN = (import.meta.env.VITE_ADMIN_PIN as string | undefined)?.trim() || '123456';
 
-function getPaymentMethodLabel(method?: PaymentMethod): string {
-  switch (method) {
-    case 'instapay':
-      return 'إنستاباي (InstaPay)';
-    case 'vodafone-cash':
-      return 'فودافون كاش';
-    case 'orange-cash':
-      return 'أورنج كاش';
-    case 'etisalat-cash':
-      return 'اتصالات كاش';
-    default:
-      return 'غير محدد';
-  }
-}
+const QUICK_V2_SQL_HINT = `-- يرجى تنفيذ ملف supabase/migrations/005_agzstay_v2_schema.sql في Supabase SQL Editor
+-- للتأكد من تهيئة جدول chalets وجدول subscriptions وحاويات property-images و receipts.`;
 
-export function AdminDashboard({
-  currentUser,
-  chalets,
-  bookings,
-  subscriptions,
-  verifications,
-  loading = false,
-  error = null,
-  onRetry,
-  onApproveBooking,
-  onRejectBooking,
-  onApproveSubscription,
-  onExpireSubscription,
-  onReviewVerification,
-  onBackToBrowse,
-}: AdminDashboardProps) {
-  const [statusFilter, setStatusFilter] = useState<'all' | SubscriptionStatus>('all');
-  const [bookingFilter, setBookingFilter] = useState<
-    'pending_review' | 'confirmed' | 'cancelled' | 'all'
-  >('pending_review');
-  const [supabaseResult, setSupabaseResult] = useState<SupabaseUnitsTestResult | null>(null);
-  const [isTestingSupabase, setIsTestingSupabase] = useState(false);
-  const [showSqlGuide, setShowSqlGuide] = useState(false);
-  const [sqlCopied, setSqlCopied] = useState(false);
-  const [loadingReceiptBookingId, setLoadingReceiptBookingId] = useState<string | null>(null);
-  const [loadingVerificationId, setLoadingVerificationId] = useState<string | null>(null);
-  const [rejectingVerId, setRejectingVerId] = useState<string | null>(null);
-  const [rejectionReasonDraft, setRejectionReasonDraft] = useState('');
-  const [rejectionError, setRejectionError] = useState('');
-  const [receiptModalState, setReceiptModalState] = useState<{
-    booking?: BookingRequest;
-    title: string;
-    subtitle: string;
-    imageUrl: string | null;
-    isSignedUrl: boolean;
-    error?: string;
-  } | null>(null);
-  const receiptModalRef = useModal<HTMLDivElement>({
-    isOpen: Boolean(receiptModalState),
-    onClose: () => setReceiptModalState(null),
+export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
+  const [unlocked, setUnlocked] = useState<boolean>(() => {
+    try {
+      return sessionStorage.getItem(agzstayStorageKeys.adminPinVerified) === '1';
+    } catch {
+      return false;
+    }
   });
+  const [pinInput, setPinInput] = useState('');
+  const [pinError, setPinError] = useState('');
 
-  const supabaseConfig = useMemo(() => getSupabaseConfigStatus(), []);
+  const [activeTab, setActiveTab] = useState<'units' | 'subscriptions'>('units');
+  const [units, setUnits] = useState<Chalet[]>([]);
+  const [subscriptions, setSubscriptions] = useState<SubscriptionRecord[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [unitSearch, setUnitSearch] = useState('');
+  const [subFilter, setSubFilter] = useState<'all' | 'pending' | 'active' | 'rejected'>('all');
 
-  const pendingVerifications = useMemo(
-    () => verifications.filter((v) => v.status === 'pending'),
-    [verifications]
+  const [diagResult, setDiagResult] = useState<SupabaseUnitsTestResult | null>(null);
+  const [testingDiag, setTestingDiag] = useState(false);
+  const [seedingSamples, setSeedingSamples] = useState(false);
+  const [sqlCopied, setSqlCopied] = useState(false);
+  const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(
+    null
   );
 
-  const pendingBookings = useMemo(
-    () =>
-      bookings.filter(
-        (b) =>
-          b.status === 'payment_submitted' ||
-          b.status === 'pending_verification' ||
-          b.status === 'pending' ||
-          b.status === 'approved'
-      ),
-    [bookings]
-  );
+  // Quick Inline Unit Edit
+  const [editingUnit, setEditingUnit] = useState<Chalet | null>(null);
+  const [editTitle, setEditTitle] = useState('');
+  const [editPrice, setEditPrice] = useState('');
+  const [editPropertyType, setEditPropertyType] = useState<PropertyType>('شاليه');
+  const [editAdvertiserRole, setEditAdvertiserRole] =
+    useState<AdvertiserRoleLabel>('مالك مباشر');
+  const [editGovernorate, setEditGovernorate] = useState('مطروح');
+  const [editCity, setEditCity] = useState('');
+  const [editArea, setEditArea] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
 
-  const displayedBookings = useMemo(() => {
-    if (bookingFilter === 'pending_review') return pendingBookings;
-    if (bookingFilter === 'confirmed') {
-      return bookings.filter((b) => b.status === 'confirmed' || b.status === 'completed');
+  // Receipt Preview Modal
+  const [receiptPreviewUrl, setReceiptPreviewUrl] = useState<string | null>(null);
+  const [receiptPreviewTitle, setReceiptPreviewTitle] = useState('');
+
+  const loadAdminData = useCallback(async () => {
+    if (!unlocked) return;
+    setLoading(true);
+    try {
+      const [unitsRes, subsRes] = await Promise.all([
+        fetchAllChaletsFromDb(true),
+        fetchAllSubscriptions(),
+      ]);
+      if (unitsRes.error) {
+        setFeedback({ type: 'error', text: unitsRes.error });
+      } else {
+        setUnits(unitsRes.data ?? []);
+      }
+      if (!subsRes.error && subsRes.data) {
+        setSubscriptions(subsRes.data);
+      } else if (subsRes.error) {
+        setFeedback({ type: 'error', text: subsRes.error });
+      }
+    } finally {
+      setLoading(false);
     }
-    if (bookingFilter === 'cancelled') {
-      return bookings.filter(
-        (b) => b.status === 'cancelled' || b.status === 'rejected' || b.status === 'expired'
-      );
+  }, [unlocked]);
+
+  useEffect(() => {
+    void loadAdminData();
+  }, [loadAdminData]);
+
+  const handlePinSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (pinInput.trim() === ADMIN_PIN) {
+      setPinError('');
+      setUnlocked(true);
+      try {
+        sessionStorage.setItem(agzstayStorageKeys.adminPinVerified, '1');
+      } catch {
+        // ignore
+      }
+    } else {
+      setPinError('رمز الدخول غير صحيح. تأكد من الرمز وحاول مرة أخرى.');
     }
-    return bookings;
-  }, [bookingFilter, bookings, pendingBookings]);
+  };
 
-  const pendingSubscriptions = useMemo(
-    () => subscriptions.filter((s) => s.status === 'pending-verification'),
-    [subscriptions]
-  );
+  const handleLockAdmin = () => {
+    setUnlocked(false);
+    setPinInput('');
+    try {
+      sessionStorage.removeItem(agzstayStorageKeys.adminPinVerified);
+    } catch {
+      // ignore
+    }
+  };
 
-  const activeProCount = useMemo(
-    () => subscriptions.filter((s) => s.tier === 'pro' && s.status === 'active').length,
-    [subscriptions]
-  );
+  const handleRunDiagnostics = async () => {
+    setTestingDiag(true);
+    try {
+      const res = await testSupabaseUnitsConnection();
+      setDiagResult(res);
+    } finally {
+      setTestingDiag(false);
+    }
+  };
 
-  const totalSubscriptionRevenue = useMemo(
-    () =>
-      subscriptions
-        .filter((s) => s.tier === 'pro' && (s.status === 'active' || s.status === 'expired'))
-        .reduce((sum, s) => sum + s.monthlyFee, 0),
-    [subscriptions]
-  );
+  const handleCopySqlHint = async () => {
+    try {
+      await navigator.clipboard?.writeText(QUICK_V2_SQL_HINT);
+      setSqlCopied(true);
+      window.setTimeout(() => setSqlCopied(false), 2000);
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleSeedSampleUnits = async () => {
+    if (!isSupabaseConfigured) {
+      setFeedback({ type: 'error', text: 'الاتصال بـ Supabase غير مضبوط في هذه البيئة.' });
+      return;
+    }
+    setSeedingSamples(true);
+    setFeedback(null);
+    try {
+      let insertedCount = 0;
+      for (const sample of THREE_REAL_EGYPT_SAMPLE_UNITS) {
+        const res = await insertChaletRecord({
+          title: sample.title,
+          description: sample.description,
+          governorate: sample.governorate,
+          city: sample.city,
+          areaOrVillage: sample.areaOrVillage,
+          propertyType: sample.propertyType,
+          advertiserRole: sample.advertiserRole,
+          ownerName: sample.ownerName,
+          ownerPhone: sample.ownerPhone,
+          isFeatured: sample.isFeatured,
+          depositType: sample.depositType,
+          depositValue: sample.depositValue,
+          pricePerNight: sample.pricePerNight,
+          bedrooms: sample.bedrooms,
+          bathrooms: sample.bathrooms,
+          areaSqm: sample.areaSqm,
+          maxGuests: sample.maxGuests,
+          images: sample.images,
+          amenities: sample.amenities,
+          blockedDates: sample.blockedDates,
+          rules: sample.rules,
+          availabilityStatus: 'active',
+        });
+        if (res.error) {
+          setFeedback({ type: 'error', text: res.error });
+          break;
+        }
+        insertedCount += 1;
+      }
+      if (insertedCount > 0) {
+        setFeedback({
+          type: 'success',
+          text: `تم إدخال ${insertedCount} وحدات حقيقية (الساحل الشمالي، العين السخنة، الغردقة) في جدول chalets بنجاح.`,
+        });
+        await loadAdminData();
+        onDataChanged?.();
+      }
+    } finally {
+      setSeedingSamples(false);
+    }
+  };
+
+  const openEditUnitModal = (unit: Chalet) => {
+    setEditingUnit(unit);
+    setEditTitle(unit.title);
+    setEditPrice(String(unit.pricePerNight));
+    setEditPropertyType(unit.propertyType);
+    setEditAdvertiserRole(unit.advertiserRole);
+    setEditGovernorate(unit.governorate || ALL_GOVERNORATE_NAMES[0]);
+    setEditCity(unit.city);
+    setEditArea(unit.areaOrVillage);
+  };
+
+  const handleSaveAdminUnitEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingUnit) return;
+    const numPrice = Number(editPrice);
+    if (!Number.isFinite(numPrice) || numPrice <= 0) {
+      setFeedback({ type: 'error', text: 'يرجى إدخال سعر صحيح.' });
+      return;
+    }
+    setSavingEdit(true);
+    try {
+      const res = await updateChaletRecord(editingUnit.id, {
+        title: editTitle.trim(),
+        pricePerNight: numPrice,
+        propertyType: editPropertyType,
+        advertiserRole: editAdvertiserRole,
+        governorate: editGovernorate,
+        city: editCity.trim(),
+        areaOrVillage: editArea.trim(),
+      });
+      if (res.error) {
+        setFeedback({ type: 'error', text: res.error });
+        return;
+      }
+      setEditingUnit(null);
+      setFeedback({ type: 'success', text: 'تم تعديل الوحدة بنجاح.' });
+      await loadAdminData();
+      onDataChanged?.();
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
+  const handleToggleFeatured = async (unit: Chalet) => {
+    const res = await updateChaletRecord(unit.id, { isFeatured: !unit.isFeatured });
+    if (res.error) {
+      setFeedback({ type: 'error', text: res.error });
+      return;
+    }
+    await loadAdminData();
+    onDataChanged?.();
+  };
+
+  const handleToggleUnitVisibility = async (unit: Chalet) => {
+    const nextStatus = unit.availabilityStatus === 'active' ? 'hidden' : 'active';
+    const res = await updateChaletRecord(unit.id, { availabilityStatus: nextStatus });
+    if (res.error) {
+      setFeedback({ type: 'error', text: res.error });
+      return;
+    }
+    await loadAdminData();
+    onDataChanged?.();
+  };
+
+  const handleDeleteUnit = async (unit: Chalet) => {
+    if (!window.confirm(`حذف "${unit.title}" نهائياً من جدول chalets؟`)) return;
+    const res = await deleteChaletRecord(unit.id);
+    if (res.error) {
+      setFeedback({ type: 'error', text: res.error });
+      return;
+    }
+    setFeedback({ type: 'success', text: 'تم حذف الوحدة.' });
+    await loadAdminData();
+    onDataChanged?.();
+  };
+
+  const handlePreviewReceipt = async (sub: SubscriptionRecord) => {
+    const res = await resolveReceiptPreviewUrl(sub.receiptUrl, sub.receiptPath);
+    if (res.error || !res.data) {
+      setFeedback({ type: 'error', text: res.error ?? 'تعذر فتح الإيصال.' });
+      return;
+    }
+    setReceiptPreviewTitle(`${sub.ownerName} — ${sub.planName}`);
+    setReceiptPreviewUrl(res.data);
+  };
+
+  const handleReviewSubscription = async (
+    sub: SubscriptionRecord,
+    decision: 'active' | 'rejected'
+  ) => {
+    const res = await reviewSubscriptionAdmin(sub.id, sub.ownerPhone, decision);
+    if (res.error) {
+      setFeedback({ type: 'error', text: res.error });
+      return;
+    }
+    setFeedback({
+      type: 'success',
+      text:
+        decision === 'active'
+          ? `تم تفعيل باقة "${sub.planName}" لـ ${sub.ownerName} وتمييز وحداته تلقائياً.`
+          : `تم رفض طلب اشتراك ${sub.ownerName}.`,
+    });
+    await loadAdminData();
+    onDataChanged?.();
+  };
+
+  const filteredUnits = useMemo(() => {
+    const q = unitSearch.trim().toLowerCase();
+    if (!q) return units;
+    return units.filter((u) =>
+      `${u.title} ${u.governorate} ${u.city} ${u.areaOrVillage} ${u.ownerName} ${u.ownerPhone}`
+        .toLowerCase()
+        .includes(q)
+    );
+  }, [unitSearch, units]);
 
   const filteredSubscriptions = useMemo(() => {
-    if (statusFilter === 'all') return subscriptions;
-    return subscriptions.filter((s) => s.status === statusFilter);
-  }, [subscriptions, statusFilter]);
+    if (subFilter === 'all') return subscriptions;
+    return subscriptions.filter((s) => s.status === subFilter);
+  }, [subFilter, subscriptions]);
 
-  const forfeitedDisputes = useMemo(
-    () =>
-      bookings.filter(
-        (b) => b.status === 'cancelled' && (b.depositForfeited || (b.forfeitedAmount ?? 0) > 0)
-      ),
-    [bookings]
-  );
+  const pendingSubsCount = subscriptions.filter((s) => s.status === 'pending').length;
 
-  const handleTestSupabaseUnits = async () => {
-    setIsTestingSupabase(true);
-    try {
-      const result = await testSupabaseUnitsConnection();
-      setSupabaseResult(result);
-    } finally {
-      setIsTestingSupabase(false);
-    }
-  };
-
-  const handleCopySql = async () => {
-    try {
-      await navigator.clipboard?.writeText(SUPABASE_SETUP_SQL);
-      setSqlCopied(true);
-      setTimeout(() => setSqlCopied(false), 2500);
-    } catch {
-      // Ignore clipboard failure
-    }
-  };
-
-  const handlePreviewBookingReceipt = async (booking: BookingRequest) => {
-    setLoadingReceiptBookingId(booking.id);
-    try {
-      const result = await getBookingReceiptSignedUrl(booking.receiptPath);
-      setReceiptModalState({
-        booking,
-        title: 'معاينة إيصال تحويل العربون (InstaPay)',
-        subtitle: `${booking.guestName} • ${booking.chaletTitle}`,
-        imageUrl: result.data,
-        isSignedUrl: Boolean(result.data),
-        error: result.error ?? undefined,
-      });
-    } finally {
-      setLoadingReceiptBookingId(null);
-    }
-  };
-
-  const handlePreviewVerificationDoc = async (ver: OwnerVerificationSubmission) => {
-    const key = ver.id || ver.documentPath || ver.ownerName;
-    setLoadingVerificationId(key);
-    try {
-      const result = await getVerificationDocSignedUrl(ver.documentPath);
-      setReceiptModalState({
-        title: 'معاينة مستند توثيق المالك',
-        subtitle: `${ver.ownerName} • ${ver.documentNumber}`,
-        imageUrl: result.data,
-        isSignedUrl: Boolean(result.data),
-        error: result.error ?? undefined,
-      });
-    } finally {
-      setLoadingVerificationId(null);
-    }
-  };
-
-  const handlePreviewSubReceipt = async (sub: HostSubscriptionRecord) => {
-    const result = await getBookingReceiptSignedUrl(sub.receiptPath);
-    setReceiptModalState({
-      title: 'معاينة إيصال اشتراك Pro',
-      subtitle: `${sub.hostName} • مرجع: ${sub.transferReference || '—'}`,
-      imageUrl: result.data,
-      isSignedUrl: Boolean(result.data),
-      error: result.error ?? undefined,
-    });
-  };
-
-  if (currentUser?.role !== 'admin') {
+  // Admin PIN Gate
+  if (!unlocked) {
     return (
-      <section className="mx-auto w-full max-w-2xl flex-1 px-4 py-16">
-        <div className="rounded-3xl border border-error-200 bg-white p-8 text-center shadow-sm">
-          <ShieldAlert className="mx-auto h-12 w-12 text-error-500" />
-          <h1 className="mt-3 text-xl font-extrabold text-slate-900">
-            هذه الصفحة مخصصة للإدارة العامة فقط
-          </h1>
-          <p className="mt-1.5 text-sm text-slate-600">
-            لا يملك حسابك الحالي صلاحية <code className="font-mono">admin</code> للوصول إلى لوحة الإدارة.
+      <main className="mx-auto w-full max-w-md flex-1 px-4 py-14 sm:px-6">
+        <div className="rounded-2xl border border-stone-200/70 bg-white p-6 shadow-xs sm:p-8">
+          <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[#1E3A5F] text-white">
+            <Lock className="h-6 w-6 text-[#C5A880]" />
+          </div>
+          <h1 className="mt-4 text-2xl font-bold text-[#1E3A5F]">لوحة تحكم الإدارة</h1>
+          <p className="mt-1.5 text-sm text-[#6B7280]">
+            أدخل رمز الحماية (PIN) للوصول إلى إدارة الوحدات ومراجعة اشتراكات المعلنين.
           </p>
-          <button
-            type="button"
-            onClick={onBackToBrowse}
-            className="mt-5 inline-flex items-center gap-1.5 rounded-xl bg-primary-600 px-5 py-2.5 text-xs font-bold text-white hover:bg-primary-700"
-          >
-            <ArrowRight className="h-4 w-4" />
-            <span>العودة لتصفح الوحدات</span>
-          </button>
+
+          <form onSubmit={handlePinSubmit} className="mt-5 space-y-4">
+            <div>
+              <label htmlFor="admin-pin" className="mb-1.5 block text-xs font-semibold text-slate-700">
+                رمز الدخول (PIN)
+              </label>
+              <input
+                id="admin-pin"
+                type="password"
+                inputMode="numeric"
+                required
+                dir="ltr"
+                value={pinInput}
+                onChange={(e) => setPinInput(e.target.value)}
+                placeholder="••••••"
+                className="h-11 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-3 text-center font-mono text-lg tracking-widest text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
+              />
+            </div>
+
+            {pinError && (
+              <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700">
+                {pinError}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              className="min-h-[46px] w-full rounded-xl bg-[#1E3A5F] px-5 py-2.5 text-sm font-bold text-white hover:bg-[#172E4D]"
+            >
+              فتح لوحة الأدمن
+            </button>
+          </form>
         </div>
-      </section>
+      </main>
     );
   }
 
   return (
-    <section className="mx-auto w-full max-w-7xl flex-1 px-4 py-8 sm:px-6">
-      {loading && (
-        <div className="mb-4 flex items-center gap-2 rounded-2xl border border-primary-200 bg-primary-50 px-4 py-3 text-xs font-bold text-primary-800">
-          <RefreshCw className="h-4 w-4 animate-spin" />
-          <span>جاري تحديث بيانات الإدارة العامة من الخادم...</span>
+    <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-8 sm:px-6">
+      {/* Header */}
+      <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-stone-200/70 bg-white p-5 shadow-xs">
+        <div>
+          <h1 className="text-2xl font-bold text-[#1E3A5F]">لوحة تحكم الأدمن — AgzStay</h1>
+          <p className="mt-1 text-xs text-[#6B7280]">
+            إدارة وحدات جدول chalets ومراجعة إيصالات الباقات من جدول subscriptions.
+          </p>
         </div>
-      )}
 
-      {error && (
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-error-200 bg-error-50 px-4 py-3 text-xs font-bold text-error-800">
-          <div className="flex items-center gap-2">
-            <AlertTriangle className="h-4 w-4 shrink-0 text-error-600" />
-            <span>{error}</span>
-          </div>
-          {onRetry && (
-            <button
-              type="button"
-              onClick={onRetry}
-              className="rounded-xl bg-white px-3 py-1.5 text-[11px] font-bold text-error-700 shadow-sm hover:bg-error-100"
-            >
-              إعادة المحاولة
-            </button>
-          )}
-        </div>
-      )}
-
-      {/* Admin Hero Header */}
-      <div className="rounded-3xl bg-gradient-to-bl from-slate-900 via-primary-900 to-primary-700 p-6 text-white shadow-lg sm:p-8">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1 text-xs font-bold text-amber-200">
-              <ShieldCheck className="h-3.5 w-3.5" />
-              لوحة تحكم الإدارة العامة (Super Admin Hub)
-            </span>
-            <h1 className="mt-2.5 text-2xl font-extrabold sm:text-3xl">
-              مراقبة الاشتراكات، توثيق التحويلات، وسجل النزاعات
-            </h1>
-            <p className="mt-1 text-sm text-primary-100">
-              مراجعة طلبات توثيق الملاك، تحويلات إنستاباي للاشتراك، النزاعات القانونية، واختبار اتصال Supabase بجدول chalets.
-            </p>
-          </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            disabled={testingDiag}
+            onClick={() => void handleRunDiagnostics()}
+            className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-3.5 py-2 text-xs font-semibold text-[#1E3A5F] hover:bg-slate-100"
+          >
+            <Database className="h-4 w-4 text-[#C5A880]" />
+            <span>{testingDiag ? 'جاري الفحص...' : 'فحص الاتصال بـ Supabase'}</span>
+          </button>
 
           <button
             type="button"
-            onClick={onBackToBrowse}
-            className="inline-flex items-center gap-1.5 rounded-xl bg-white px-4 py-2.5 text-xs font-bold text-primary-800 hover:bg-sand-100"
+            disabled={seedingSamples}
+            onClick={() => void handleSeedSampleUnits()}
+            className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl bg-[#C5A880] px-3.5 py-2 text-xs font-bold text-[#1F2937] hover:bg-[#b5976d] disabled:opacity-60"
           >
-            <ArrowRight className="h-4 w-4" />
-            <span>العودة لتصفح الوحدات</span>
+            <Sparkles className="h-4 w-4" />
+            <span>{seedingSamples ? 'جاري الإدخال...' : 'إدخال ٣ وحدات حقيقية بمصر'}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => void loadAdminData()}
+            disabled={loading}
+            className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-stone-200/70 bg-white px-3.5 py-2 text-xs font-semibold text-[#1F2937] hover:bg-slate-50"
+          >
+            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+            <span>تحديث</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleLockAdmin}
+            className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-red-200 bg-red-50 px-3.5 py-2 text-xs font-semibold text-red-700 hover:bg-red-100"
+          >
+            <LogOut className="h-4 w-4" />
+            <span>قفل اللوحة</span>
           </button>
         </div>
-
-        {/* Platform Analytics Summary */}
-        <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <div className="rounded-2xl bg-white/10 p-3.5 backdrop-blur-sm">
-            <div className="flex items-center justify-between text-xs text-primary-100">
-              <span>إجمالي الوحدات المسجلة</span>
-              <Building2 className="h-4 w-4 text-secondary-300" />
-            </div>
-            <div className="mt-1.5 text-2xl font-extrabold text-white">
-              {chalets.length.toLocaleString('ar-EG')}
-            </div>
-          </div>
-
-          <div className="rounded-2xl bg-white/10 p-3.5 backdrop-blur-sm">
-            <div className="flex items-center justify-between text-xs text-primary-100">
-              <span>مشتركي Pro النشطين</span>
-              <Crown className="h-4 w-4 text-amber-300" />
-            </div>
-            <div className="mt-1.5 text-2xl font-extrabold text-amber-300">
-              {activeProCount.toLocaleString('ar-EG')}
-            </div>
-          </div>
-
-          <div className="rounded-2xl bg-white/10 p-3.5 backdrop-blur-sm">
-            <div className="flex items-center justify-between text-xs text-primary-100">
-              <span>طلبات بانتظار المراجعة</span>
-              <Clock3 className="h-4 w-4 text-warning-300" />
-            </div>
-            <div className="mt-1.5 text-2xl font-extrabold text-warning-300">
-              {(pendingSubscriptions.length + pendingVerifications.length).toLocaleString('ar-EG')}
-            </div>
-          </div>
-
-          <div className="rounded-2xl bg-white/10 p-3.5 backdrop-blur-sm">
-            <div className="flex items-center justify-between text-xs text-primary-100">
-              <span>إيرادات الاشتراكات</span>
-              <Wallet className="h-4 w-4 text-emerald-300" />
-            </div>
-            <div className="mt-1.5 text-xl font-extrabold text-emerald-300 sm:text-2xl">
-              {formatEGP(totalSubscriptionRevenue)}
-            </div>
-          </div>
-        </div>
       </div>
 
-      {/* Supabase Environment & chalets/bookings Diagnostic Panel */}
-      <div className="mt-6 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h2 className="flex items-center gap-2 text-base font-extrabold text-primary-800">
-              <Database className="h-5 w-5 text-secondary-500" />
-              فحص الاتصال بقاعدة البيانات Supabase (chalets &amp; bookings &amp; receipts)
-            </h2>
-            <p className="mt-0.5 text-xs text-slate-600">
-              يتحقق هذا الفحص من جاهزية مفاتيح البيئة (VITE_SUPABASE_URL و VITE_SUPABASE_ANON_KEY) ويختبر قراءة الصفوف من جدولي chalets و bookings.
-            </p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
+      {/* Diagnostics Result */}
+      {diagResult && (
+        <div
+          className={`mt-4 rounded-2xl border p-4 text-xs ${
+            diagResult.ok
+              ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
+              : 'border-amber-200 bg-amber-50 text-amber-950'
+          }`}
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="font-bold">
+              {diagResult.ok
+                ? `الاتصال ناجح: جدول chalets يحتوي على ${diagResult.count} وحدة، وجدول subscriptions ${
+                    diagResult.subscriptionsOk ? `متاح (${diagResult.subscriptionsCount ?? 0})` : 'غير مهيأ بعد'
+                  }.`
+                : `تنبيه الاتصال: ${diagResult.error ?? 'تعذر الوصول للجدول'}`}
+            </span>
             <button
               type="button"
-              onClick={() => setShowSqlGuide((prev) => !prev)}
-              className="rounded-xl border border-slate-200 bg-sand-50 px-3.5 py-2 text-xs font-bold text-slate-700 hover:bg-sand-100"
+              onClick={() => void handleCopySqlHint()}
+              className="inline-flex items-center gap-1 rounded-lg bg-white px-2.5 py-1 text-[11px] font-bold text-[#1E3A5F]"
             >
-              {showSqlGuide ? 'إخفاء أكواد SQL' : 'أكواد SQL وإعداد Buckets'}
-            </button>
-            <button
-              type="button"
-              onClick={handleTestSupabaseUnits}
-              disabled={isTestingSupabase}
-              className="inline-flex items-center gap-1.5 rounded-xl bg-primary-600 px-4 py-2 text-xs font-bold text-white shadow-sm transition hover:bg-primary-700 disabled:opacity-60"
-            >
-              <RefreshCw className={`h-3.5 w-3.5 ${isTestingSupabase ? 'animate-spin' : ''}`} />
-              <span>{isTestingSupabase ? 'جاري الاختبار...' : 'اختبار الاتصال بـ Supabase الآن'}</span>
+              {sqlCopied ? <Check className="h-3.5 w-3.5 text-emerald-600" /> : <Copy className="h-3.5 w-3.5" />}
+              <span>{sqlCopied ? 'تم النسخ' : 'نسخ ملاحظة الترحيل SQL'}</span>
             </button>
           </div>
         </div>
+      )}
 
-        <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <div
-            className={`rounded-2xl border p-3.5 text-xs ${
-              supabaseConfig.urlPresent && supabaseConfig.urlValid
-                ? 'border-emerald-200 bg-emerald-50/70 text-emerald-900'
-                : 'border-amber-200 bg-amber-50 text-amber-900'
-            }`}
-          >
-            <div className="font-extrabold">VITE_SUPABASE_URL</div>
-            <div className="mt-1">
-              {supabaseConfig.urlPresent && supabaseConfig.urlValid
-                ? `مضبوط (${supabaseConfig.urlHost})`
-                : 'غير مضبوط أو غير صالح في البيئة الحالية (أضفه عبر لوحة Secrets في AI Studio)'}
-            </div>
-          </div>
-
-          <div
-            className={`rounded-2xl border p-3.5 text-xs ${
-              supabaseConfig.anonKeyPresent
-                ? 'border-emerald-200 bg-emerald-50/70 text-emerald-900'
-                : 'border-amber-200 bg-amber-50 text-amber-900'
-            }`}
-          >
-            <div className="font-extrabold">VITE_SUPABASE_ANON_KEY</div>
-            <div className="mt-1">
-              {supabaseConfig.anonKeyPresent
-                ? 'مضبوط وجاهز للاستخدام في العميل'
-                : 'مفقود — أضف المفتاح العام (anon key) من إعدادات مشروع Supabase في لوحة Secrets'}
-            </div>
-          </div>
+      {feedback && (
+        <div
+          className={`mt-4 flex items-center justify-between gap-2 rounded-2xl border px-4 py-3 text-xs font-bold ${
+            feedback.type === 'success'
+              ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
+              : 'border-red-200 bg-red-50 text-red-800'
+          }`}
+        >
+          <span className="inline-flex items-center gap-2">
+            {feedback.type === 'success' ? (
+              <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+            ) : (
+              <AlertTriangle className="h-4 w-4 text-red-600" />
+            )}
+            {feedback.text}
+          </span>
+          <button type="button" onClick={() => setFeedback(null)} className="p-1">
+            <X className="h-4 w-4" />
+          </button>
         </div>
+      )}
 
-        {supabaseResult && (
-          <div className="mt-3 space-y-2">
-            <div
-              className={`rounded-2xl border p-4 text-xs ${
-                supabaseResult.ok
-                  ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
-                  : 'border-error-200 bg-error-50 text-error-800'
-              }`}
-            >
-              {supabaseResult.ok ? (
-                <div className="space-y-2">
-                  <div className="flex items-center gap-2 font-extrabold">
-                    <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-                    <span>
-                      نجحت قراءة جدول {supabaseResult.tableName || 'chalets'}! عدد السجلات المتاحة:{' '}
-                      {supabaseResult.count.toLocaleString('ar-EG')}
-                    </span>
-                  </div>
-                  {supabaseResult.sampleRows.length > 0 && (
-                    <div className="flex flex-wrap gap-2">
-                      {supabaseResult.sampleRows.map((row) => (
+      {/* Main 2 Tabs */}
+      <div className="mt-6 flex flex-wrap gap-2 border-b border-stone-200/70 pb-3">
+        <button
+          type="button"
+          onClick={() => setActiveTab('units')}
+          className={`inline-flex min-h-[42px] items-center gap-2 rounded-xl px-5 py-2 text-sm font-bold transition ${
+            activeTab === 'units'
+              ? 'bg-[#1E3A5F] text-white shadow-xs'
+              : 'bg-white text-[#1F2937] hover:bg-slate-100'
+          }`}
+        >
+          <Building2 className="h-4 w-4" />
+          <span>إدارة الوحدات ({units.length})</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('subscriptions')}
+          className={`inline-flex min-h-[42px] items-center gap-2 rounded-xl px-5 py-2 text-sm font-bold transition ${
+            activeTab === 'subscriptions'
+              ? 'bg-[#1E3A5F] text-white shadow-xs'
+              : 'bg-white text-[#1F2937] hover:bg-slate-100'
+          }`}
+        >
+          <Crown className="h-4 w-4 text-[#C5A880]" />
+          <span>مراجعة اشتراكات الباقات ({subscriptions.length})</span>
+          {pendingSubsCount > 0 && (
+            <span className="rounded-full bg-[#C5A880] px-2 py-0.5 text-[11px] font-bold text-[#1F2937]">
+              {pendingSubsCount} جديد
+            </span>
+          )}
+        </button>
+      </div>
+
+      {/* Tab 1: Units Management */}
+      {activeTab === 'units' && (
+        <section className="mt-6 space-y-4">
+          <div className="relative max-w-md">
+            <Search className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <input
+              type="text"
+              value={unitSearch}
+              onChange={(e) => setUnitSearch(e.target.value)}
+              placeholder="ابحث بالعنوان، المحافظة، اسم المعلن أو الهاتف..."
+              className="h-11 w-full rounded-xl border border-stone-200/70 bg-white pl-3 pr-10 text-xs text-[#1F2937] focus:border-[#1E3A5F] focus:outline-none sm:text-sm"
+            />
+          </div>
+
+          {filteredUnits.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center text-sm text-[#6B7280]">
+              لا توجد وحدات مطابقة في جدول chalets حالياً.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {filteredUnits.map((unit) => {
+                const isHidden = unit.availabilityStatus !== 'active';
+                return (
+                  <div
+                    key={unit.id}
+                    className="flex flex-col justify-between gap-4 rounded-2xl border border-stone-200/70 bg-white p-4 shadow-xs lg:flex-row lg:items-center"
+                  >
+                    <div className="space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
                         <span
-                          key={row.id}
-                          className="rounded-lg bg-white px-2.5 py-1 text-[11px] font-bold text-slate-800"
+                          className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${
+                            isHidden
+                              ? 'bg-slate-100 text-[#6B7280]'
+                              : 'bg-emerald-50 text-emerald-700'
+                          }`}
                         >
-                          {row.title}
-                          {row.pricePerNight ? ` (${formatEGP(row.pricePerNight)})` : ''}
+                          {isHidden ? 'مخفية' : 'نشطة'}
                         </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div className="flex items-start gap-2 font-bold">
-                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-error-600" />
-                  <span>جدول chalets: {supabaseResult.error}</span>
-                </div>
-              )}
-            </div>
+                        <span className="rounded-full bg-[#FAF9F6] px-2.5 py-0.5 text-[11px] font-semibold text-[#1E3A5F]">
+                          {unit.propertyType}
+                        </span>
+                        <span className="rounded-full bg-[#FAF9F6] px-2.5 py-0.5 text-[11px] font-semibold text-slate-700">
+                          {unit.advertiserRole}
+                        </span>
+                        {unit.isFeatured && (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-[#C5A880] px-2.5 py-0.5 text-[11px] font-bold text-[#1F2937]">
+                            <Sparkles className="h-3 w-3" />
+                            إعلان مميز
+                          </span>
+                        )}
+                      </div>
 
-            {supabaseResult.configured && (
-              <div
-                className={`rounded-2xl border p-3.5 text-xs ${
-                  supabaseResult.bookingsOk
-                    ? 'border-emerald-200 bg-emerald-50/70 text-emerald-900'
-                    : 'border-amber-200 bg-amber-50 text-amber-900'
+                      <h3 className="text-base font-bold text-[#1F2937]">{unit.title}</h3>
+                      <p className="text-xs text-[#6B7280]">
+                        {[unit.governorate, unit.city, unit.areaOrVillage].filter(Boolean).join(' • ')}{' '}
+                        | {unit.ownerName} ({unit.ownerPhone || 'بدون هاتف'}) |{' '}
+                        <strong className="text-[#1E3A5F]">
+                          {formatEGP(unit.pricePerNight)} ({getPriceUnitLabel(unit)})
+                        </strong>
+                      </p>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void handleToggleFeatured(unit)}
+                        className={`inline-flex min-h-[38px] items-center gap-1 rounded-xl border px-3 py-1.5 text-xs font-bold transition ${
+                          unit.isFeatured
+                            ? 'border-[#C5A880] bg-[#C5A880]/20 text-[#1E3A5F]'
+                            : 'border-stone-200/70 bg-white text-slate-700 hover:bg-slate-50'
+                        }`}
+                      >
+                        <Sparkles className="h-3.5 w-3.5 text-[#C5A880]" />
+                        <span>{unit.isFeatured ? 'إلغاء التمييز' : 'تمييز الإعلان'}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => openEditUnitModal(unit)}
+                        className="inline-flex min-h-[38px] items-center gap-1 rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-3 py-1.5 text-xs font-semibold text-[#1E3A5F] hover:bg-slate-100"
+                      >
+                        <Edit3 className="h-3.5 w-3.5" />
+                        <span>تعديل</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => void handleToggleUnitVisibility(unit)}
+                        className="inline-flex min-h-[38px] items-center gap-1 rounded-xl border border-stone-200/70 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                      >
+                        {isHidden ? (
+                          <>
+                            <Eye className="h-3.5 w-3.5 text-emerald-600" />
+                            <span>إظهار</span>
+                          </>
+                        ) : (
+                          <>
+                            <EyeOff className="h-3.5 w-3.5 text-amber-600" />
+                            <span>إخفاء</span>
+                          </>
+                        )}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => void handleDeleteUnit(unit)}
+                        className="inline-flex min-h-[38px] items-center gap-1 rounded-xl border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-100"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        <span>حذف</span>
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* Tab 2: Subscriptions Review */}
+      {activeTab === 'subscriptions' && (
+        <section className="mt-6 space-y-4">
+          <div className="flex flex-wrap gap-2">
+            {(
+              [
+                { id: 'all', label: 'الكل' },
+                { id: 'pending', label: 'قيد المراجعة' },
+                { id: 'active', label: 'مفعّلة' },
+                { id: 'rejected', label: 'مرفوضة' },
+              ] as const
+            ).map((f) => (
+              <button
+                key={f.id}
+                type="button"
+                onClick={() => setSubFilter(f.id)}
+                className={`rounded-xl px-3.5 py-2 text-xs font-bold transition ${
+                  subFilter === f.id
+                    ? 'bg-[#1E3A5F] text-white'
+                    : 'border border-stone-200/70 bg-white text-[#1F2937] hover:bg-slate-50'
                 }`}
               >
-                {supabaseResult.bookingsOk ? (
-                  <div className="flex items-center gap-2 font-bold">
-                    <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-                    <span>
-                      جدول bookings متصل بنجاح! عدد الحجوزات المسجلة:{' '}
-                      {(supabaseResult.bookingsCount ?? 0).toLocaleString('ar-EG')}
-                    </span>
-                  </div>
-                ) : (
-                  <div className="flex items-start gap-2 font-bold">
-                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
-                    <span>
-                      جدول bookings غير جاهز أو ينقصه صلاحيات RLS:{' '}
-                      {supabaseResult.bookingsError || 'راجع أكواد SQL'}
-                    </span>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-
-        {showSqlGuide && (
-          <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-900 p-4 text-xs text-slate-100">
-            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-              <span className="font-bold text-amber-300">
-                الخطوات اليدوية في Supabase: شغّل ملف الترحيل الكامل في SQL Editor لإنشاء الجداول والباكتات (chalet-images, verification-docs, receipts):
-              </span>
-              <button
-                type="button"
-                onClick={handleCopySql}
-                className="inline-flex items-center gap-1 rounded-lg bg-white/10 px-2.5 py-1 text-[11px] font-bold text-white hover:bg-white/20"
-              >
-                {sqlCopied ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
-                <span>{sqlCopied ? 'تم نسخ SQL' : 'نسخ كود SQL'}</span>
+                {f.label}
               </button>
+            ))}
+          </div>
+
+          {filteredSubscriptions.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-stone-300 bg-white p-10 text-center text-sm text-[#6B7280]">
+              لا توجد طلبات اشتراكات في هذا القسم.
             </div>
-            <pre dir="ltr" className="max-h-60 overflow-auto rounded-xl bg-slate-950 p-3 text-[11px] leading-relaxed text-emerald-200">
-              {SUPABASE_SETUP_SQL}
-            </pre>
-          </div>
-        )}
-      </div>
-
-      {/* Owner Verification Review Hub */}
-      <div className="mt-6 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
-          <div>
-            <h2 className="flex items-center gap-2 text-base font-extrabold text-primary-800">
-              <ShieldCheck className="h-5 w-5 text-emerald-600" />
-              مراجعة طلبات توثيق الملاك (Owner Verifications)
-            </h2>
-            <p className="text-xs text-slate-500">
-              اعرض مستند الملكية أو كارنيه القرية عبر رابط مؤقت آمن، ثم اعتمد التوثيق لترقية الحساب إلى مالك موثق.
-            </p>
-          </div>
-          <span className="rounded-full bg-warning-50 px-3 py-1 text-xs font-bold text-warning-800">
-            {pendingVerifications.length} طلب بانتظار التوثيق
-          </span>
-        </div>
-
-        {verifications.length === 0 ? (
-          <div className="mt-4 rounded-2xl border border-dashed border-slate-200 bg-sand-50 p-6 text-center text-xs text-slate-500">
-            لا توجد طلبات توثيق ملاك مسجلة حالياً.
-          </div>
-        ) : (
-          <div className="mt-4 space-y-3">
-            {verifications.map((ver) => {
-              const docKey = ver.id || ver.documentPath || ver.ownerName;
-              const isLoadingDoc = loadingVerificationId === docKey;
-              return (
+          ) : (
+            <div className="space-y-3">
+              {filteredSubscriptions.map((sub) => (
                 <div
-                  key={docKey}
-                  className="flex flex-col justify-between gap-4 rounded-2xl border border-slate-200 bg-sand-50/70 p-4 lg:flex-row lg:items-center"
+                  key={sub.id}
+                  className="flex flex-col justify-between gap-4 rounded-2xl border border-stone-200/70 bg-white p-4 shadow-xs sm:flex-row sm:items-center sm:p-5"
                 >
                   <div className="space-y-1">
                     <div className="flex flex-wrap items-center gap-2">
                       <span
                         className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${
-                          ver.status === 'verified'
-                            ? 'bg-emerald-100 text-emerald-800'
-                            : ver.status === 'pending'
-                            ? 'bg-amber-100 text-amber-900'
-                            : 'bg-error-50 text-error-700'
+                          sub.status === 'active'
+                            ? 'bg-emerald-50 text-emerald-700'
+                            : sub.status === 'rejected'
+                            ? 'bg-red-50 text-red-700'
+                            : 'bg-amber-50 text-amber-800'
                         }`}
                       >
-                        {ver.status === 'verified'
-                          ? 'موثق (Verified)'
-                          : ver.status === 'pending'
-                          ? 'قيد المراجعة (Pending)'
-                          : 'غير موثق / مرفوض'}
+                        {sub.status === 'active'
+                          ? 'مفعّلة'
+                          : sub.status === 'rejected'
+                          ? 'مرفوضة'
+                          : 'قيد المراجعة'}
                       </span>
-                      <span className="text-sm font-extrabold text-slate-900">
-                        {ver.ownerName}
-                      </span>
-                      <span dir="ltr" className="text-xs font-bold text-slate-600">
-                        ({ver.phone})
+                      <span className="rounded-full bg-[#FAF9F6] px-2.5 py-0.5 text-[11px] font-bold text-[#1E3A5F]">
+                        {sub.planName}
                       </span>
                     </div>
-                    <div className="text-xs text-slate-600">
-                      نوع المستند: <strong>{ver.documentType}</strong> • الرقم:{' '}
-                      <strong>{ver.documentNumber}</strong>
-                    </div>
-                    {ver.rejectionReason && (
-                      <div className="text-[11px] font-bold text-error-700">
-                        سبب الرفض المسجل: {ver.rejectionReason}
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="flex flex-col items-end gap-2">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <button
-                        type="button"
-                        disabled={isLoadingDoc}
-                        onClick={() => handlePreviewVerificationDoc(ver)}
-                        className="inline-flex items-center gap-1.5 rounded-xl border border-primary-200 bg-white px-3 py-2 text-xs font-bold text-primary-700 hover:bg-primary-50 disabled:opacity-60"
-                      >
-                        <Eye className="h-3.5 w-3.5" />
-                        <span>{isLoadingDoc ? 'جاري الجلب...' : 'معاينة المستند (Signed URL)'}</span>
-                      </button>
-
-                      {ver.id && ver.status !== 'verified' && (
-                        <button
-                          type="button"
-                          onClick={() => onReviewVerification(ver.id!, 'verified')}
-                          className="inline-flex items-center gap-1.5 rounded-xl bg-success-500 px-3.5 py-2 text-xs font-bold text-white hover:bg-success-700"
-                        >
-                          <CheckCircle2 className="h-4 w-4" />
-                          <span>اعتماد وترقية لمالك</span>
-                        </button>
-                      )}
-
-                      {ver.id && ver.status === 'pending' && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setRejectingVerId(rejectingVerId === ver.id ? null : ver.id!);
-                            setRejectionReasonDraft('');
-                            setRejectionError('');
-                          }}
-                          className="inline-flex items-center gap-1 rounded-xl border border-error-200 bg-white px-3 py-2 text-xs font-bold text-error-700 hover:bg-error-50"
-                        >
-                          <XCircle className="h-3.5 w-3.5" />
-                          <span>رفض مع ذكر السبب</span>
-                        </button>
-                      )}
-                    </div>
-
-                    {ver.id && rejectingVerId === ver.id && (
-                      <div className="w-full max-w-md space-y-2 rounded-xl border border-error-200 bg-white p-3">
-                        <label
-                          htmlFor={`reject-reason-${ver.id}`}
-                          className="block text-[11px] font-bold text-error-800"
-                        >
-                          سبب رفض طلب التوثيق (يصل للمالك في الإشعار ونافذة التوثيق):
-                        </label>
-                        <input
-                          id={`reject-reason-${ver.id}`}
-                          type="text"
-                          value={rejectionReasonDraft}
-                          onChange={(e) => {
-                            setRejectionReasonDraft(e.target.value);
-                            setRejectionError('');
-                          }}
-                          placeholder="مثال: الصورة غير واضحة أو الرقم غير مطابق"
-                          className="w-full rounded-lg border border-slate-200 bg-sand-50 px-2.5 py-1.5 text-xs focus:border-error-500 focus:outline-none"
-                        />
-                        {rejectionError && (
-                          <p className="text-[11px] font-bold text-error-600">{rejectionError}</p>
-                        )}
-                        <div className="flex justify-end gap-2">
-                          <button
-                            type="button"
-                            onClick={() => setRejectingVerId(null)}
-                            className="rounded-lg bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-slate-600"
-                          >
-                            تراجع
-                          </button>
-                          <button
-                            type="button"
-                            onClick={async () => {
-                              if (!rejectionReasonDraft.trim()) {
-                                setRejectionError('يرجى كتابة سبب الرفض.');
-                                return;
-                              }
-                              await onReviewVerification(
-                                ver.id!,
-                                'unverified',
-                                rejectionReasonDraft.trim()
-                              );
-                              setRejectingVerId(null);
-                              setRejectionReasonDraft('');
-                            }}
-                            className="rounded-lg bg-error-500 px-3 py-1 text-[11px] font-bold text-white hover:bg-error-700"
-                          >
-                            تأكيد الرفض
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
-      {/* Pending Bookings & Receipt Verification Hub */}
-      <div className="mt-6 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
-          <div>
-            <h2 className="flex items-center gap-2 text-base font-extrabold text-primary-800">
-              <CalendarCheck2 className="h-5 w-5 text-secondary-500" />
-              مراجعة الحجوزات المعلقة وإيصالات InstaPay (pending_verification)
-            </h2>
-            <p className="text-xs text-slate-500">
-              اعرض إيصال العربون (٢٥٪) بأمان عبر Signed URL من باكت receipts، ثم اعتمد الحجز لإغلاق التواريخ نهائياً أو ارفضه/ألغِه لإعادة فتحها.
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-1.5">
-            {(
-              [
-                { id: 'pending_review', label: `بانتظار المراجعة (${pendingBookings.length})` },
-                { id: 'confirmed', label: 'المؤكدة (confirmed)' },
-                { id: 'cancelled', label: 'الملغاة / المرفوضة' },
-                { id: 'all', label: `الكل (${bookings.length})` },
-              ] as const
-            ).map((tab) => (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => setBookingFilter(tab.id)}
-                className={`rounded-xl px-3 py-1.5 text-xs font-bold transition ${
-                  bookingFilter === tab.id
-                    ? 'bg-primary-600 text-white'
-                    : 'bg-sand-50 text-slate-700 hover:bg-sand-100'
-                }`}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {displayedBookings.length === 0 ? (
-          <div className="mt-4 rounded-2xl border border-dashed border-slate-200 bg-sand-50 p-6 text-center text-xs text-slate-500">
-            لا توجد حجوزات ضمن هذا التصنيف حالياً.
-          </div>
-        ) : (
-          <div className="mt-4 space-y-3">
-            {displayedBookings.map((booking) => {
-              const deposit = booking.depositAmount ?? Math.round(booking.totalPrice * 0.25);
-              const isLoadingReceipt = loadingReceiptBookingId === booking.id;
-              const canConfirmBooking =
-                booking.status === 'pending_verification' ||
-                booking.status === 'payment_submitted' ||
-                booking.status === 'approved';
-              const canCancelBooking =
-                booking.status === 'pending' ||
-                booking.status === 'approved' ||
-                booking.status === 'pending_verification' ||
-                booking.status === 'payment_submitted' ||
-                booking.status === 'confirmed';
-
-              return (
-                <div
-                  key={booking.id}
-                  className="flex flex-col justify-between gap-4 rounded-2xl border border-secondary-200 bg-sand-50/70 p-4 lg:flex-row lg:items-center"
-                >
-                  <div className="space-y-1.5">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span
-                        className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${
-                          booking.status === 'confirmed' || booking.status === 'completed'
-                            ? 'bg-success-50 text-success-700'
-                            : booking.status === 'cancelled' ||
-                              booking.status === 'rejected' ||
-                              booking.status === 'expired'
-                            ? 'bg-error-50 text-error-700'
-                            : 'bg-warning-100 text-warning-900'
-                        }`}
-                      >
-                        {booking.status === 'pending_verification'
-                          ? 'إيصال مرفق — قيد المراجعة (pending_verification)'
-                          : booking.status === 'payment_submitted'
-                          ? 'إيصال عربون مرفق (payment_submitted)'
-                          : booking.status === 'approved'
-                          ? 'موافق مبدئياً — بانتظار رفع الإيصال (approved)'
-                          : booking.status === 'confirmed'
-                          ? 'مؤكد (confirmed)'
-                          : booking.status === 'completed'
-                          ? 'مكتمل (completed)'
-                          : booking.status === 'cancelled'
-                          ? 'ملغي (cancelled)'
-                          : booking.status === 'rejected'
-                          ? 'مرفوض (rejected)'
-                          : booking.status === 'expired'
-                          ? 'منتهي المهلة (expired)'
-                          : 'طلب حجز مبدئي (pending)'}
-                      </span>
-                      <span className="text-sm font-extrabold text-slate-900">
-                        {booking.guestName}
-                      </span>
-                      <span dir="ltr" className="text-xs font-bold text-slate-600">
-                        ({booking.guestPhone})
-                      </span>
-                    </div>
-
-                    <div className="text-xs font-bold text-primary-700">
-                      {booking.chaletTitle} — {booking.resort}
-                    </div>
-
-                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-700">
-                      <span>
-                        التواريخ: <strong>{formatArabicDate(booking.checkIn)}</strong> ←{' '}
-                        <strong>{booking.checkOut ? formatArabicDate(booking.checkOut) : '—'}</strong> ({booking.nights} ليالٍ)
-                      </span>
-                      <span>
-                        الإجمالي: <strong>{formatEGP(booking.totalPrice)}</strong>
-                      </span>
-                      <span>
-                        العربون (٢٥٪):{' '}
-                        <strong className="text-secondary-700">{formatEGP(deposit)}</strong>
-                      </span>
-                    </div>
-
-                    {booking.paymentReference && (
-                      <p className="text-[11px] font-bold text-primary-700">
-                        مرجع InstaPay: <span dir="ltr">{booking.paymentReference}</span>
-                      </p>
-                    )}
-
-                    {booking.notes && (
-                      <p className="text-[11px] text-slate-500">ملاحظات: {booking.notes}</p>
-                    )}
+                    <h3 className="text-base font-bold text-[#1F2937]">
+                      {sub.ownerName} — <span dir="ltr">{sub.ownerPhone}</span>
+                    </h3>
+                    <p className="text-xs text-[#6B7280]">
+                      القيمة: <strong className="text-[#1E3A5F]">{formatEGP(sub.price)}</strong> • الحد
+                      الأقصى: {sub.maxUnits} وحدات
+                    </p>
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => handlePreviewBookingReceipt(booking)}
-                      disabled={isLoadingReceipt}
-                      className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-primary-200 bg-white px-3 py-2 text-xs font-bold text-primary-700 hover:bg-primary-50 disabled:opacity-60"
-                    >
-                      <Eye className="h-3.5 w-3.5" />
-                      <span>
-                        {isLoadingReceipt
-                          ? 'جاري الفتح...'
-                          : booking.receiptPath || booking.receiptPreviewUrl
-                          ? 'معاينة الإيصال (Signed URL)'
-                          : 'تفاصيل الإيصال'}
-                      </span>
-                    </button>
-
-                    {canConfirmBooking && (
+                    {(sub.receiptUrl || sub.receiptPath) && (
                       <button
                         type="button"
-                        onClick={() => onApproveBooking(booking.id)}
-                        className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl bg-success-500 px-3.5 py-2 text-xs font-bold text-white shadow-sm transition hover:bg-success-700"
+                        onClick={() => void handlePreviewReceipt(sub)}
+                        className="inline-flex min-h-[38px] items-center gap-1 rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-3 py-1.5 text-xs font-semibold text-[#1E3A5F] hover:bg-slate-100"
                       >
-                        <CheckCircle2 className="h-4 w-4" />
-                        <span>تأكيد الحجز (confirmed)</span>
+                        <ExternalLink className="h-3.5 w-3.5" />
+                        <span>معاينة الإيصال</span>
                       </button>
                     )}
 
-                    {canCancelBooking && (
+                    {sub.status !== 'active' && (
                       <button
                         type="button"
-                        onClick={() => onRejectBooking(booking.id)}
-                        className="inline-flex min-h-[40px] items-center gap-1 rounded-xl border border-error-200 bg-white px-3 py-2 text-xs font-bold text-error-700 hover:bg-error-50"
+                        onClick={() => void handleReviewSubscription(sub, 'active')}
+                        className="inline-flex min-h-[38px] items-center gap-1 rounded-xl bg-emerald-600 px-3.5 py-1.5 text-xs font-bold text-white hover:bg-emerald-700"
+                      >
+                        <CheckCircle2 className="h-3.5 w-3.5" />
+                        <span>اعتماد وتفعيل + تمييز الوحدات</span>
+                      </button>
+                    )}
+
+                    {sub.status === 'pending' && (
+                      <button
+                        type="button"
+                        onClick={() => void handleReviewSubscription(sub, 'rejected')}
+                        className="inline-flex min-h-[38px] items-center gap-1 rounded-xl border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-bold text-red-700 hover:bg-red-100"
                       >
                         <XCircle className="h-3.5 w-3.5" />
-                        <span>
-                          {booking.status === 'confirmed'
-                            ? 'إلغاء الحجز (cancelled)'
-                            : 'رفض / إلغاء (cancelled)'}
-                        </span>
+                        <span>رفض</span>
                       </button>
                     )}
                   </div>
                 </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
-      {/* Payment Verification Hub */}
-      <div className="mt-6 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
-          <div>
-            <h2 className="flex items-center gap-2 text-base font-extrabold text-primary-800">
-              <Crown className="h-5 w-5 text-amber-500" />
-              مركز مراجعة تحويلات الاشتراك الاحترافي (Payment Verification Hub)
-            </h2>
-            <p className="text-xs text-slate-500">
-              راجع أرقام التحويل المرجعية عبر إنستاباي أو المحافظ الإلكترونية واضغط لتفعيل الباقة ٣٠ يوماً.
-            </p>
-          </div>
-          <span className="rounded-full bg-warning-50 px-3 py-1 text-xs font-bold text-warning-800">
-            {pendingSubscriptions.length} طلب معلق
-          </span>
-        </div>
-
-        {pendingSubscriptions.length === 0 ? (
-          <div className="mt-4 rounded-2xl border border-dashed border-slate-200 bg-sand-50 p-6 text-center text-xs text-slate-500">
-            لا توجد تحويلات اشتراك معلقة في الوقت الحالي. كل الطلبات تمت مراجعتها.
-          </div>
-        ) : (
-          <div className="mt-4 space-y-3">
-            {pendingSubscriptions.map((sub) => (
-              <div
-                key={sub.id}
-                className="flex flex-col justify-between gap-4 rounded-2xl border border-amber-200 bg-amber-50/50 p-4 lg:flex-row lg:items-center"
-              >
-                <div className="space-y-1.5">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="rounded-full bg-warning-100 px-2.5 py-0.5 text-[11px] font-bold text-warning-900">
-                      بانتظار المطابقة (Pending Verification)
-                    </span>
-                    <span className="text-sm font-extrabold text-slate-900">
-                      {sub.hostName}
-                    </span>
-                    <span dir="ltr" className="text-xs font-bold text-slate-600">
-                      ({sub.hostPhone})
-                    </span>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-700">
-                    <span>
-                      الوسيلة: <strong>{getPaymentMethodLabel(sub.paymentMethod)}</strong>
-                    </span>
-                    <span>
-                      المرسل: <strong dir="ltr">{sub.senderPhoneOrHandle || '—'}</strong>
-                    </span>
-                    <span>
-                      المرجع: <strong dir="ltr" className="text-primary-700">{sub.transferReference || '—'}</strong>
-                    </span>
-                    <span>
-                      المبلغ: <strong className="text-emerald-700">{formatEGP(sub.monthlyFee)}</strong>
-                    </span>
-                  </div>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2">
-                  {sub.receiptPath && (
-                    <button
-                      type="button"
-                      onClick={() => handlePreviewSubReceipt(sub)}
-                      className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50"
-                    >
-                      <Eye className="h-3.5 w-3.5" />
-                      <span>عرض الإيصال</span>
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => onApproveSubscription(sub.id)}
-                    className="inline-flex items-center gap-1.5 rounded-xl bg-success-500 px-4 py-2 text-xs font-bold text-white shadow-sm transition hover:bg-success-700"
-                  >
-                    <CheckCircle2 className="h-4 w-4" />
-                    <span>موافقة وتفعيل Pro (Approve & Activate)</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onExpireSubscription(sub.id)}
-                    className="inline-flex items-center gap-1 rounded-xl border border-error-200 bg-white px-3 py-2 text-xs font-bold text-error-700 hover:bg-error-50"
-                  >
-                    <XCircle className="h-3.5 w-3.5" />
-                    <span>رفض / إنهاء</span>
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Subscription Tracker Table */}
-      <div className="mt-6 overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-sand-50 px-5 py-4">
-          <div>
-            <h2 className="text-base font-extrabold text-slate-900">
-              متتبع اشتراكات الملاك (Subscription Tracker)
-            </h2>
-            <p className="text-xs text-slate-500">
-              عرض كامل للباقات (Free / Pro)، تواريخ البداية والانتهاء، وحالة كل حساب.
-            </p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-1.5">
-            {(
-              [
-                { id: 'all', label: 'الكل' },
-                { id: 'active', label: 'نشط (Active)' },
-                { id: 'pending-verification', label: 'قيد المراجعة' },
-                { id: 'expired', label: 'منتهي (Expired)' },
-              ] as const
-            ).map((tab) => (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => setStatusFilter(tab.id)}
-                className={`rounded-xl px-3 py-1.5 text-xs font-bold transition ${
-                  statusFilter === tab.id
-                    ? 'bg-primary-600 text-white'
-                    : 'bg-white text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[740px] text-right text-xs">
-            <thead className="border-b border-slate-200 bg-slate-50 text-[11px] font-bold text-slate-500">
-              <tr>
-                <th className="px-4 py-3">المالك / المكتب</th>
-                <th className="px-4 py-3">الباقة</th>
-                <th className="px-4 py-3">بداية الاشتراك</th>
-                <th className="px-4 py-3">تاريخ الانتهاء</th>
-                <th className="px-4 py-3">مرجع الدفع</th>
-                <th className="px-4 py-3">الحالة</th>
-                <th className="px-4 py-3">إجراء إداري</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {filteredSubscriptions.map((sub) => (
-                <tr key={sub.id} className="hover:bg-sand-50/60">
-                  <td className="px-4 py-3">
-                    <div className="font-bold text-slate-900">{sub.hostName}</div>
-                    <div dir="ltr" className="text-[11px] text-slate-500">
-                      {sub.hostPhone}
-                    </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    {sub.tier === 'pro' ? (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-0.5 text-[11px] font-extrabold text-amber-900">
-                        <Crown className="h-3 w-3 text-amber-600" />
-                        الاحترافية Pro ({formatEGP(sub.monthlyFee)})
-                      </span>
-                    ) : (
-                      <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-[11px] font-bold text-slate-700">
-                        الأساسية Free (٠ ج.م)
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 font-semibold text-slate-700">
-                    {formatArabicDate(sub.startDate)}
-                  </td>
-                  <td className="px-4 py-3 font-semibold text-slate-700">
-                    {formatArabicDate(sub.expiryDate)}
-                  </td>
-                  <td className="px-4 py-3 text-[11px] text-slate-600">
-                    {sub.transferReference ? (
-                      <span dir="ltr" className="font-bold text-primary-700">
-                        {sub.transferReference}
-                      </span>
-                    ) : (
-                      '—'
-                    )}
-                  </td>
-                  <td className="px-4 py-3">
-                    {sub.status === 'active' ? (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-success-50 px-2.5 py-1 text-[11px] font-bold text-success-700">
-                        <CheckCircle2 className="h-3 w-3" />
-                        Active
-                      </span>
-                    ) : sub.status === 'pending-verification' ? (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-warning-50 px-2.5 py-1 text-[11px] font-bold text-warning-800">
-                        <Clock3 className="h-3 w-3" />
-                        Pending Verification
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-error-50 px-2.5 py-1 text-[11px] font-bold text-error-700">
-                        <XCircle className="h-3 w-3" />
-                        Expired
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3">
-                    {sub.status !== 'active' || sub.tier === 'free' ? (
-                      <button
-                        type="button"
-                        onClick={() => onApproveSubscription(sub.id)}
-                        className="rounded-lg bg-primary-50 px-2.5 py-1 text-[11px] font-bold text-primary-700 hover:bg-primary-100"
-                      >
-                        تفعيل Pro
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => onExpireSubscription(sub.id)}
-                        className="rounded-lg bg-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-600 hover:bg-error-50 hover:text-error-700"
-                      >
-                        تعليق / إنهاء
-                      </button>
-                    )}
-                  </td>
-                </tr>
               ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
+            </div>
+          )}
+        </section>
+      )}
 
-      {/* Dispute Log Table */}
-      <div className="mt-6 overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-amber-50/60 px-5 py-4">
-          <div>
-            <h2 className="flex items-center gap-2 text-base font-extrabold text-amber-950">
-              <ShieldAlert className="h-5 w-5 text-amber-600" />
-              سجل النزاعات ومصادرة جدية الحجز (Dispute Log)
-            </h2>
-            <p className="text-xs text-amber-800">
-              توثيق الحجوزات الملغاة قبل موعد الوصول بأقل من ١٠ أيام وفقاً لإقرار الشروط الموافق عليه من المستأجر.
-            </p>
-          </div>
-          <span className="rounded-full bg-white px-3 py-1 text-xs font-extrabold text-amber-900 shadow-sm">
-            {forfeitedDisputes.length} حالة مسجلة
-          </span>
-        </div>
-
-        {forfeitedDisputes.length === 0 ? (
-          <div className="p-8 text-center text-xs text-slate-500">
-            لا توجد حالات مصادرة لجدية الحجز مسجلة حتى الآن.
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[740px] text-right text-xs">
-              <thead className="border-b border-slate-200 bg-slate-50 text-[11px] font-bold text-slate-500">
-                <tr>
-                  <th className="px-4 py-3">تاريخ الإلغاء</th>
-                  <th className="px-4 py-3">الوحدة والمالك</th>
-                  <th className="px-4 py-3">المستأجر</th>
-                  <th className="px-4 py-3">مهلة الإشعار</th>
-                  <th className="px-4 py-3">قيمة الجدية المصادرة</th>
-                  <th className="px-4 py-3">السبب / الملاحظات</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {forfeitedDisputes.map((item) => (
-                  <tr key={item.id} className="hover:bg-sand-50/50">
-                    <td className="px-4 py-3 font-semibold text-slate-700">
-                      {item.cancelledAt
-                        ? formatArabicDate(item.cancelledAt.split('T')[0])
-                        : '—'}
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="font-bold text-slate-900">{item.resort}</div>
-                      <div className="text-[11px] text-slate-500">المالك: {item.ownerName}</div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="font-bold text-slate-800">{item.guestName}</div>
-                      <div dir="ltr" className="text-[11px] text-slate-500">
-                        {item.guestPhone}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className="rounded-full bg-error-50 px-2.5 py-0.5 text-[11px] font-bold text-error-700">
-                        قبل الوصول بـ {(item.cancellationDaysNotice ?? 0).toLocaleString('ar-EG')} أيام
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 font-extrabold text-amber-800">
-                      {formatEGP(item.forfeitedAmount ?? item.depositAmount ?? 0)}
-                    </td>
-                    <td className="px-4 py-3 text-slate-600">
-                      {item.notes || 'تجاوز مهلة الإلغاء المجاني (أقل من ١٠ أيام)'}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      {receiptModalState && (
+      {/* Admin Edit Unit Modal */}
+      {editingUnit && (
         <div
-          ref={receiptModalRef}
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm"
           role="dialog"
           aria-modal="true"
-          aria-label={receiptModalState.title}
         >
-          <div className="w-full max-w-lg rounded-3xl bg-white p-5 shadow-2xl">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <div>
-                <h3 className="text-base font-extrabold text-slate-900">
-                  {receiptModalState.title}
-                </h3>
-                <p className="text-xs text-slate-500">
-                  {receiptModalState.subtitle}
-                </p>
-              </div>
+          <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-stone-100 pb-3">
+              <h2 className="text-base font-bold text-[#1E3A5F]">تعديل سريع للوحدة</h2>
               <button
                 type="button"
-                onClick={() => setReceiptModalState(null)}
-                aria-label="إغلاق المعاينة"
-                className="flex h-11 w-11 items-center justify-center rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200"
+                onClick={() => setEditingUnit(null)}
+                className="rounded-lg p-1.5 text-[#6B7280] hover:bg-slate-100"
               >
                 <X className="h-5 w-5" />
               </button>
             </div>
 
-            <div className="mt-4">
-              {receiptModalState.imageUrl ? (
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between text-[11px]">
-                    <span className="font-bold text-slate-600">مصدر المعاينة:</span>
-                    <span className="rounded-full bg-emerald-50 px-2.5 py-0.5 font-bold text-emerald-700">
-                      رابط مؤقت آمن Supabase Signed URL (300 ثانية)
-                    </span>
-                  </div>
-                  <img
-                    src={receiptModalState.imageUrl}
-                    alt="معاينة المستند"
-                    width={512}
-                    height={320}
-                    loading="lazy"
-                    decoding="async"
-                    className="max-h-80 w-full rounded-2xl border border-slate-200 bg-sand-50 object-contain"
-                  />
-                  <div className="flex justify-end">
-                    <a
-                      href={receiptModalState.imageUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-[11px] font-bold text-primary-700 underline hover:text-primary-800"
-                    >
-                      فتح الملف أو PDF في نافذة جديدة
-                    </a>
-                  </div>
-                </div>
-              ) : (
-                <div className="rounded-2xl border border-dashed border-slate-300 bg-sand-50 p-6 text-center text-xs text-slate-600">
-                  <ImageIcon className="mx-auto mb-2 h-8 w-8 text-slate-400" />
-                  <p className="font-bold">
-                    {receiptModalState.error || 'لا يوجد ملف مرفق للمعاينة.'}
-                  </p>
-                </div>
-              )}
-            </div>
-
-            {receiptModalState.booking && (
-              <div className="mt-4 flex flex-wrap gap-2 border-t border-slate-100 pt-4">
-                {(receiptModalState.booking.status === 'pending_verification' ||
-                  receiptModalState.booking.status === 'payment_submitted' ||
-                  receiptModalState.booking.status === 'approved') && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onApproveBooking(receiptModalState.booking!.id);
-                      setReceiptModalState(null);
-                    }}
-                    className="inline-flex min-h-[44px] flex-1 items-center justify-center gap-1.5 rounded-xl bg-success-500 px-3 py-2.5 text-xs font-bold text-white hover:bg-success-700"
-                  >
-                    <CheckCircle2 className="h-4 w-4" />
-                    <span>تأكيد الحجز (confirmed)</span>
-                  </button>
-                )}
-                {receiptModalState.booking.status !== 'cancelled' &&
-                  receiptModalState.booking.status !== 'rejected' &&
-                  receiptModalState.booking.status !== 'completed' && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onRejectBooking(receiptModalState.booking!.id);
-                        setReceiptModalState(null);
-                      }}
-                      className="inline-flex min-h-[44px] flex-1 items-center justify-center gap-1.5 rounded-xl border border-error-200 bg-error-50 px-3 py-2.5 text-xs font-bold text-error-700 hover:bg-error-100"
-                    >
-                      <XCircle className="h-4 w-4" />
-                      <span>
-                        {receiptModalState.booking.status === 'confirmed'
-                          ? 'إلغاء الحجز (cancelled)'
-                          : 'رفض / إلغاء (cancelled)'}
-                      </span>
-                    </button>
-                  )}
+            <form onSubmit={handleSaveAdminUnitEdit} className="mt-4 space-y-3.5">
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-slate-700">العنوان</label>
+                <input
+                  type="text"
+                  required
+                  value={editTitle}
+                  onChange={(e) => setEditTitle(e.target.value)}
+                  className="h-10 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-3 text-sm"
+                />
               </div>
-            )}
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="mb-1 block text-xs font-semibold text-slate-700">نوع العقار</label>
+                  <select
+                    value={editPropertyType}
+                    onChange={(e) => setEditPropertyType(e.target.value as PropertyType)}
+                    className="h-10 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-2.5 text-xs font-semibold"
+                  >
+                    {EDITABLE_PROPERTY_TYPES.map((t) => (
+                      <option key={t} value={t}>
+                        {t}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-semibold text-slate-700">صفة المعلن</label>
+                  <select
+                    value={editAdvertiserRole}
+                    onChange={(e) => setEditAdvertiserRole(e.target.value as AdvertiserRoleLabel)}
+                    className="h-10 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-2.5 text-xs font-semibold"
+                  >
+                    {EDITABLE_ADVERTISER_ROLES.map((r) => (
+                      <option key={r} value={r}>
+                        {r}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <label className="mb-1 block text-xs font-semibold text-slate-700">المحافظة</label>
+                  <select
+                    value={editGovernorate}
+                    onChange={(e) => setEditGovernorate(e.target.value)}
+                    className="h-10 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-2 text-xs"
+                  >
+                    {ALL_GOVERNORATE_NAMES.map((g) => (
+                      <option key={g} value={g}>
+                        {g}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-semibold text-slate-700">المدينة</label>
+                  <input
+                    type="text"
+                    value={editCity}
+                    onChange={(e) => setEditCity(e.target.value)}
+                    className="h-10 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-2.5 text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-semibold text-slate-700">المنطقة</label>
+                  <input
+                    type="text"
+                    value={editArea}
+                    onChange={(e) => setEditArea(e.target.value)}
+                    className="h-10 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-2.5 text-xs"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-slate-700">
+                  السعر (ج.م)
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  required
+                  value={editPrice}
+                  onChange={(e) => setEditPrice(e.target.value)}
+                  className="h-10 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-3 text-sm font-bold"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-3">
+                <button
+                  type="button"
+                  onClick={() => setEditingUnit(null)}
+                  className="rounded-xl border border-stone-200/70 px-4 py-2 text-xs font-bold text-[#6B7280]"
+                >
+                  إلغاء
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingEdit}
+                  className="rounded-xl bg-[#1E3A5F] px-5 py-2 text-xs font-bold text-white"
+                >
+                  {savingEdit ? 'جاري الحفظ...' : 'حفظ التعديلات'}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
-    </section>
+
+      {/* Receipt Preview Modal */}
+      {receiptPreviewUrl && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/75 p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="w-full max-w-2xl rounded-2xl bg-white p-5 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-stone-100 pb-3">
+              <h2 className="text-sm font-bold text-[#1E3A5F]">{receiptPreviewTitle}</h2>
+              <button
+                type="button"
+                onClick={() => setReceiptPreviewUrl(null)}
+                className="rounded-lg p-1.5 text-[#6B7280] hover:bg-slate-100"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="mt-4 max-h-[70vh] overflow-auto rounded-xl bg-[#FAF9F6] p-2 text-center">
+              {receiptPreviewUrl.toLowerCase().includes('.pdf') ? (
+                <a
+                  href={receiptPreviewUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-2 rounded-xl bg-[#1E3A5F] px-5 py-3 text-xs font-bold text-white"
+                >
+                  <ExternalLink className="h-4 w-4" />
+                  <span>فتح ملف الإيصال (PDF)</span>
+                </a>
+              ) : (
+                <img
+                  src={receiptPreviewUrl}
+                  alt={receiptPreviewTitle}
+                  className="mx-auto max-h-[62vh] rounded-lg object-contain"
+                />
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </main>
   );
 }

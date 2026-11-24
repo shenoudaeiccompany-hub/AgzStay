@@ -13,16 +13,15 @@ interface VercelResponse extends ServerResponse {
 interface ChaletMetaRow {
   id: string;
   title?: string;
-  resort?: string;
-  area?: string | null;
-  destination_label?: string;
+  governorate?: string | null;
+  city?: string | null;
+  area_or_village?: string | null;
+  property_type?: string | null;
   description?: string;
   price_per_night?: number;
   bedrooms?: number;
   max_guests?: number;
   images?: string[] | null;
-  rating?: number;
-  reviews_count?: number;
 }
 
 function escapeHtml(value: string): string {
@@ -46,7 +45,7 @@ function getQueryId(req: VercelRequest): string {
     const parsed = new URL(req.url ?? '/', 'https://agzstay.com');
     const qId = parsed.searchParams.get('id');
     if (qId) return qId.trim();
-    const match = parsed.pathname.match(/\/chalet\/([^/]+)/);
+    const match = parsed.pathname.match(/\/(?:unit|chalet)\/([^/]+)/);
     return match?.[1] ?? '';
   } catch {
     return '';
@@ -78,7 +77,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     try {
       const apiUrl = `${supabaseUrl}/rest/v1/chalets?id=eq.${encodeURIComponent(
         chaletId
-      )}&availability_status=eq.active&select=id,title,resort,area,destination_label,description,price_per_night,bedrooms,max_guests,images,rating,reviews_count&limit=1`;
+      )}&availability_status=eq.active&select=id,title,governorate,city,area_or_village,property_type,description,price_per_night,bedrooms,max_guests,images&limit=1`;
       const response = await fetch(apiUrl, {
         headers: {
           apikey: supabaseKey,
@@ -101,18 +100,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     ? `${origin}/chalet/${encodeURIComponent(chaletId)}`
     : `${origin}/`;
 
+  const locationLabel = [chalet?.governorate, chalet?.city, chalet?.area_or_village]
+    .filter(Boolean)
+    .join(' - ');
+
   const title = chalet?.title
-    ? `${chalet.title} | ${chalet.resort ?? 'AgzStay'} — AgzStay`
+    ? `${chalet.title} | ${locationLabel || 'AgzStay'} — AgzStay`
     : 'AgzStay - إجازة ستاي | شقق مفروشة وشاليهات للإيجار في مصر';
 
+  const isMonthly = chalet?.property_type === 'شقة فاضية';
   const priceText =
     typeof chalet?.price_per_night === 'number'
-      ? `السعر يبدأ من ${chalet.price_per_night.toLocaleString('ar-EG')} ج.م/ليلة • `
+      ? `السعر يبدأ من ${chalet.price_per_night.toLocaleString('ar-EG')} ج.م${isMonthly ? '/شهر' : '/ليلة'} • `
       : '';
 
   const description = chalet
-    ? `${priceText}${chalet.destination_label ?? ''}${chalet.area ? ` (${chalet.area})` : ''} — ${(chalet.description ?? '').slice(0, 140)}`
-    : 'منصة AgzStay - إجازة ستاي لحجز الشقق المفروشة والشاليهات مباشرة من المالك الموثق في مصر.';
+    ? `${priceText}${locationLabel} — ${(chalet.description ?? '').slice(0, 140)}`
+    : 'منصة AgzStay - إجازة ستاي للإيجار المباشر للشقق المفروشة والفاضية والشاليهات والفيلات في مصر.';
 
   const imageUrl =
     chalet?.images && chalet.images[0] ? chalet.images[0] : `${origin}/icon-512.png`;
@@ -131,22 +135,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
           maxValue: chalet.max_guests,
         }
       : undefined,
-    address: chalet?.destination_label
+    address: locationLabel
       ? {
           '@type': 'PostalAddress',
-          addressLocality: chalet.area ?? chalet.resort ?? chalet.destination_label,
-          addressRegion: chalet.destination_label,
+          addressLocality: chalet?.area_or_village || chalet?.city || chalet?.governorate || '',
+          addressRegion: chalet?.governorate || '',
           addressCountry: 'EG',
         }
       : undefined,
-    aggregateRating:
-      chalet?.reviews_count && chalet.reviews_count > 0 && chalet.rating
-        ? {
-            '@type': 'AggregateRating',
-            ratingValue: chalet.rating,
-            reviewCount: chalet.reviews_count,
-          }
-        : undefined,
   };
 
   const html = `<!doctype html>

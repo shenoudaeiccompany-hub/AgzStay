@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Check, Copy, Facebook, Link2, MessageCircle, Share2 } from 'lucide-react';
-import { formatEGP } from '@/data/chalets';
+import { formatEGP, getShortPriceUnitLabel } from '@/data/chalets';
 import type { Chalet } from '@/types/chalet';
 
 interface ChaletShareActionsProps {
@@ -17,7 +17,7 @@ export function ChaletShareActions({ chalet }: ChaletShareActionsProps) {
   }, [copied]);
 
   const encodedId = encodeURIComponent(chalet.id);
-  const displayPersonalLink = `agzstay.com/chalet/${chalet.unitNumber ?? chalet.id}`;
+  const displayPersonalLink = `agzstay.com/chalet/${chalet.id}`;
 
   const getDirectLink = (): string => {
     try {
@@ -28,12 +28,14 @@ export function ChaletShareActions({ chalet }: ChaletShareActionsProps) {
   };
 
   const shareUrl = getDirectLink();
-  const priceLabel = `${formatEGP(chalet.pricePerNight)} / ليلة`;
+  const locationText = [chalet.governorate, chalet.city, chalet.areaOrVillage]
+    .filter(Boolean)
+    .join(' • ');
+  const priceLabel = `${formatEGP(chalet.pricePerNight)} ${getShortPriceUnitLabel(chalet)}`;
 
-  const shareSummary = `${chalet.title} — ${chalet.resort} (${priceLabel}) عبر منصة AgzStay - إجازة ستاي\nالرابط المباشر للوحدة: ${shareUrl}`;
+  const shareSummary = `${chalet.title} — ${locationText} (${priceLabel}) عبر منصة AgzStay - إجازة ستاي\nالرابط المباشر: ${shareUrl}`;
 
   const whatsappShareHref = `https://wa.me/?text=${encodeURIComponent(shareSummary)}`;
-
   const facebookShareHref = `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(
     shareUrl
   )}&quote=${encodeURIComponent(shareSummary)}`;
@@ -53,27 +55,21 @@ export function ChaletShareActions({ chalet }: ChaletShareActionsProps) {
       }
       setCopied(true);
     } catch {
-      const input = document.createElement('input');
-      input.value = link;
-      document.body.appendChild(input);
-      input.select();
-      document.execCommand('copy');
-      document.body.removeChild(input);
       setCopied(true);
     }
   };
 
   return (
-    <div className="space-y-2 rounded-2xl border border-slate-200 bg-sand-50/80 px-3.5 py-3">
+    <div className="space-y-2 rounded-2xl border border-stone-200/70 bg-white px-4 py-3 shadow-xs">
       <div className="flex flex-wrap items-center justify-between gap-2.5">
-        <div className="flex items-center gap-1.5 text-xs font-bold text-slate-700">
-          <Share2 className="h-4 w-4 text-primary-600" />
-          <span>الرابط الشخصي للوحدة:</span>
+        <div className="flex items-center gap-1.5 text-xs font-semibold text-[#6B7280]">
+          <Share2 className="h-4 w-4 text-[#1E3A5F]" />
+          <span>مشاركة الوحدة:</span>
           <span
             dir="ltr"
-            className="inline-flex items-center gap-1 rounded-lg bg-white px-2 py-0.5 text-[11px] font-extrabold text-primary-700 shadow-sm"
+            className="hidden items-center gap-1 rounded-lg border border-stone-200/70 bg-white px-2 py-0.5 text-[11px] font-semibold text-[#1E3A5F] sm:inline-flex"
           >
-            <Link2 className="h-3 w-3 text-secondary-500" />
+            <Link2 className="h-3 w-3 text-[#C5A880]" />
             {displayPersonalLink}
           </span>
         </div>
@@ -83,20 +79,20 @@ export function ChaletShareActions({ chalet }: ChaletShareActionsProps) {
             type="button"
             onClick={handleCopyLink}
             aria-label="نسخ رابط الوحدة المباشر"
-            className={`inline-flex min-h-[44px] items-center gap-1.5 rounded-xl border px-3.5 py-2 text-xs font-bold transition ${
+            className={`inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-semibold transition ${
               copied
-                ? 'border-success-500/30 bg-success-50 text-success-700'
-                : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100'
+                ? 'border-emerald-300 bg-emerald-50 text-emerald-700'
+                : 'border-stone-200/70 bg-white text-[#1F2937] hover:bg-slate-50'
             }`}
           >
             {copied ? (
               <>
-                <Check className="h-3.5 w-3.5 text-success-500" />
-                <span>تم نسخ الرابط</span>
+                <Check className="h-3.5 w-3.5 text-emerald-600" />
+                <span>تم النسخ</span>
               </>
             ) : (
               <>
-                <Copy className="h-3.5 w-3.5 text-primary-600" />
+                <Copy className="h-3.5 w-3.5 text-[#1E3A5F]" />
                 <span>نسخ الرابط</span>
               </>
             )}
@@ -107,10 +103,10 @@ export function ChaletShareActions({ chalet }: ChaletShareActionsProps) {
             target="_blank"
             rel="noreferrer"
             aria-label="مشاركة الوحدة عبر واتساب"
-            className="inline-flex min-h-[44px] items-center gap-1.5 rounded-xl bg-success-500 px-3.5 py-2 text-xs font-bold text-white transition hover:bg-success-700"
+            className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-700"
           >
             <MessageCircle className="h-3.5 w-3.5" />
-            <span>واتساب</span>
+            <span>مشاركة</span>
           </a>
 
           <a
@@ -118,7 +114,7 @@ export function ChaletShareActions({ chalet }: ChaletShareActionsProps) {
             target="_blank"
             rel="noreferrer"
             aria-label="مشاركة الوحدة عبر فيسبوك"
-            className="inline-flex min-h-[44px] items-center gap-1.5 rounded-xl bg-primary-600 px-3.5 py-2 text-xs font-bold text-white transition hover:bg-primary-700"
+            className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl bg-[#1E3A5F] px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-[#172E4D]"
           >
             <Facebook className="h-3.5 w-3.5" />
             <span>فيسبوك</span>

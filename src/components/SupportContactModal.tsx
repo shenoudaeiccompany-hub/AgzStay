@@ -33,20 +33,20 @@ export function SupportContactModal({
   return (
     <div
       ref={modalRef}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/55 p-4 backdrop-blur-sm"
       role="dialog"
       aria-modal="true"
       aria-label="تواصل معنا"
     >
-      <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl">
-        <div className="flex items-start justify-between border-b border-slate-100 pb-4">
+      <div className="w-full max-w-md rounded-2xl border border-stone-200/70 bg-white p-6 shadow-xl">
+        <div className="flex items-start justify-between border-b border-stone-100 pb-4">
           <div>
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-primary-50 px-2.5 py-0.5 text-xs font-bold text-primary-700">
-              <ShieldCheck className="h-3.5 w-3.5" />
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-stone-200/70 bg-[#FAF9F6] px-3 py-1 text-xs font-bold text-[#1E3A5F]">
+              <ShieldCheck className="h-3.5 w-3.5 text-[#C5A880]" />
               دعم منصة AgzStay (إجازة ستاي)
             </span>
-            <h2 className="mt-2 text-lg font-extrabold text-slate-900">تواصل معنا</h2>
-            <p className="mt-1 text-xs text-slate-500">
+            <h2 className="mt-2.5 text-lg font-bold text-[#1F2937]">تواصل معنا</h2>
+            <p className="mt-1 text-xs text-[#6B7280]">
               هل تبحث عن وحدة في منطقة معينة أو تواجه مشكلة تقنية؟ يسعدنا تواصلك مباشرة.
             </p>
           </div>
@@ -54,34 +54,34 @@ export function SupportContactModal({
             type="button"
             onClick={onClose}
             aria-label="إغلاق"
-            className="flex h-11 w-11 items-center justify-center rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200"
+            className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#FAF9F6] text-[#6B7280] hover:bg-stone-100"
           >
             <X className="h-5 w-5" />
           </button>
         </div>
 
         <div className="mt-5 space-y-3">
-          <div className="rounded-2xl border border-slate-200 bg-sand-50 p-4">
-            <div className="text-xs font-bold text-slate-500">البريد الإلكتروني للإدارة والدعم</div>
-            <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
-              <span className="font-mono text-sm font-bold text-primary-700" dir="ltr">
+          <div className="rounded-2xl border border-stone-200/70 bg-[#FAF9F6] p-4">
+            <div className="text-xs font-semibold text-[#6B7280]">البريد الإلكتروني للإدارة والدعم</div>
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+              <span className="font-mono text-sm font-bold text-[#1E3A5F]" dir="ltr">
                 {SUPPORT_EMAIL}
               </span>
               <div className="flex items-center gap-2">
                 <button
                   type="button"
                   onClick={() => void handleCopyEmail()}
-                  className="inline-flex min-h-[40px] items-center gap-1 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-100"
+                  className="inline-flex min-h-[38px] items-center gap-1 rounded-xl border border-stone-200/70 bg-white px-3 py-1.5 text-xs font-bold text-[#1F2937] hover:bg-stone-50"
                 >
                   {emailCopied ? (
                     <>
-                      <Check className="h-3.5 w-3.5 text-success-600" />
-                      تم النسخ
+                      <Check className="h-3.5 w-3.5 text-emerald-600" />
+                      <span>تم النسخ</span>
                     </>
                   ) : (
                     <>
                       <Copy className="h-3.5 w-3.5" />
-                      نسخ
+                      <span>نسخ</span>
                     </>
                   )}
                 </button>
@@ -89,10 +89,10 @@ export function SupportContactModal({
                   href={`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent(
                     'استفسار عبر منصة إجازة ستاي (AgzStay)'
                   )}`}
-                  className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl bg-primary-600 px-3.5 py-1.5 text-xs font-bold text-white hover:bg-primary-700"
+                  className="inline-flex min-h-[38px] items-center gap-1.5 rounded-xl bg-[#1E3A5F] px-3.5 py-1.5 text-xs font-bold text-white hover:bg-[#172E4D]"
                 >
                   <Mail className="h-3.5 w-3.5" />
-                  إرسال بريد
+                  <span>إرسال بريد</span>
                 </a>
               </div>
             </div>
@@ -105,10 +105,10 @@ export function SupportContactModal({
               )}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="flex min-h-[48px] w-full items-center justify-center gap-2 rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-bold text-white shadow-sm hover:bg-emerald-700"
+              className="flex min-h-[46px] w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-3 text-sm font-bold text-white shadow-xs hover:bg-emerald-700"
             >
               <MessageCircle className="h-4 w-4" />
-              تواصل مباشرة عبر واتساب الدعم
+              <span>تواصل مباشرة عبر واتساب الدعم</span>
             </a>
           )}
 
@@ -119,10 +119,10 @@ export function SupportContactModal({
                 onClose();
                 onOpenAddProperty();
               }}
-              className="flex min-h-[48px] w-full items-center justify-center gap-2 rounded-2xl border border-secondary-200 bg-secondary-50 px-4 py-3 text-sm font-bold text-secondary-800 hover:bg-secondary-100"
+              className="flex min-h-[46px] w-full items-center justify-center gap-2 rounded-xl border border-[#C5A880] bg-[#FAF6F0] px-4 py-3 text-sm font-bold text-[#1E3A5F] hover:bg-[#F3EBDE]"
             >
-              <PlusCircle className="h-4 w-4" />
-              لديك شقة أو شاليه؟ أضف وحدتك الآن
+              <PlusCircle className="h-4 w-4 text-[#C5A880]" />
+              <span>لديك شقة أو شاليه؟ أضف وحدتك الآن</span>
             </button>
           )}
         </div>

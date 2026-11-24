@@ -79,13 +79,12 @@ export interface SupabaseUnitsTestResult {
   sampleRows: {
     id: string;
     title: string;
-    resort?: string;
+    governorate?: string;
     pricePerNight?: number;
   }[];
-  bookingsOk?: boolean;
-  bookingsCount?: number;
-  bookingsError?: string;
-  receiptsBucketChecked?: boolean;
+  subscriptionsOk?: boolean;
+  subscriptionsCount?: number;
+  subscriptionsError?: string;
   error?: string;
   checkedAt: string;
 }
@@ -111,12 +110,12 @@ export async function testSupabaseUnitsConnection(): Promise<SupabaseUnitsTestRe
   }
 
   try {
-    const [chaletsRes, bookingsRes] = await Promise.all([
+    const [chaletsRes, subsRes] = await Promise.all([
       supabase
         .from('chalets')
-        .select('id, title, resort, price_per_night', { count: 'exact' })
+        .select('id, title, governorate, price_per_night', { count: 'exact' })
         .limit(5),
-      supabase.from('bookings').select('id', { count: 'exact' }).limit(1),
+      supabase.from('subscriptions').select('id', { count: 'exact' }).limit(1),
     ]);
 
     if (chaletsRes.error) {
@@ -127,9 +126,9 @@ export async function testSupabaseUnitsConnection(): Promise<SupabaseUnitsTestRe
         tableName: 'chalets',
         count: 0,
         sampleRows: [],
-        bookingsOk: !bookingsRes.error,
-        bookingsCount: typeof bookingsRes.count === 'number' ? bookingsRes.count : 0,
-        bookingsError: bookingsRes.error?.message,
+        subscriptionsOk: !subsRes.error,
+        subscriptionsCount: typeof subsRes.count === 'number' ? subsRes.count : 0,
+        subscriptionsError: subsRes.error?.message,
         error: `${chaletsRes.error.message}${chaletsRes.error.code ? ` (${chaletsRes.error.code})` : ''}`,
         checkedAt,
       };
@@ -139,7 +138,7 @@ export async function testSupabaseUnitsConnection(): Promise<SupabaseUnitsTestRe
       ? chaletsRes.data.map((row: Record<string, unknown>) => ({
           id: String(row.id ?? ''),
           title: String(row.title ?? 'وحدة بدون عنوان'),
-          resort: row.resort ? String(row.resort) : undefined,
+          governorate: row.governorate ? String(row.governorate) : undefined,
           pricePerNight:
             typeof row.price_per_night === 'number' ? row.price_per_night : undefined,
         }))
@@ -152,10 +151,9 @@ export async function testSupabaseUnitsConnection(): Promise<SupabaseUnitsTestRe
       tableName: 'chalets',
       count: typeof chaletsRes.count === 'number' ? chaletsRes.count : rows.length,
       sampleRows: rows,
-      bookingsOk: !bookingsRes.error,
-      bookingsCount: typeof bookingsRes.count === 'number' ? bookingsRes.count : 0,
-      bookingsError: bookingsRes.error?.message,
-      receiptsBucketChecked: true,
+      subscriptionsOk: !subsRes.error,
+      subscriptionsCount: typeof subsRes.count === 'number' ? subsRes.count : 0,
+      subscriptionsError: subsRes.error?.message,
       checkedAt,
     };
   } catch (err) {
