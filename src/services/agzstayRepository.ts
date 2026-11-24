@@ -720,12 +720,15 @@ export async function resolveReceiptPreviewUrl(
 
 // ---------- Chalets + Private `chalet_contacts` + `reveal_listing_contact` ----------
 
+export const CHALET_PUBLIC_SELECT_COLUMNS =
+  'id, owner_id, title, description, governorate, city, area_or_village, property_type, advertiser_role, owner_name, is_featured, owner_verified, deposit_type, deposit_value, price_per_night, weekly_price, monthly_price, bedrooms, bathrooms, area_sqm, max_guests, beach_distance_meters, coordinates, images, amenities, blocked_dates, rules, availability_status, created_at, updated_at' as const;
+
 export async function fetchAllChaletsFromDb(includeHidden = false): Promise<RepoResult<Chalet[]>> {
   if (!isSupabaseConfigured || !supabase) {
     return { data: [], error: null };
   }
   try {
-    let query = supabase.from('chalets').select('*');
+    let query = supabase.from('chalets').select(CHALET_PUBLIC_SELECT_COLUMNS);
     if (!includeHidden) {
       query = query.eq('availability_status', 'active');
     }
@@ -765,7 +768,7 @@ export async function fetchOwnerChalets(): Promise<RepoResult<Chalet[]>> {
     const [chaletsRes, contactsRes] = await Promise.all([
       supabase
         .from('chalets')
-        .select('*')
+        .select(CHALET_PUBLIC_SELECT_COLUMNS)
         .eq('owner_id', user.id)
         .order('created_at', { ascending: false }),
       supabase.from('chalet_contacts').select('chalet_id, owner_phone').eq('owner_id', user.id),
@@ -890,11 +893,6 @@ export async function insertChaletWithContact(
     blocked_dates: payload.blockedDates,
     rules: payload.rules,
     availability_status: payload.availabilityStatus ?? 'active',
-    // Legacy compatibility fields if old NOT NULL constraints exist
-    destination_label: payload.governorate,
-    resort: payload.areaOrVillage.trim() || payload.city.trim() || payload.governorate,
-    unit_type: payload.propertyType,
-    view_type: 'city-nile',
   };
 
   if (options?.allowAdminFeatured && payload.isFeatured !== undefined) {
@@ -903,7 +901,11 @@ export async function insertChaletWithContact(
 
   try {
     const sb = requireSupabase();
-    const { data, error } = await sb.from('chalets').insert(insertRow).select('*').single();
+    const { data, error } = await sb
+      .from('chalets')
+      .insert(insertRow)
+      .select(CHALET_PUBLIC_SELECT_COLUMNS)
+      .single();
     if (error || !data) {
       const codeKey = extractErrorCodeKey(error) ?? undefined;
       return {
@@ -974,16 +976,13 @@ export async function updateChaletWithContact(
   if (updates.description !== undefined) patch.description = updates.description.trim();
   if (updates.governorate !== undefined) {
     patch.governorate = updates.governorate;
-    patch.destination_label = updates.governorate;
   }
   if (updates.city !== undefined) patch.city = updates.city.trim();
   if (updates.areaOrVillage !== undefined) {
     patch.area_or_village = updates.areaOrVillage.trim();
-    patch.resort = updates.areaOrVillage.trim();
   }
   if (updates.propertyType !== undefined) {
     patch.property_type = updates.propertyType;
-    patch.unit_type = updates.propertyType;
   }
   if (updates.advertiserRole !== undefined) patch.advertiser_role = updates.advertiserRole;
   if (updates.ownerName !== undefined) patch.owner_name = updates.ownerName.trim();
@@ -1018,7 +1017,7 @@ export async function updateChaletWithContact(
       .from('chalets')
       .update(patch)
       .eq('id', chaletId)
-      .select('*')
+      .select(CHALET_PUBLIC_SELECT_COLUMNS)
       .single();
 
     if (error || !data) {

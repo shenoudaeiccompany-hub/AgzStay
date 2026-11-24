@@ -220,6 +220,9 @@ vi.mock('@/lib/supabase', () => {
       if (!target) {
         return { data: null, error: { message: 'subscription_not_found' } };
       }
+      if (target.status !== 'pending') {
+        return { data: null, error: { message: 'already_reviewed' } };
+      }
       target.status = approve ? 'active' : 'rejected';
       target.admin_note = note;
       target.reviewed_at = new Date().toISOString();
@@ -641,5 +644,34 @@ describe('006_secure_v2.sql secure flows (Auth, chalet_contacts, reveal_listing_
       expect(unit.ownerPhone).toMatch(/^01[0125]\d{8}$/);
       expect(unit.depositValue).toBeGreaterThan(0);
     }
+  });
+
+  it('prevents double review (already_reviewed) and concurrent quota/request races cleanly', async () => {
+    const fakeReceipt = new File(['bytes'], 'r.png', { type: 'image/png' });
+    const uploadRes = await uploadSubscriptionReceiptFile(fakeReceipt);
+    expect(uploadRes.error).toBeNull();
+
+    // Concurrent request_subscription calls: only 1 succeeds, 1 hits duplicate_request
+    const [req1, req2] = await Promise.all([
+      submitSubscriptionRequestRpc('starter', uploadRes.data!.path),
+      submitSubscriptionRequestRpc('pro', uploadRes.data!.path),
+    ]);
+    const reqSuccesses = [req1, req2].filter((r) => r.error === null);
+    const reqDuplicates = [req1, req2].filter((r) => r.errorCode === 'duplicate_request');
+    expect(reqSuccesses).toHaveLength(1);
+    expect(reqDuplicates).toHaveLength(1);
+
+    // Concurrent admin approvals on same subscription ID: only 1 succeeds, 2nd hits already_reviewed
+    mockState.currentUser = { id: 'user-admin-1', email: 'admin@agzstay.com' };
+    const subId = mockState.subscriptions[0].id;
+    const [rev1, rev2] = await Promise.all([
+      adminReviewSubscriptionRpc(subId, true, 'اعتماد أول'),
+      adminReviewSubscriptionRpc(subId, true, 'اعتماد مكرر'),
+    ]);
+    const revSuccesses = [rev1, rev2].filter((r) => r.error === null);
+    const revErrors = [rev1, rev2].filter((r) => r.error !== null);
+    expect(revSuccesses).toHaveLength(1);
+    expect(revErrors).toHaveLength(1);
+    expect(revErrors[0]?.error).toContain('مسبقا');
   });
 });
