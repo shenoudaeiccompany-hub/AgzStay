@@ -2,7 +2,6 @@ import {
   ArrowUpDown,
   Briefcase,
   Building2,
-  Calendar,
   LayoutGrid,
   Map as MapIcon,
   MapPin,
@@ -10,6 +9,7 @@ import {
   RotateCcw,
   Search,
 } from 'lucide-react';
+import { ArabicDateRangeField } from '@/components/ArabicCalendarPicker';
 import { ADVERTISER_ROLES, PROPERTY_TYPES, formatEGP } from '@/data/chalets';
 import {
   ALL_GOVERNORATE_NAMES,
@@ -23,7 +23,6 @@ import type {
   SortOption,
   ViewMode,
 } from '@/types/chalet';
-import { addDaysIso, formatIsoDate } from '@/utils/bookingPricing';
 
 interface HeroSearchProps {
   filters: FilterState;
@@ -64,33 +63,6 @@ export function HeroSearch({
 }: HeroSearchProps) {
   const cities = getCitiesForGovernorate(filters.governorate);
   const areas = getAreasForCity(filters.governorate, filters.city);
-  const todayIso = formatIsoDate(new Date());
-
-  const handleCheckInChange = (nextCheckIn: string) => {
-    if (!nextCheckIn) {
-      onDateRangeChange('', '');
-      return;
-    }
-    const minOut = addDaysIso(nextCheckIn, 1);
-    const nextCheckOut =
-      filters.checkOutDate && filters.checkOutDate > nextCheckIn
-        ? filters.checkOutDate
-        : addDaysIso(nextCheckIn, 3);
-    onDateRangeChange(nextCheckIn, nextCheckOut >= minOut ? nextCheckOut : minOut);
-  };
-
-  const handleCheckOutChange = (nextCheckOut: string) => {
-    if (!nextCheckOut) {
-      onDateRangeChange(filters.checkInDate, '');
-      return;
-    }
-    const baseIn = filters.checkInDate || todayIso;
-    if (nextCheckOut <= baseIn) {
-      onDateRangeChange(baseIn, addDaysIso(baseIn, 1));
-    } else {
-      onDateRangeChange(baseIn, nextCheckOut);
-    }
-  };
 
   const hasAnyFilter =
     filters.searchQuery.trim() !== '' ||
@@ -312,46 +284,13 @@ export function HeroSearch({
               </div>
             </div>
 
-            {/* Check-in Date */}
-            <div>
-              <label
-                htmlFor="hero-checkin"
-                className="mb-1.5 block text-xs font-semibold text-[#6B7280]"
-              >
-                تاريخ الوصول
-              </label>
-              <div className="relative">
-                <Calendar className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#6B7280]" />
-                <input
-                  id="hero-checkin"
-                  type="date"
-                  min={todayIso}
-                  value={filters.checkInDate}
-                  onChange={(e) => handleCheckInChange(e.target.value)}
-                  className="h-11 w-full rounded-xl border border-stone-200/80 bg-[#FAF9F6] pl-2 pr-9 text-xs font-semibold text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
-                />
-              </div>
-            </div>
-
-            {/* Check-out Date */}
-            <div>
-              <label
-                htmlFor="hero-checkout"
-                className="mb-1.5 block text-xs font-semibold text-[#6B7280]"
-              >
-                تاريخ المغادرة
-              </label>
-              <div className="relative">
-                <Calendar className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#6B7280]" />
-                <input
-                  id="hero-checkout"
-                  type="date"
-                  min={filters.checkInDate ? addDaysIso(filters.checkInDate, 1) : addDaysIso(todayIso, 1)}
-                  value={filters.checkOutDate}
-                  onChange={(e) => handleCheckOutChange(e.target.value)}
-                  className="h-11 w-full rounded-xl border border-stone-200/80 bg-[#FAF9F6] pl-2 pr-9 text-xs font-semibold text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
-                />
-              </div>
+            {/* Visual Calendar Range Picker: Check-in & Check-out */}
+            <div className="sm:col-span-2 lg:col-span-2">
+              <ArabicDateRangeField
+                checkInDate={filters.checkInDate}
+                checkOutDate={filters.checkOutDate}
+                onChange={onDateRangeChange}
+              />
             </div>
           </div>
 

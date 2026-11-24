@@ -18,6 +18,10 @@ import {
   Sparkles,
   Users,
 } from 'lucide-react';
+import {
+  ArabicDateRangeField,
+  ArabicSingleDateField,
+} from '@/components/ArabicCalendarPicker';
 import { ChaletGallery } from '@/components/ChaletGallery';
 import { ChaletShareActions } from '@/components/ChaletShareActions';
 import { ImageLightboxModal } from '@/components/ImageLightboxModal';
@@ -114,20 +118,12 @@ export function PropertyDetailPage({
     setActiveImageIndex((index + total) % total);
   };
 
-  const handleCheckInChange = (nextIn: string) => {
-    if (!nextIn) return;
+  const handleDateRangeSelect = (nextIn: string, nextOut: string) => {
     setCheckIn(nextIn);
-    if (calculateNightsBetween(nextIn, checkOut) <= 0) {
-      setCheckOut(addDaysIso(nextIn, isMonthlyOnly ? 30 : 3));
-    }
-  };
-
-  const handleCheckOutChange = (nextOut: string) => {
-    if (!nextOut) return;
-    if (calculateNightsBetween(checkIn, nextOut) <= 0) {
-      setCheckOut(addDaysIso(checkIn, 1));
-    } else {
+    if (nextOut && calculateNightsBetween(nextIn, nextOut) > 0) {
       setCheckOut(nextOut);
+    } else {
+      setCheckOut(addDaysIso(nextIn, isMonthlyOnly ? 30 : 3));
     }
   };
 
@@ -413,57 +409,21 @@ export function PropertyDetailPage({
             {/* Date & Guests Selection */}
             <div className="mt-5 space-y-3.5">
               {isMonthlyOnly ? (
-                <div>
-                  <label
-                    htmlFor="detail-movein"
-                    className="mb-1.5 block text-xs font-semibold text-[#6B7280]"
-                  >
-                    تاريخ المعاينة / السكن المقترح
-                  </label>
-                  <input
-                    id="detail-movein"
-                    type="date"
-                    min={todayIso}
-                    value={checkIn}
-                    onChange={(e) => handleCheckInChange(e.target.value)}
-                    className="h-11 w-full rounded-xl border border-stone-200/80 bg-[#FAF9F6] px-3 text-xs font-semibold text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
-                  />
-                </div>
+                <ArabicSingleDateField
+                  label="تاريخ المعاينة / السكن المقترح"
+                  value={checkIn}
+                  minDateIso={todayIso}
+                  onChange={(nextIn) => handleDateRangeSelect(nextIn, addDaysIso(nextIn, 30))}
+                />
               ) : (
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label
-                      htmlFor="detail-checkin"
-                      className="mb-1.5 block text-xs font-semibold text-[#6B7280]"
-                    >
-                      تاريخ الوصول
-                    </label>
-                    <input
-                      id="detail-checkin"
-                      type="date"
-                      min={todayIso}
-                      value={checkIn}
-                      onChange={(e) => handleCheckInChange(e.target.value)}
-                      className="h-11 w-full rounded-xl border border-stone-200/80 bg-[#FAF9F6] px-2.5 text-xs font-semibold text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
-                    />
-                  </div>
-                  <div>
-                    <label
-                      htmlFor="detail-checkout"
-                      className="mb-1.5 block text-xs font-semibold text-[#6B7280]"
-                    >
-                      تاريخ المغادرة
-                    </label>
-                    <input
-                      id="detail-checkout"
-                      type="date"
-                      min={addDaysIso(checkIn, 1)}
-                      value={checkOut}
-                      onChange={(e) => handleCheckOutChange(e.target.value)}
-                      className="h-11 w-full rounded-xl border border-stone-200/80 bg-[#FAF9F6] px-2.5 text-xs font-semibold text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
-                    />
-                  </div>
-                </div>
+                <ArabicDateRangeField
+                  checkInDate={checkIn}
+                  checkOutDate={checkOut}
+                  minDateIso={todayIso}
+                  blockedDates={blockedSet}
+                  allowClear={false}
+                  onChange={handleDateRangeSelect}
+                />
               )}
 
               {!isMonthlyOnly && (

@@ -20,6 +20,7 @@ import {
   User,
   X,
 } from 'lucide-react';
+import { ArabicDateRangeField } from '@/components/ArabicCalendarPicker';
 import {
   AMENITIES,
   EDITABLE_ADVERTISER_ROLES,
@@ -1351,35 +1352,27 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
                       <h4 className="text-xs font-bold text-[#1E3A5F]">
                         حجب التواريخ المحجوزة أو المغلقة يدوياً
                       </h4>
-                      <div className="mt-2.5 flex flex-wrap items-end gap-2.5">
-                        <div>
-                          <label className="mb-1 block text-[11px] font-semibold text-[#6B7280]">
-                            من تاريخ
-                          </label>
-                          <input
-                            type="date"
-                            value={blockStartDate}
-                            onChange={(e) => setBlockStartDate(e.target.value)}
-                            className="h-10 rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-2.5 text-xs"
-                          />
-                        </div>
-                        <div>
-                          <label className="mb-1 block text-[11px] font-semibold text-[#6B7280]">
-                            إلى تاريخ
-                          </label>
-                          <input
-                            type="date"
-                            min={blockStartDate}
-                            value={blockEndDate}
-                            onChange={(e) => setBlockEndDate(e.target.value)}
-                            className="h-10 rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-2.5 text-xs"
+                      <div className="mt-2.5 flex flex-col gap-3 sm:flex-row sm:items-end">
+                        <div className="flex-1">
+                          <ArabicDateRangeField
+                            checkInDate={blockStartDate}
+                            checkOutDate={blockEndDate}
+                            checkInLabel="من تاريخ"
+                            checkOutLabel="إلى تاريخ"
+                            allowClear={false}
+                            allowSameDay
+                            defaultSpanDays={0}
+                            onChange={(start, end) => {
+                              setBlockStartDate(start);
+                              setBlockEndDate(end || start);
+                            }}
                           />
                         </div>
                         <button
                           type="button"
                           disabled={savingCalendar}
                           onClick={() => void handleAddBlockedDatesRange(unit)}
-                          className="h-10 rounded-xl bg-[#1E3A5F] px-4 text-xs font-bold text-white hover:bg-[#172E4D] disabled:opacity-60"
+                          className="h-11 shrink-0 rounded-xl bg-[#1E3A5F] px-5 text-xs font-bold text-white hover:bg-[#172E4D] disabled:opacity-60"
                         >
                           {savingCalendar ? 'جاري الحفظ...' : 'إغلاق التواريخ'}
                         </button>
