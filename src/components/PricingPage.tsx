@@ -11,11 +11,12 @@ import {
   Wallet,
 } from 'lucide-react';
 import { formatEGP } from '@/data/chalets';
-import { SUBSCRIPTION_PLANS } from '@/data/subscriptions';
+import { SUBSCRIPTION_PLANS, normalizeEgyptianPhone } from '@/data/subscriptions';
 import { isSupabaseConfigured } from '@/lib/supabase';
 import {
   createSubscriptionRequest,
   loadOwnerSession,
+  saveOwnerSession,
   uploadSubscriptionReceiptFile,
 } from '@/services/agzstayRepository';
 import type { RouteSection, SubscriptionPlan } from '@/types/chalet';
@@ -113,6 +114,13 @@ export function PricingPage({ onNavigate, onSubscriptionSubmitted }: PricingPage
         setErrorMsg(subRes.error ?? 'تعذر تسجيل طلب الاشتراك.');
         return;
       }
+
+      const normalizedPhone = normalizeEgyptianPhone(cleanPhone);
+      saveOwnerSession({
+        name: cleanName,
+        phone: normalizedPhone,
+        loggedInAt: new Date().toISOString(),
+      });
 
       setSuccessMsg(
         `تم استلام طلب اشتراكك في "${selectedPlan.name}" بنجاح! سيقوم الأدمن بمراجعة الإيصال وتفعيل الباقة وظهور شارة "إعلان مميز" على وحداتك قريباً.`

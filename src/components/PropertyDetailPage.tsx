@@ -6,10 +6,13 @@ import {
   BedDouble,
   Briefcase,
   Calendar,
+  Check,
   CheckCircle2,
+  Copy,
   MapPin,
   MessageCircle,
   Phone,
+  Share2,
   ShieldAlert,
   ShieldCheck,
   Sparkles,
@@ -56,6 +59,7 @@ export function PropertyDetailPage({
   const [activeImageIndex, setActiveImageIndex] = useState(0);
   const [imageError, setImageError] = useState(false);
   const [isLightboxOpen, setIsLightboxOpen] = useState(false);
+  const [quickCopied, setQuickCopied] = useState(false);
 
   const todayIso = useMemo(() => formatIsoDate(new Date()), []);
   const blockedSet = useMemo(() => getBlockedDatesSet(chalet), [chalet]);
@@ -170,6 +174,41 @@ export function PropertyDetailPage({
     [chalet.blockedDates, todayIso]
   );
 
+  const shareUrl = useMemo(() => {
+    const encodedId = encodeURIComponent(chalet.id);
+    try {
+      return `${window.location.origin}/chalet/${encodedId}`;
+    } catch {
+      return `https://agzstay.com/chalet/${encodedId}`;
+    }
+  }, [chalet.id]);
+
+  const quickWhatsAppShareHref = useMemo(() => {
+    const summary = `${chalet.title} — ${locationDisplay} (${formatEGP(
+      quote.unitPrice
+    )} ${getShortPriceUnitLabel(chalet)}) عبر AgzStay\n${shareUrl}`;
+    return `https://wa.me/?text=${encodeURIComponent(summary)}`;
+  }, [chalet, locationDisplay, quote.unitPrice, shareUrl]);
+
+  const handleQuickCopyLink = async () => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(shareUrl);
+      } else {
+        const input = document.createElement('input');
+        input.value = shareUrl;
+        document.body.appendChild(input);
+        input.select();
+        document.execCommand('copy');
+        document.body.removeChild(input);
+      }
+      setQuickCopied(true);
+      window.setTimeout(() => setQuickCopied(false), 2200);
+    } catch {
+      setQuickCopied(true);
+    }
+  };
+
   return (
     <main className="mx-auto w-full max-w-7xl flex-1 px-4 pb-28 pt-8 sm:px-6 sm:py-10 lg:pb-12">
       {/* Top Bar */}
@@ -193,6 +232,29 @@ export function PropertyDetailPage({
           <span className="rounded-full border border-stone-200/70 bg-white px-3.5 py-1 text-xs font-semibold text-[#1E3A5F] shadow-xs">
             {chalet.propertyType}
           </span>
+
+          <button
+            type="button"
+            onClick={() => void handleQuickCopyLink()}
+            className={`inline-flex min-h-[38px] items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-semibold shadow-xs transition ${
+              quickCopied
+                ? 'border-emerald-300 bg-emerald-50 text-emerald-700'
+                : 'border-stone-200/70 bg-white text-[#1E3A5F] hover:bg-[#FAF9F6]'
+            }`}
+          >
+            {quickCopied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+            <span>{quickCopied ? 'تم النسخ' : 'نسخ الرابط'}</span>
+          </button>
+
+          <a
+            href={quickWhatsAppShareHref}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex min-h-[38px] items-center gap-1.5 rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white shadow-xs transition hover:bg-emerald-700"
+          >
+            <Share2 className="h-3.5 w-3.5" />
+            <span>مشاركة واتساب</span>
+          </a>
         </div>
       </div>
 
@@ -468,7 +530,7 @@ export function PropertyDetailPage({
             <div
               className={`mt-5 rounded-2xl border p-4 text-xs leading-relaxed ${
                 isBroker
-                  ? 'border-amber-300 bg-amber-50/90 text-amber-950'
+                  ? 'border-amber-400 bg-amber-50 text-amber-950 shadow-xs'
                   : 'border-[#C5A880] bg-[#FAF6F0] text-[#1F2937]'
               }`}
               role="note"
@@ -480,10 +542,20 @@ export function PropertyDetailPage({
                   }`}
                 />
                 <div className="space-y-2">
-                  <p className="font-bold leading-relaxed">{EXACT_RENTER_SECURITY_WARNING}</p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-extrabold text-[#1E3A5F]">
+                      تنبيه أمني قبل التواصل أو الدفع
+                    </span>
+                    {isBroker && (
+                      <span className="rounded-full bg-amber-200 px-2 py-0.5 text-[10px] font-bold text-amber-950">
+                        معلن: مكتب / وسيط
+                      </span>
+                    )}
+                  </div>
+                  <p className="font-semibold leading-relaxed">{EXACT_RENTER_SECURITY_WARNING}</p>
                   {isBroker && (
-                    <p className="rounded-xl border border-amber-200/80 bg-white/90 px-3 py-2 text-[11px] font-bold text-amber-900">
-                      ملاحظة إضافية: هذا الإعلان مقدم من مكتب / وسيط عقاري — تأكد من كافة التفاصيل وهوية الوسيط والتفويض قبل أي التزام مالي.
+                    <p className="rounded-xl border border-amber-300 bg-white px-3 py-2 text-[11px] font-bold text-amber-950">
+                      تحذير خاص بالوسيط: هذا الإعلان مقدم من مكتب / وسيط عقاري — لا تحوّل أي عربون قبل المعاينة الفعلية للوحدة، ومراجعة إثبات الشخصية والتفويض الرسمي، والاتفاق على كافة الشروط عبر واتساب أولاً.
                     </p>
                   )}
                 </div>

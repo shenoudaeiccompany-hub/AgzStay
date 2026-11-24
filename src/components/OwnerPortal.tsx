@@ -603,15 +603,39 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
         </div>
       </div>
 
-      {/* Quota & Subscription Banner */}
+      {/* Quota & Subscription Dashboard Card */}
       {quota && (
-        <div className="mt-5 flex flex-col justify-between gap-4 rounded-2xl border border-[#C5A880]/70 bg-white p-5 shadow-xs sm:flex-row sm:items-center">
-          <div className="space-y-1">
+        <section
+          aria-label="ملخص رصيد الإعلانات والاشتراك"
+          className="mt-5 rounded-2xl border border-stone-200/70 bg-white p-5 shadow-xs sm:p-6"
+        >
+          <div className="flex flex-col justify-between gap-4 border-b border-stone-100 pb-4 sm:flex-row sm:items-center">
             <div className="flex flex-wrap items-center gap-2">
-              <Crown className="h-4 w-4 text-[#C5A880]" />
-              <span className="text-sm font-bold text-[#1E3A5F]">
+              <Crown className="h-5 w-5 text-[#C5A880]" />
+              <span className="text-base font-bold text-[#1E3A5F]">
                 باقتك الحالية: {quota.activePlan.name}
               </span>
+
+              <span
+                className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${
+                  quota.subscriptionStatus === 'active'
+                    ? 'bg-emerald-50 text-emerald-700'
+                    : quota.subscriptionStatus === 'pending'
+                    ? 'bg-amber-50 text-amber-800'
+                    : quota.subscriptionStatus === 'rejected'
+                    ? 'bg-red-50 text-red-700'
+                    : 'bg-stone-100 text-[#6B7280]'
+                }`}
+              >
+                {quota.subscriptionStatus === 'active'
+                  ? 'اشتراك مفعّل'
+                  : quota.subscriptionStatus === 'pending'
+                  ? 'طلب ترقية قيد المراجعة'
+                  : quota.subscriptionStatus === 'rejected'
+                  ? 'طلب سابق مرفوض'
+                  : 'باقة مجانية'}
+              </span>
+
               {quota.activePlan.isFeaturedEligible && (
                 <span className="inline-flex items-center gap-1 rounded-full bg-[#C5A880] px-2.5 py-0.5 text-[11px] font-bold text-[#1F2937]">
                   <Sparkles className="h-3 w-3" />
@@ -619,28 +643,89 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
                 </span>
               )}
             </div>
-            <p className="text-xs text-[#6B7280]">
-              تم نشر{' '}
-              <strong className="text-[#1E3A5F]">{units.length.toLocaleString('ar-EG')}</strong> من
-              أصل{' '}
-              <strong className="text-[#1E3A5F]">{quota.maxUnits.toLocaleString('ar-EG')}</strong>{' '}
-              {quota.maxUnits === 1 ? 'إعلان متاح' : 'إعلانات متاحة'} في باقتك.
-            </p>
-            {quota.pendingSubscription && (
-              <p className="text-xs font-semibold text-amber-700">
-                لديك طلب ترقية قيد المراجعة ({quota.pendingSubscription.planName}) — سيتم تفعيله فور مراجعة الإيصال من الأدمن.
-              </p>
-            )}
+
+            <button
+              type="button"
+              onClick={() => onNavigate('pricing')}
+              className={`min-h-[42px] shrink-0 rounded-xl px-4 py-2 text-xs font-bold shadow-xs transition ${
+                !canAddAnotherUnit
+                  ? 'bg-[#1E3A5F] text-white hover:bg-[#172E4D]'
+                  : 'bg-[#C5A880] text-[#1F2937] hover:bg-[#b5976d]'
+              }`}
+            >
+              {!canAddAnotherUnit
+                ? 'وصلت للحد الأقصى — ترقية الباقة الآن'
+                : 'ترقية الباقة لزيادة الرصيد والتمييز'}
+            </button>
           </div>
 
-          <button
-            type="button"
-            onClick={() => onNavigate('pricing')}
-            className="min-h-[42px] shrink-0 rounded-xl bg-[#C5A880] px-4 py-2 text-xs font-bold text-[#1F2937] transition hover:bg-[#b5976d]"
-          >
-            {canAddAnotherUnit ? 'ترقية الباقة لظهور مميز' : 'ترقية الباقة لإضافة وحدات أخرى'}
-          </button>
-        </div>
+          <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div className="rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-4 py-3">
+              <span className="block text-[11px] font-semibold text-[#6B7280]">
+                الإعلانات المستخدمة
+              </span>
+              <span className="mt-1 block text-xl font-bold text-[#1E3A5F]">
+                {units.length.toLocaleString('ar-EG')}
+                <span className="mr-1 text-xs font-medium text-[#6B7280]">
+                  من أصل {quota.maxUnits.toLocaleString('ar-EG')}
+                </span>
+              </span>
+            </div>
+
+            <div className="rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-4 py-3">
+              <span className="block text-[11px] font-semibold text-[#6B7280]">
+                الإعلانات المتبقية
+              </span>
+              <span
+                className={`mt-1 block text-xl font-bold ${
+                  canAddAnotherUnit ? 'text-emerald-700' : 'text-amber-700'
+                }`}
+              >
+                {Math.max(0, quota.maxUnits - units.length).toLocaleString('ar-EG')}
+                <span className="mr-1 text-xs font-medium text-[#6B7280]">
+                  {Math.max(0, quota.maxUnits - units.length) === 1 ? 'إعلان متبقٍ' : 'إعلانات متبقية'}
+                </span>
+              </span>
+            </div>
+
+            <div className="rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-4 py-3">
+              <span className="block text-[11px] font-semibold text-[#6B7280]">
+                حالة الاشتراك والتمييز
+              </span>
+              <span className="mt-1 block text-sm font-bold text-[#1F2937]">
+                {quota.activePlan.priorityLabel}
+              </span>
+            </div>
+          </div>
+
+          {!canAddAnotherUnit && (
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-semibold text-amber-950">
+              <span>
+                وصلت للحد الأقصى المسموح به في باقتك الحالية ({quota.maxUnits.toLocaleString('ar-EG')}{' '}
+                {quota.maxUnits === 1 ? 'إعلان' : 'إعلانات'}). قم بالترقية لإضافة وحدات جديدة وتفعيل شارة الإعلان المميز.
+              </span>
+              <button
+                type="button"
+                onClick={() => onNavigate('pricing')}
+                className="rounded-lg bg-[#1E3A5F] px-3.5 py-1.5 text-xs font-bold text-white hover:bg-[#172E4D]"
+              >
+                عرض الباقات والترقية
+              </button>
+            </div>
+          )}
+
+          {quota.pendingSubscription && (
+            <p className="mt-3 rounded-xl border border-amber-200/80 bg-amber-50/70 px-4 py-2.5 text-xs font-semibold text-amber-900">
+              طلبك قيد المراجعة: {quota.pendingSubscription.planName} — سيتم تفعيل الباقة وتمييز وحداتك تلقائياً فور اعتماد الإيصال من الأدمن.
+            </p>
+          )}
+
+          {!quota.activeSubscription && !quota.pendingSubscription && quota.latestRejectedSubscription && (
+            <p className="mt-3 rounded-xl border border-red-200 bg-red-50 px-4 py-2.5 text-xs font-semibold text-red-800">
+              تنبيه: تم رفض طلب اشتراك ({quota.latestRejectedSubscription.planName}). يرجى مراجعة الإيصال وإعادة التقديم من صفحة الباقات.
+            </p>
+          )}
+        </section>
       )}
 
       {feedback && (

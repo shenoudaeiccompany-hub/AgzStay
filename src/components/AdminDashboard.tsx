@@ -21,9 +21,9 @@ import {
   XCircle,
 } from 'lucide-react';
 import {
+  CURATED_EGYPT_UNITS,
   EDITABLE_ADVERTISER_ROLES,
   EDITABLE_PROPERTY_TYPES,
-  THREE_REAL_EGYPT_SAMPLE_UNITS,
   formatEGP,
   getPriceUnitLabel,
 } from '@/data/chalets';
@@ -181,8 +181,14 @@ export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
     setSeedingSamples(true);
     setFeedback(null);
     try {
+      const existingTitles = new Set(units.map((u) => u.title.trim()));
       let insertedCount = 0;
-      for (const sample of THREE_REAL_EGYPT_SAMPLE_UNITS) {
+      let skippedCount = 0;
+      for (const sample of CURATED_EGYPT_UNITS) {
+        if (existingTitles.has(sample.title.trim())) {
+          skippedCount += 1;
+          continue;
+        }
         const res = await insertChaletRecord({
           title: sample.title,
           description: sample.description,
@@ -197,6 +203,7 @@ export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
           depositType: sample.depositType,
           depositValue: sample.depositValue,
           pricePerNight: sample.pricePerNight,
+          monthlyPrice: sample.monthlyPrice,
           bedrooms: sample.bedrooms,
           bathrooms: sample.bathrooms,
           areaSqm: sample.areaSqm,
@@ -216,10 +223,18 @@ export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
       if (insertedCount > 0) {
         setFeedback({
           type: 'success',
-          text: `تم إدخال ${insertedCount} وحدات حقيقية (الساحل الشمالي، العين السخنة، الغردقة) في جدول chalets بنجاح.`,
+          text:
+            skippedCount > 0
+              ? `تم إدخال ${insertedCount} وحدة جديدة في جدول chalets (وتم تخطي ${skippedCount} موجودة مسبقاً).`
+              : `تم إدخال ${insertedCount} وحدات مصرية متكاملة في جدول chalets بنجاح.`,
         });
         await loadAdminData();
         onDataChanged?.();
+      } else if (skippedCount > 0) {
+        setFeedback({
+          type: 'success',
+          text: 'جميع الوحدات النموذجية (٩ وحدات) موجودة بالفعل في جدول chalets.',
+        });
       }
     } finally {
       setSeedingSamples(false);
@@ -427,7 +442,7 @@ export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
             className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl bg-[#C5A880] px-3.5 py-2 text-xs font-bold text-[#1F2937] hover:bg-[#b5976d] disabled:opacity-60"
           >
             <Sparkles className="h-4 w-4" />
-            <span>{seedingSamples ? 'جاري الإدخال...' : 'إدخال ٣ وحدات حقيقية بمصر'}</span>
+            <span>{seedingSamples ? 'جاري الإدخال...' : 'إدخال ٩ وحدات مصرية متكاملة'}</span>
           </button>
 
           <button

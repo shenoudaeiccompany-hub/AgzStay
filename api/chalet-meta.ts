@@ -106,7 +106,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
 
   const title = chalet?.title
     ? `${chalet.title} | ${locationLabel || 'AgzStay'} — AgzStay`
-    : 'AgzStay - إجازة ستاي | شقق مفروشة وشاليهات للإيجار في مصر';
+    : 'AgzStay — شاليهات، شقق مفروشة، وشقق فاضية للإيجار في مصر';
 
   const isMonthly = chalet?.property_type === 'شقة فاضية';
   const priceText =
@@ -116,7 +116,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
 
   const description = chalet
     ? `${priceText}${locationLabel} — ${(chalet.description ?? '').slice(0, 140)}`
-    : 'منصة AgzStay - إجازة ستاي للإيجار المباشر للشقق المفروشة والفاضية والشاليهات والفيلات في مصر.';
+    : 'منصة AgzStay - إجازة ستاي للإيجار اليومي والأسبوعي والشهري للشاليهات والشقق المفروشة والفاضية والفيلات في ٢٧ محافظة مصرية.';
 
   const imageUrl =
     chalet?.images && chalet.images[0] ? chalet.images[0] : `${origin}/icon-512.png`;
@@ -159,6 +159,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     <meta property="og:title" content="${escapeHtml(title)}" />
     <meta property="og:description" content="${escapeHtml(description)}" />
     <meta property="og:image" content="${escapeHtml(imageUrl)}" />
+    <meta property="og:image:alt" content="${escapeHtml(title)}" />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="${escapeHtml(title)}" />
     <meta name="twitter:description" content="${escapeHtml(description)}" />

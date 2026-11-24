@@ -113,15 +113,15 @@ export function HeroSearch({
     <section className="border-b border-stone-200/70 bg-[#FAF9F6] py-10 sm:py-14">
       <div className="mx-auto max-w-7xl px-4 sm:px-6">
         {/* Serene Minimalist Hero Heading */}
-        <div className="mx-auto max-w-2xl text-center">
+        <div className="mx-auto max-w-3xl text-center">
           <span className="inline-flex items-center gap-2 rounded-full border border-stone-200/70 bg-white px-4 py-1.5 text-xs font-semibold text-[#1E3A5F] shadow-xs">
-            ٢٧ محافظة مصرية • تواصل مباشر عبر واتساب
+            ٢٧ محافظة مصرية • إيجار يومي وأسبوعي وشهري • تواصل مباشر عبر واتساب
           </span>
           <h1 className="mt-5 text-2xl font-bold leading-snug text-[#1E3A5F] sm:text-4xl">
-            ابحث عن وحدتك المناسبة في مصر بهدوء ووضوح
+            AgzStay — شاليهات، شقق مفروشة، وشقق فاضية للإيجار في مصر
           </h1>
           <p className="mt-3 text-sm leading-relaxed text-[#6B7280] sm:text-base">
-            شقق مفروشة، شقق فاضية، شاليهات، وفيلات مباشرة من الملاك والمكاتب العقارية بدون تعقيد.
+            منصة هادئة وشفافة لحجز الشاليهات والشقق المفروشة والشقق الفاضية والفيلات في كل محافظات مصر مباشرة مع المُلاك والمكاتب العقارية بدون عمولات خفية.
           </p>
         </div>
 

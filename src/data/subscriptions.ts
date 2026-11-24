@@ -79,11 +79,13 @@ export function resolveOwnerQuota(
   activePlan: SubscriptionPlan;
   activeSubscription: SubscriptionRecord | null;
   pendingSubscription: SubscriptionRecord | null;
+  latestRejectedSubscription: SubscriptionRecord | null;
+  subscriptionStatus: 'active' | 'pending' | 'rejected' | 'free';
 } {
   const normalizedTarget = normalizeEgyptianPhone(ownerPhone);
-  const matching = subscriptions.filter(
-    (s) => normalizeEgyptianPhone(s.ownerPhone) === normalizedTarget
-  );
+  const matching = subscriptions
+    .filter((s) => normalizeEgyptianPhone(s.ownerPhone) === normalizedTarget)
+    .sort((a, b) => (b.createdAt > a.createdAt ? 1 : b.createdAt < a.createdAt ? -1 : 0));
 
   const activeSubs = matching
     .filter((s) => s.status === 'active')
@@ -91,6 +93,7 @@ export function resolveOwnerQuota(
 
   const activeSubscription = activeSubs[0] ?? null;
   const pendingSubscription = matching.find((s) => s.status === 'pending') ?? null;
+  const latestRejectedSubscription = matching.find((s) => s.status === 'rejected') ?? null;
 
   if (activeSubscription) {
     const plan = getSubscriptionPlanById(activeSubscription.planId);
@@ -99,14 +102,24 @@ export function resolveOwnerQuota(
       activePlan: plan,
       activeSubscription,
       pendingSubscription,
+      latestRejectedSubscription,
+      subscriptionStatus: 'active',
     };
   }
 
   const freePlan = SUBSCRIPTION_PLANS[0];
+  const subscriptionStatus = pendingSubscription
+    ? 'pending'
+    : latestRejectedSubscription
+    ? 'rejected'
+    : 'free';
+
   return {
     maxUnits: freePlan.maxUnits,
     activePlan: freePlan,
     activeSubscription: null,
     pendingSubscription,
+    latestRejectedSubscription,
+    subscriptionStatus,
   };
 }
