@@ -59,7 +59,7 @@ export const SUBSCRIPTION_PLANS: SubscriptionPlan[] = [
   },
 ];
 
-export function getSubscriptionPlanById(planId: SubscriptionPlanId): SubscriptionPlan {
+export function getSubscriptionPlanById(planId: SubscriptionPlanId | string): SubscriptionPlan {
   return SUBSCRIPTION_PLANS.find((p) => p.id === planId) ?? SUBSCRIPTION_PLANS[0];
 }
 

@@ -13,8 +13,10 @@ import {
   EyeOff,
   Lock,
   LogOut,
+  Mail,
   RefreshCw,
   Search,
+  ShieldAlert,
   Sparkles,
   Trash2,
   X,
@@ -38,14 +40,18 @@ import {
   type SupabaseUnitsTestResult,
 } from '@/lib/supabase';
 import {
-  agzstayStorageKeys,
+  adminReviewSubscriptionRpc,
+  checkIsAdmin,
   deleteChaletRecord,
+  fetchAdminChaletContactsMap,
   fetchAllChaletsFromDb,
-  fetchAllSubscriptions,
-  insertChaletRecord,
+  fetchAllSubscriptionsAdmin,
+  insertChaletWithContact,
+  onAuthStateChange,
   resolveReceiptPreviewUrl,
-  reviewSubscriptionAdmin,
-  updateChaletRecord,
+  signInWithEmailPassword,
+  signOutAuth,
+  updateChaletWithContact,
 } from '@/services/agzstayRepository';
 import type {
   AdvertiserRoleLabel,
@@ -53,30 +59,34 @@ import type {
   PropertyType,
   SubscriptionRecord,
 } from '@/types/chalet';
+import { formatArabicDate } from '@/utils/bookingPricing';
 
 interface AdminDashboardProps {
   onDataChanged?: () => void;
 }
 
-const ADMIN_PIN = (import.meta.env.VITE_ADMIN_PIN as string | undefined)?.trim() || '123456';
-
-const QUICK_V2_SQL_HINT = `-- يرجى تنفيذ ملف supabase/migrations/005_agzstay_v2_schema.sql في Supabase SQL Editor
--- للتأكد من تهيئة جدول chalets وجدول subscriptions وحاويات property-images و receipts.`;
+const QUICK_V2_SQL_HINT = `-- يرجى تنفيذ ملف الترحيل الأمني 006_secure_v2.sql في Supabase SQL Editor
+-- وتعيين role = 'admin' لحساب المدير في جدول profiles.`;
 
 export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
-  const [unlocked, setUnlocked] = useState<boolean>(() => {
-    try {
-      return sessionStorage.getItem(agzstayStorageKeys.adminPinVerified) === '1';
-    } catch {
-      return false;
-    }
-  });
-  const [pinInput, setPinInput] = useState('');
-  const [pinError, setPinError] = useState('');
+  const [authChecking, setAuthChecking] = useState(true);
+  const [authState, setAuthState] = useState<{
+    authenticated: boolean;
+    isAdmin: boolean;
+    email: string;
+  }>({ authenticated: false, isAdmin: false, email: '' });
+
+  const [loginEmail, setLoginEmail] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [loginLoading, setLoginLoading] = useState(false);
+  const [loginError, setLoginError] = useState('');
 
   const [activeTab, setActiveTab] = useState<'units' | 'subscriptions'>('units');
   const [units, setUnits] = useState<Chalet[]>([]);
+  const [unitContactsMap, setUnitContactsMap] = useState<Record<string, string>>({});
   const [subscriptions, setSubscriptions] = useState<SubscriptionRecord[]>([]);
+  const [adminNotesBySubId, setAdminNotesBySubId] = useState<Record<string, string>>({});
+  const [reviewingSubId, setReviewingSubId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [unitSearch, setUnitSearch] = useState('');
   const [subFilter, setSubFilter] = useState<'all' | 'pending' | 'active' | 'rejected'>('all');
@@ -103,23 +113,24 @@ export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
   const [editManualArea, setEditManualArea] = useState(false);
   const [savingEdit, setSavingEdit] = useState(false);
 
-  // Receipt Preview Modal
+  // Receipt Preview Modal (Signed URL 3600s)
   const [receiptPreviewUrl, setReceiptPreviewUrl] = useState<string | null>(null);
   const [receiptPreviewTitle, setReceiptPreviewTitle] = useState('');
 
   const loadAdminData = useCallback(async () => {
-    if (!unlocked) return;
     setLoading(true);
     try {
-      const [unitsRes, subsRes] = await Promise.all([
+      const [unitsRes, subsRes, contactsMap] = await Promise.all([
         fetchAllChaletsFromDb(true),
-        fetchAllSubscriptions(),
+        fetchAllSubscriptionsAdmin(),
+        fetchAdminChaletContactsMap(),
       ]);
       if (unitsRes.error) {
         setFeedback({ type: 'error', text: unitsRes.error });
       } else {
         setUnits(unitsRes.data ?? []);
       }
+      setUnitContactsMap(contactsMap);
       if (!subsRes.error && subsRes.data) {
         setSubscriptions(subsRes.data);
       } else if (subsRes.error) {
@@ -128,35 +139,51 @@ export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
     } finally {
       setLoading(false);
     }
-  }, [unlocked]);
+  }, []);
 
-  useEffect(() => {
-    void loadAdminData();
+  const verifyAdminSession = useCallback(async () => {
+    setAuthChecking(true);
+    try {
+      const res = await checkIsAdmin();
+      setAuthState(res);
+      if (res.authenticated && res.isAdmin) {
+        await loadAdminData();
+      }
+    } finally {
+      setAuthChecking(false);
+    }
   }, [loadAdminData]);
 
-  const handlePinSubmit = (e: React.FormEvent) => {
+  useEffect(() => {
+    void verifyAdminSession();
+    const unsubscribe = onAuthStateChange(() => {
+      void verifyAdminSession();
+    });
+    return unsubscribe;
+  }, [verifyAdminSession]);
+
+  const handleAdminLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (pinInput.trim() === ADMIN_PIN) {
-      setPinError('');
-      setUnlocked(true);
-      try {
-        sessionStorage.setItem(agzstayStorageKeys.adminPinVerified, '1');
-      } catch {
-        // ignore
+    setLoginError('');
+    setLoginLoading(true);
+    try {
+      const res = await signInWithEmailPassword(loginEmail, loginPassword);
+      if (res.error || !res.data) {
+        setLoginError(res.error ?? 'تعذر تسجيل الدخول.');
+        return;
       }
-    } else {
-      setPinError('رمز الدخول غير صحيح. تأكد من الرمز وحاول مرة أخرى.');
+      await verifyAdminSession();
+    } finally {
+      setLoginLoading(false);
     }
   };
 
-  const handleLockAdmin = () => {
-    setUnlocked(false);
-    setPinInput('');
-    try {
-      sessionStorage.removeItem(agzstayStorageKeys.adminPinVerified);
-    } catch {
-      // ignore
-    }
+  const handleAdminLogout = async () => {
+    await signOutAuth();
+    setAuthState({ authenticated: false, isAdmin: false, email: '' });
+    setUnits([]);
+    setSubscriptions([]);
+    setLoginPassword('');
   };
 
   const handleRunDiagnostics = async () => {
@@ -195,31 +222,34 @@ export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
           skippedCount += 1;
           continue;
         }
-        const res = await insertChaletRecord({
-          title: sample.title,
-          description: sample.description,
-          governorate: sample.governorate,
-          city: sample.city,
-          areaOrVillage: sample.areaOrVillage,
-          propertyType: sample.propertyType,
-          advertiserRole: sample.advertiserRole,
-          ownerName: sample.ownerName,
-          ownerPhone: sample.ownerPhone,
-          isFeatured: sample.isFeatured,
-          depositType: sample.depositType,
-          depositValue: sample.depositValue,
-          pricePerNight: sample.pricePerNight,
-          monthlyPrice: sample.monthlyPrice,
-          bedrooms: sample.bedrooms,
-          bathrooms: sample.bathrooms,
-          areaSqm: sample.areaSqm,
-          maxGuests: sample.maxGuests,
-          images: sample.images,
-          amenities: sample.amenities,
-          blockedDates: sample.blockedDates,
-          rules: sample.rules,
-          availabilityStatus: 'active',
-        });
+        const res = await insertChaletWithContact(
+          {
+            title: sample.title,
+            description: sample.description,
+            governorate: sample.governorate,
+            city: sample.city,
+            areaOrVillage: sample.areaOrVillage,
+            propertyType: sample.propertyType,
+            advertiserRole: sample.advertiserRole,
+            ownerName: sample.ownerName,
+            ownerPhone: sample.ownerPhone ?? '01012345678',
+            isFeatured: sample.isFeatured,
+            depositType: sample.depositType,
+            depositValue: sample.depositValue,
+            pricePerNight: sample.pricePerNight,
+            monthlyPrice: sample.monthlyPrice,
+            bedrooms: sample.bedrooms,
+            bathrooms: sample.bathrooms,
+            areaSqm: sample.areaSqm,
+            maxGuests: sample.maxGuests,
+            images: sample.images,
+            amenities: sample.amenities,
+            blockedDates: sample.blockedDates,
+            rules: sample.rules,
+            availabilityStatus: 'active',
+          },
+          { allowAdminFeatured: true }
+        );
         if (res.error) {
           setFeedback({ type: 'error', text: res.error });
           break;
@@ -232,7 +262,7 @@ export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
           text:
             skippedCount > 0
               ? `تم إدخال ${insertedCount} وحدة جديدة في جدول chalets (وتم تخطي ${skippedCount} موجودة مسبقاً).`
-              : `تم إدخال ${insertedCount} وحدات مصرية متكاملة في جدول chalets بنجاح.`,
+              : `تم إدخال ${insertedCount} وحدات مصرية متكاملة في جدول chalets وحفظ أرقامها في chalet_contacts.`,
         });
         await loadAdminData();
         onDataChanged?.();
@@ -276,7 +306,7 @@ export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
     }
     setSavingEdit(true);
     try {
-      const res = await updateChaletRecord(editingUnit.id, {
+      const res = await updateChaletWithContact(editingUnit.id, {
         title: editTitle.trim(),
         pricePerNight: numPrice,
         propertyType: editPropertyType,
@@ -299,7 +329,11 @@ export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
   };
 
   const handleToggleFeatured = async (unit: Chalet) => {
-    const res = await updateChaletRecord(unit.id, { isFeatured: !unit.isFeatured });
+    const res = await updateChaletWithContact(
+      unit.id,
+      { isFeatured: !unit.isFeatured },
+      { allowAdminFeatured: true }
+    );
     if (res.error) {
       setFeedback({ type: 'error', text: res.error });
       return;
@@ -310,7 +344,7 @@ export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
 
   const handleToggleUnitVisibility = async (unit: Chalet) => {
     const nextStatus = unit.availabilityStatus === 'active' ? 'hidden' : 'active';
-    const res = await updateChaletRecord(unit.id, { availabilityStatus: nextStatus });
+    const res = await updateChaletWithContact(unit.id, { availabilityStatus: nextStatus });
     if (res.error) {
       setFeedback({ type: 'error', text: res.error });
       return;
@@ -332,7 +366,7 @@ export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
   };
 
   const handlePreviewReceipt = async (sub: SubscriptionRecord) => {
-    const res = await resolveReceiptPreviewUrl(sub.receiptUrl, sub.receiptPath);
+    const res = await resolveReceiptPreviewUrl(sub.receiptPath, sub.receiptUrl);
     if (res.error || !res.data) {
       setFeedback({ type: 'error', text: res.error ?? 'تعذر فتح الإيصال.' });
       return;
@@ -341,35 +375,39 @@ export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
     setReceiptPreviewUrl(res.data);
   };
 
-  const handleReviewSubscription = async (
-    sub: SubscriptionRecord,
-    decision: 'active' | 'rejected'
-  ) => {
-    const res = await reviewSubscriptionAdmin(sub.id, sub.ownerPhone, decision);
-    if (res.error) {
-      setFeedback({ type: 'error', text: res.error });
-      return;
-    }
-    setFeedback({
-      type: 'success',
-      text:
-        decision === 'active'
-          ? `تم تفعيل باقة "${sub.planName}" لـ ${sub.ownerName} وتمييز وحداته تلقائياً.`
+  const handleReviewSubscription = async (sub: SubscriptionRecord, approve: boolean) => {
+    const note = adminNotesBySubId[sub.id]?.trim() || '';
+    setReviewingSubId(sub.id);
+    setFeedback(null);
+    try {
+      const res = await adminReviewSubscriptionRpc(sub.id, approve, note);
+      if (res.error) {
+        setFeedback({ type: 'error', text: res.error });
+        return;
+      }
+      setFeedback({
+        type: 'success',
+        text: approve
+          ? `تم اعتماد وتفعيل باقة "${sub.planName}" لـ ${sub.ownerName} وتمييز وحداته تلقائياً في قاعدة البيانات.`
           : `تم رفض طلب اشتراك ${sub.ownerName}.`,
-    });
-    await loadAdminData();
-    onDataChanged?.();
+      });
+      await loadAdminData();
+      onDataChanged?.();
+    } finally {
+      setReviewingSubId(null);
+    }
   };
 
   const filteredUnits = useMemo(() => {
     const q = unitSearch.trim().toLowerCase();
     if (!q) return units;
-    return units.filter((u) =>
-      `${u.title} ${u.governorate} ${u.city} ${u.areaOrVillage} ${u.ownerName} ${u.ownerPhone}`
+    return units.filter((u) => {
+      const phone = unitContactsMap[u.id] ?? '';
+      return `${u.title} ${u.governorate} ${u.city} ${u.areaOrVillage} ${u.ownerName} ${phone}`
         .toLowerCase()
-        .includes(q)
-    );
-  }, [unitSearch, units]);
+        .includes(q);
+    });
+  }, [unitContactsMap, unitSearch, units]);
 
   const filteredSubscriptions = useMemo(() => {
     if (subFilter === 'all') return subscriptions;
@@ -378,50 +416,116 @@ export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
 
   const pendingSubsCount = subscriptions.filter((s) => s.status === 'pending').length;
 
-  // Admin PIN Gate
-  if (!unlocked) {
+  if (authChecking) {
+    return (
+      <main className="mx-auto flex w-full max-w-md flex-1 items-center justify-center px-4 py-16">
+        <div className="inline-flex items-center gap-2 rounded-2xl border border-stone-200/70 bg-white px-6 py-4 text-sm font-bold text-[#1E3A5F] shadow-xs">
+          <RefreshCw className="h-4 w-4 animate-spin text-[#C5A880]" />
+          <span>جاري التحقق من صلاحية الإدارة...</span>
+        </div>
+      </main>
+    );
+  }
+
+  // Real Supabase Auth Login Gate
+  if (!authState.authenticated) {
     return (
       <main className="mx-auto w-full max-w-md flex-1 px-4 py-14 sm:px-6">
         <div className="rounded-2xl border border-stone-200/70 bg-white p-6 shadow-xs sm:p-8">
           <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[#1E3A5F] text-white">
             <Lock className="h-6 w-6 text-[#C5A880]" />
           </div>
-          <h1 className="mt-4 text-2xl font-bold text-[#1E3A5F]">لوحة تحكم الإدارة</h1>
-          <p className="mt-1.5 text-sm text-[#6B7280]">
-            أدخل رمز الحماية (PIN) للوصول إلى إدارة الوحدات ومراجعة اشتراكات المعلنين.
+          <h1 className="mt-4 text-2xl font-bold text-[#1E3A5F]">تسجيل دخول الإدارة</h1>
+          <p className="mt-1.5 text-sm leading-relaxed text-[#6B7280]">
+            سجّل الدخول بحساب المدير المعتمد في Supabase Auth (`profiles.role = &apos;admin&apos;`).
           </p>
 
-          <form onSubmit={handlePinSubmit} className="mt-5 space-y-4">
+          <form onSubmit={handleAdminLogin} className="mt-5 space-y-4">
             <div>
-              <label htmlFor="admin-pin" className="mb-1.5 block text-xs font-semibold text-slate-700">
-                رمز الدخول (PIN)
+              <label
+                htmlFor="admin-email"
+                className="mb-1.5 block text-xs font-semibold text-slate-700"
+              >
+                البريد الإلكتروني للمدير
+              </label>
+              <div className="relative">
+                <Mail className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                <input
+                  id="admin-email"
+                  type="email"
+                  required
+                  dir="ltr"
+                  value={loginEmail}
+                  onChange={(e) => setLoginEmail(e.target.value)}
+                  placeholder="admin@agzstay.com"
+                  className="h-11 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] pl-3 pr-10 text-left text-sm text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label
+                htmlFor="admin-password"
+                className="mb-1.5 block text-xs font-semibold text-slate-700"
+              >
+                كلمة المرور
               </label>
               <input
-                id="admin-pin"
+                id="admin-password"
                 type="password"
-                inputMode="numeric"
                 required
                 dir="ltr"
-                value={pinInput}
-                onChange={(e) => setPinInput(e.target.value)}
+                value={loginPassword}
+                onChange={(e) => setLoginPassword(e.target.value)}
                 placeholder="••••••"
-                className="h-11 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-3 text-center font-mono text-lg tracking-widest text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
+                className="h-11 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-3 text-left text-sm text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
               />
             </div>
 
-            {pinError && (
-              <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700">
-                {pinError}
+            {loginError && (
+              <div
+                className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700"
+                role="alert"
+              >
+                {loginError}
               </div>
             )}
 
             <button
               type="submit"
-              className="min-h-[46px] w-full rounded-xl bg-[#1E3A5F] px-5 py-2.5 text-sm font-bold text-white hover:bg-[#172E4D]"
+              disabled={loginLoading}
+              className="inline-flex min-h-[46px] w-full items-center justify-center gap-2 rounded-xl bg-[#1E3A5F] px-5 py-2.5 text-sm font-bold text-white hover:bg-[#172E4D] disabled:opacity-60"
             >
-              فتح لوحة الأدمن
+              {loginLoading && <RefreshCw className="h-4 w-4 animate-spin" />}
+              <span>{loginLoading ? 'جاري التحقق...' : 'دخول إلى لوحة الإدارة'}</span>
             </button>
           </form>
+        </div>
+      </main>
+    );
+  }
+
+  // Logged in, but NOT an admin
+  if (!authState.isAdmin) {
+    return (
+      <main className="mx-auto w-full max-w-lg flex-1 px-4 py-14 sm:px-6">
+        <div className="rounded-2xl border border-red-200 bg-white p-7 text-center shadow-xs">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-red-50 text-red-600">
+            <ShieldAlert className="h-6 w-6" />
+          </div>
+          <h1 className="mt-4 text-xl font-bold text-[#1F2937]">صلاحية الإدارة مطلوبة</h1>
+          <p className="mt-2 text-sm leading-relaxed text-[#6B7280]">
+            الحساب المسجّل حالياً (<span dir="ltr">{authState.email}</span>) لا يملك صلاحية المدير (
+            <code>role = &apos;admin&apos;</code>).
+          </p>
+          <button
+            type="button"
+            onClick={() => void handleAdminLogout()}
+            className="mt-6 inline-flex min-h-[44px] items-center gap-2 rounded-xl bg-[#1E3A5F] px-5 py-2.5 text-xs font-bold text-white hover:bg-[#172E4D]"
+          >
+            <LogOut className="h-4 w-4" />
+            <span>تسجيل الخروج والدخول بحساب المدير</span>
+          </button>
         </div>
       </main>
     );
@@ -434,7 +538,7 @@ export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
         <div>
           <h1 className="text-2xl font-bold text-[#1E3A5F]">لوحة تحكم الأدمن — AgzStay</h1>
           <p className="mt-1 text-xs text-[#6B7280]">
-            إدارة وحدات جدول chalets ومراجعة إيصالات الباقات من جدول subscriptions.
+            مسجّل كمدير (<span dir="ltr">{authState.email}</span>) • إدارة الوحدات ومراجعة إيصالات الباقات المحمية.
           </p>
         </div>
 
@@ -471,11 +575,11 @@ export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
 
           <button
             type="button"
-            onClick={handleLockAdmin}
+            onClick={() => void handleAdminLogout()}
             className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-red-200 bg-red-50 px-3.5 py-2 text-xs font-semibold text-red-700 hover:bg-red-100"
           >
             <LogOut className="h-4 w-4" />
-            <span>قفل اللوحة</span>
+            <span>تسجيل الخروج</span>
           </button>
         </div>
       </div>
@@ -492,8 +596,8 @@ export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
           <div className="flex flex-wrap items-center justify-between gap-2">
             <span className="font-bold">
               {diagResult.ok
-                ? `الاتصال ناجح: جدول chalets يحتوي على ${diagResult.count} وحدة، وجدول subscriptions ${
-                    diagResult.subscriptionsOk ? `متاح (${diagResult.subscriptionsCount ?? 0})` : 'غير مهيأ بعد'
+                ? `الاتصال ناجح: جدول chalets يحتوي على ${diagResult.count} وحدة، وجداول subscriptions و plans ${
+                    diagResult.subscriptionsOk ? `متاحة (${diagResult.subscriptionsCount ?? 0})` : 'تحتاج مراجعة'
                   }.`
                 : `تنبيه الاتصال: ${diagResult.error ?? 'تعذر الوصول للجدول'}`}
             </span>
@@ -587,6 +691,7 @@ export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
             <div className="space-y-3">
               {filteredUnits.map((unit) => {
                 const isHidden = unit.availabilityStatus !== 'active';
+                const contactPhone = unitContactsMap[unit.id];
                 return (
                   <div
                     key={unit.id}
@@ -620,7 +725,8 @@ export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
                       <h3 className="text-base font-bold text-[#1F2937]">{unit.title}</h3>
                       <p className="text-xs text-[#6B7280]">
                         {[unit.governorate, unit.city, unit.areaOrVillage].filter(Boolean).join(' • ')}{' '}
-                        | {unit.ownerName} ({unit.ownerPhone || 'بدون هاتف'}) |{' '}
+                        | {unit.ownerName}
+                        {contactPhone ? ` (${contactPhone})` : ''} |{' '}
                         <strong className="text-[#1E3A5F]">
                           {formatEGP(unit.pricePerNight)} ({getPriceUnitLabel(unit)})
                         </strong>
@@ -685,7 +791,7 @@ export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
         </section>
       )}
 
-      {/* Tab 2: Subscriptions Review */}
+      {/* Tab 2: Subscriptions Review via `admin_review_subscription` RPC & Signed URLs */}
       {activeTab === 'subscriptions' && (
         <section className="mt-6 space-y-4">
           <div className="flex flex-wrap gap-2">
@@ -721,72 +827,107 @@ export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
               {filteredSubscriptions.map((sub) => (
                 <div
                   key={sub.id}
-                  className="flex flex-col justify-between gap-4 rounded-2xl border border-stone-200/70 bg-white p-4 shadow-xs sm:flex-row sm:items-center sm:p-5"
+                  className="flex flex-col justify-between gap-4 rounded-2xl border border-stone-200/70 bg-white p-4 shadow-xs sm:p-5"
                 >
-                  <div className="space-y-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span
-                        className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${
-                          sub.status === 'active'
-                            ? 'bg-emerald-50 text-emerald-700'
+                  <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-center">
+                    <div className="space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span
+                          className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${
+                            sub.status === 'active'
+                              ? 'bg-emerald-50 text-emerald-700'
+                              : sub.status === 'rejected'
+                              ? 'bg-red-50 text-red-700'
+                              : 'bg-amber-50 text-amber-800'
+                          }`}
+                        >
+                          {sub.status === 'active'
+                            ? 'مفعّلة'
                             : sub.status === 'rejected'
-                            ? 'bg-red-50 text-red-700'
-                            : 'bg-amber-50 text-amber-800'
-                        }`}
-                      >
-                        {sub.status === 'active'
-                          ? 'مفعّلة'
-                          : sub.status === 'rejected'
-                          ? 'مرفوضة'
-                          : 'قيد المراجعة'}
-                      </span>
-                      <span className="rounded-full bg-[#FAF9F6] px-2.5 py-0.5 text-[11px] font-bold text-[#1E3A5F]">
-                        {sub.planName}
-                      </span>
+                            ? 'مرفوضة'
+                            : sub.status === 'expired'
+                            ? 'منتهية'
+                            : 'قيد المراجعة'}
+                        </span>
+                        <span className="rounded-full bg-[#FAF9F6] px-2.5 py-0.5 text-[11px] font-bold text-[#1E3A5F]">
+                          {sub.planName}
+                        </span>
+                      </div>
+                      <h3 className="text-base font-bold text-[#1F2937]">
+                        {sub.ownerName}
+                        {sub.ownerPhone && (
+                          <>
+                            {' '}
+                            — <span dir="ltr">{sub.ownerPhone}</span>
+                          </>
+                        )}
+                      </h3>
+                      <p className="text-xs text-[#6B7280]">
+                        القيمة: <strong className="text-[#1E3A5F]">{formatEGP(sub.price)}</strong> • الحد
+                        الأقصى: {sub.maxUnits} وحدات
+                        {sub.expiresAt && ` • ينتهي في ${formatArabicDate(sub.expiresAt.slice(0, 10))}`}
+                      </p>
+                      {sub.adminNote && (
+                        <p className="text-[11px] font-semibold text-[#1E3A5F]">
+                          ملاحظة الإدارة: {sub.adminNote}
+                        </p>
+                      )}
                     </div>
-                    <h3 className="text-base font-bold text-[#1F2937]">
-                      {sub.ownerName} — <span dir="ltr">{sub.ownerPhone}</span>
-                    </h3>
-                    <p className="text-xs text-[#6B7280]">
-                      القيمة: <strong className="text-[#1E3A5F]">{formatEGP(sub.price)}</strong> • الحد
-                      الأقصى: {sub.maxUnits} وحدات
-                    </p>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      {(sub.receiptPath || sub.receiptUrl) && (
+                        <button
+                          type="button"
+                          onClick={() => void handlePreviewReceipt(sub)}
+                          className="inline-flex min-h-[38px] items-center gap-1 rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-3 py-1.5 text-xs font-semibold text-[#1E3A5F] hover:bg-slate-100"
+                        >
+                          <ExternalLink className="h-3.5 w-3.5" />
+                          <span>معاينة الإيصال (رابط مؤقت)</span>
+                        </button>
+                      )}
+
+                      {sub.status !== 'active' && (
+                        <button
+                          type="button"
+                          disabled={reviewingSubId === sub.id}
+                          onClick={() => void handleReviewSubscription(sub, true)}
+                          className="inline-flex min-h-[38px] items-center gap-1 rounded-xl bg-emerald-600 px-3.5 py-1.5 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-60"
+                        >
+                          <CheckCircle2 className="h-3.5 w-3.5" />
+                          <span>اعتماد وتفعيل + تمييز الوحدات</span>
+                        </button>
+                      )}
+
+                      {sub.status === 'pending' && (
+                        <button
+                          type="button"
+                          disabled={reviewingSubId === sub.id}
+                          onClick={() => void handleReviewSubscription(sub, false)}
+                          className="inline-flex min-h-[38px] items-center gap-1 rounded-xl border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-bold text-red-700 hover:bg-red-100 disabled:opacity-60"
+                        >
+                          <XCircle className="h-3.5 w-3.5" />
+                          <span>رفض</span>
+                        </button>
+                      )}
+                    </div>
                   </div>
 
-                  <div className="flex flex-wrap items-center gap-2">
-                    {(sub.receiptUrl || sub.receiptPath) && (
-                      <button
-                        type="button"
-                        onClick={() => void handlePreviewReceipt(sub)}
-                        className="inline-flex min-h-[38px] items-center gap-1 rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-3 py-1.5 text-xs font-semibold text-[#1E3A5F] hover:bg-slate-100"
-                      >
-                        <ExternalLink className="h-3.5 w-3.5" />
-                        <span>معاينة الإيصال</span>
-                      </button>
-                    )}
-
-                    {sub.status !== 'active' && (
-                      <button
-                        type="button"
-                        onClick={() => void handleReviewSubscription(sub, 'active')}
-                        className="inline-flex min-h-[38px] items-center gap-1 rounded-xl bg-emerald-600 px-3.5 py-1.5 text-xs font-bold text-white hover:bg-emerald-700"
-                      >
-                        <CheckCircle2 className="h-3.5 w-3.5" />
-                        <span>اعتماد وتفعيل + تمييز الوحدات</span>
-                      </button>
-                    )}
-
-                    {sub.status === 'pending' && (
-                      <button
-                        type="button"
-                        onClick={() => void handleReviewSubscription(sub, 'rejected')}
-                        className="inline-flex min-h-[38px] items-center gap-1 rounded-xl border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-bold text-red-700 hover:bg-red-100"
-                      >
-                        <XCircle className="h-3.5 w-3.5" />
-                        <span>رفض</span>
-                      </button>
-                    )}
-                  </div>
+                  {sub.status === 'pending' && (
+                    <div className="border-t border-stone-100 pt-3">
+                      <input
+                        type="text"
+                        value={adminNotesBySubId[sub.id] ?? ''}
+                        onChange={(e) =>
+                          setAdminNotesBySubId((prev) => ({
+                            ...prev,
+                            [sub.id]: e.target.value,
+                          }))
+                        }
+                        placeholder="ملاحظة اختيارية للمعلن عند القبول أو الرفض (p_note)..."
+                        className="h-9 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-3 text-xs text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
+                      />
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -1019,7 +1160,7 @@ export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
         </div>
       )}
 
-      {/* Receipt Preview Modal */}
+      {/* Receipt Preview Modal (Signed URL) */}
       {receiptPreviewUrl && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/75 p-4 backdrop-blur-sm"
@@ -1052,7 +1193,7 @@ export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
                 <img
                   src={receiptPreviewUrl}
                   alt={receiptPreviewTitle}
-                  className="mx-auto max-h-[62vh] rounded-lg object-contain"
+                  className="mx-auto max-h-[64vh] rounded-xl object-contain"
                 />
               )}
             </div>

@@ -12,6 +12,7 @@ import {
   MapPin,
   MessageCircle,
   Phone,
+  RefreshCw,
   Share2,
   ShieldAlert,
   ShieldCheck,
@@ -32,6 +33,7 @@ import {
   getShortPriceUnitLabel,
   isMonthlyOnlyProperty,
 } from '@/data/chalets';
+import { revealListingContact } from '@/services/agzstayRepository';
 import type { Chalet } from '@/types/chalet';
 import {
   addDaysIso,
@@ -64,6 +66,10 @@ export function PropertyDetailPage({
   const [imageError, setImageError] = useState(false);
   const [isLightboxOpen, setIsLightboxOpen] = useState(false);
   const [quickCopied, setQuickCopied] = useState(false);
+
+  const [revealedPhones, setRevealedPhones] = useState<Record<string, string>>({});
+  const [revealingContact, setRevealingContact] = useState(false);
+  const [contactError, setContactError] = useState<string | null>(null);
 
   const todayIso = useMemo(() => formatIsoDate(new Date()), []);
   const blockedSet = useMemo(() => getBlockedDatesSet(chalet), [chalet]);
@@ -166,9 +172,40 @@ export function PropertyDetailPage({
     quote.subtotal,
   ]);
 
-  const cleanPhone = (chalet.ownerPhone || '').trim();
-  const hasPhone = cleanPhone.replace(/\D/g, '').length >= 8;
-  const whatsappHref = hasPhone ? buildWhatsAppPhoneUrl(cleanPhone, whatsappMessage) : '';
+  const effectivePhone = chalet.isDemo
+    ? (chalet.ownerPhone ?? '').trim()
+    : (revealedPhones[chalet.id] ?? '').trim();
+  const hasRevealedPhone = effectivePhone.replace(/\D/g, '').length >= 8;
+  const whatsappHref = hasRevealedPhone ? buildWhatsAppPhoneUrl(effectivePhone, whatsappMessage) : '';
+
+  const ensureContactPhone = async (): Promise<string | null> => {
+    if (effectivePhone) return effectivePhone;
+    setRevealingContact(true);
+    setContactError(null);
+    try {
+      const res = await revealListingContact(chalet.id);
+      if (res.error || !res.data) {
+        setContactError(res.error ?? 'رقم التواصل غير متاح حالياً لهذا الإعلان.');
+        return null;
+      }
+      setRevealedPhones((prev) => ({ ...prev, [chalet.id]: res.data }));
+      return res.data;
+    } finally {
+      setRevealingContact(false);
+    }
+  };
+
+  const handleOpenWhatsApp = async () => {
+    if (hasBlockedConflict) return;
+    const phone = await ensureContactPhone();
+    if (!phone) return;
+    const url = buildWhatsAppPhoneUrl(phone, whatsappMessage);
+    window.open(url, '_blank', 'noopener,noreferrer');
+  };
+
+  const handleRevealPhoneOnly = async () => {
+    await ensureContactPhone();
+  };
 
   const sortedBlockedDates = useMemo(
     () => [...chalet.blockedDates].filter((d) => d >= todayIso).sort(),
@@ -527,9 +564,28 @@ export function PropertyDetailPage({
               </div>
             </div>
 
-            {/* Direct WhatsApp & Phone Actions */}
+            {contactError && (
+              <div
+                className="mt-4 flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 p-3 text-xs font-semibold text-red-800"
+                role="alert"
+              >
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" />
+                <span>{contactError}</span>
+              </div>
+            )}
+
+            {/* Protected Contact Reveal & Direct WhatsApp / Phone Actions */}
             <div className="mt-5 space-y-2.5">
-              {hasPhone && !hasBlockedConflict ? (
+              {hasBlockedConflict ? (
+                <button
+                  type="button"
+                  disabled
+                  className="flex min-h-[48px] w-full cursor-not-allowed items-center justify-center gap-2 rounded-xl bg-stone-200 px-4 py-3 text-sm font-bold text-[#6B7280]"
+                >
+                  <MessageCircle className="h-5 w-5" />
+                  <span>يرجى اختيار تواريخ متاحة أولاً</span>
+                </button>
+              ) : hasRevealedPhone ? (
                 <a
                   href={whatsappHref}
                   target="_blank"
@@ -542,26 +598,43 @@ export function PropertyDetailPage({
               ) : (
                 <button
                   type="button"
-                  disabled
-                  className="flex min-h-[48px] w-full cursor-not-allowed items-center justify-center gap-2 rounded-xl bg-stone-200 px-4 py-3 text-sm font-bold text-[#6B7280]"
+                  disabled={revealingContact}
+                  onClick={() => void handleOpenWhatsApp()}
+                  className="flex min-h-[48px] w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-3 text-sm font-bold text-white shadow-xs transition hover:bg-emerald-700 disabled:opacity-60"
                 >
-                  <MessageCircle className="h-5 w-5" />
+                  {revealingContact ? (
+                    <RefreshCw className="h-5 w-5 animate-spin" />
+                  ) : (
+                    <MessageCircle className="h-5 w-5" />
+                  )}
                   <span>
-                    {hasBlockedConflict
-                      ? 'يرجى اختيار تواريخ متاحة أولاً'
-                      : 'رقم واتساب المعلن غير متاح حالياً'}
+                    {revealingContact
+                      ? 'جاري تجهيز رقم التواصل...'
+                      : 'تواصل مع المعلن عبر واتساب لتأكيد الحجز'}
                   </span>
                 </button>
               )}
 
-              {hasPhone && (
+              {hasRevealedPhone ? (
                 <a
-                  href={`tel:${cleanPhone}`}
+                  href={`tel:${effectivePhone}`}
                   className="flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl border border-stone-200/80 bg-white px-4 py-2.5 text-xs font-bold text-[#1E3A5F] transition hover:bg-[#FAF9F6]"
                 >
                   <Phone className="h-4 w-4 text-[#C5A880]" />
-                  <span>اتصال هاتفي مباشر ({cleanPhone})</span>
+                  <span>
+                    اتصال هاتفي مباشر (<span dir="ltr">{effectivePhone}</span>)
+                  </span>
                 </a>
+              ) : (
+                <button
+                  type="button"
+                  disabled={revealingContact}
+                  onClick={() => void handleRevealPhoneOnly()}
+                  className="flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl border border-stone-200/80 bg-white px-4 py-2.5 text-xs font-bold text-[#1E3A5F] transition hover:bg-[#FAF9F6] disabled:opacity-60"
+                >
+                  <Phone className="h-4 w-4 text-[#C5A880]" />
+                  <span>إظهار رقم هاتف المعلن للاتصال المباشر</span>
+                </button>
               )}
             </div>
           </div>
@@ -569,7 +642,7 @@ export function PropertyDetailPage({
       </div>
 
       {/* Comfortable Mobile Sticky Bottom Contact Bar */}
-      {hasPhone && !hasBlockedConflict && (
+      {!hasBlockedConflict && (
         <div className="fixed inset-x-0 bottom-0 z-30 border-t border-stone-200/80 bg-white/95 px-4 py-3 shadow-lg backdrop-blur-md lg:hidden">
           <div className="mx-auto flex max-w-lg items-center justify-between gap-3">
             <div>
@@ -583,15 +656,27 @@ export function PropertyDetailPage({
                 </span>
               </span>
             </div>
-            <a
-              href={whatsappHref}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl bg-emerald-600 px-5 py-2.5 text-xs font-bold text-white shadow-xs transition hover:bg-emerald-700"
-            >
-              <MessageCircle className="h-4 w-4" />
-              <span>تواصل عبر واتساب</span>
-            </a>
+            {hasRevealedPhone ? (
+              <a
+                href={whatsappHref}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl bg-emerald-600 px-5 py-2.5 text-xs font-bold text-white shadow-xs transition hover:bg-emerald-700"
+              >
+                <MessageCircle className="h-4 w-4" />
+                <span>تواصل عبر واتساب</span>
+              </a>
+            ) : (
+              <button
+                type="button"
+                disabled={revealingContact}
+                onClick={() => void handleOpenWhatsApp()}
+                className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl bg-emerald-600 px-5 py-2.5 text-xs font-bold text-white shadow-xs transition hover:bg-emerald-700 disabled:opacity-60"
+              >
+                <MessageCircle className="h-4 w-4" />
+                <span>{revealingContact ? 'جاري الفتح...' : 'تواصل عبر واتساب'}</span>
+              </button>
+            )}
           </div>
         </div>
       )}

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   AlertTriangle,
   Building2,
@@ -6,20 +6,35 @@ import {
   CheckCircle2,
   Copy,
   Crown,
+  Lock,
+  Mail,
+  Phone,
+  RefreshCw,
   Sparkles,
   Upload,
+  User,
   Wallet,
 } from 'lucide-react';
 import { formatEGP } from '@/data/chalets';
-import { SUBSCRIPTION_PLANS, normalizeEgyptianPhone } from '@/data/subscriptions';
+import { SUBSCRIPTION_PLANS } from '@/data/subscriptions';
 import { isSupabaseConfigured } from '@/lib/supabase';
 import {
-  createSubscriptionRequest,
-  loadOwnerSession,
-  saveOwnerSession,
+  fetchMyProfile,
+  fetchPlansFromDb,
+  getCurrentAuthUser,
+  onAuthStateChange,
+  signInWithEmailPassword,
+  signUpOwnerAccount,
+  submitSubscriptionRequestRpc,
   uploadSubscriptionReceiptFile,
 } from '@/services/agzstayRepository';
-import type { RouteSection, SubscriptionPlan } from '@/types/chalet';
+import type {
+  AdvertiserTypeCode,
+  AuthUserSummary,
+  RouteSection,
+  SubscriptionPlan,
+  UserProfile,
+} from '@/types/chalet';
 
 interface PricingPageProps {
   onNavigate: (section: RouteSection) => void;
@@ -30,20 +45,70 @@ const ADMIN_WALLET_INFO =
   (import.meta.env.VITE_SUBSCRIPTION_WALLET as string | undefined)?.trim() || '';
 
 export function PricingPage({ onNavigate, onSubscriptionSubmitted }: PricingPageProps) {
-  const existingSession = loadOwnerSession();
+  const [plans, setPlans] = useState<SubscriptionPlan[]>(SUBSCRIPTION_PLANS);
+  const [loadingPlans, setLoadingPlans] = useState(true);
   const [selectedPlan, setSelectedPlan] = useState<SubscriptionPlan | null>(null);
-  const [ownerName, setOwnerName] = useState(existingSession?.name ?? '');
-  const [ownerPhone, setOwnerPhone] = useState(existingSession?.phone ?? '');
+
+  const [authUser, setAuthUser] = useState<AuthUserSummary | null>(null);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+
+  // Inline Supabase Auth state when user wants to subscribe while logged out
+  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authName, setAuthName] = useState('');
+  const [authPhone, setAuthPhone] = useState('');
+  const [authAdvType, setAuthAdvType] = useState<AdvertiserTypeCode>('owner');
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authMessage, setAuthMessage] = useState('');
+
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
   const [walletCopied, setWalletCopied] = useState(false);
 
+  useEffect(() => {
+    let active = true;
+    const init = async () => {
+      try {
+        const [plansRes, user] = await Promise.all([fetchPlansFromDb(), getCurrentAuthUser()]);
+        if (!active) return;
+        if (plansRes.data && plansRes.data.length > 0) {
+          setPlans(plansRes.data);
+        }
+        setAuthUser(user);
+        if (user) {
+          const profRes = await fetchMyProfile();
+          if (active && profRes.data) setProfile(profRes.data);
+        }
+      } finally {
+        if (active) setLoadingPlans(false);
+      }
+    };
+    void init();
+
+    const unsubscribe = onAuthStateChange((user) => {
+      setAuthUser(user);
+      if (user) {
+        void fetchMyProfile().then((res) => {
+          if (res.data) setProfile(res.data);
+        });
+      } else {
+        setProfile(null);
+      }
+    });
+
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, []);
+
   const handleSelectPlan = (plan: SubscriptionPlan) => {
     setErrorMsg('');
     setSuccessMsg('');
-    if (plan.id === 'free') {
+    if (plan.id === 'free' || plan.price === 0) {
       onNavigate('owner');
       return;
     }
@@ -67,18 +132,59 @@ export function PricingPage({ onNavigate, onSubscriptionSubmitted }: PricingPage
     }
   };
 
+  const handleInlineAuthSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMsg('');
+    setAuthMessage('');
+    setAuthLoading(true);
+    try {
+      if (authMode === 'login') {
+        const res = await signInWithEmailPassword(authEmail, authPassword);
+        if (res.error || !res.data) {
+          setErrorMsg(res.error ?? 'تعذر تسجيل الدخول.');
+          return;
+        }
+        setAuthUser(res.data);
+        const prof = await fetchMyProfile();
+        if (prof.data) setProfile(prof.data);
+      } else {
+        if (authName.trim().length < 3) {
+          setErrorMsg('يرجى إدخال الاسم ثلاثياً على الأقل.');
+          return;
+        }
+        const res = await signUpOwnerAccount({
+          email: authEmail,
+          password: authPassword,
+          name: authName,
+          phone: authPhone,
+          advertiserType: authAdvType,
+        });
+        if (res.error || !res.data) {
+          setErrorMsg(res.error ?? 'تعذر إنشاء الحساب.');
+          return;
+        }
+        if (res.data.needsEmailConfirmation) {
+          setAuthMessage(
+            'تم إنشاء الحساب! يرجى تأكيد بريدك الإلكتروني عبر الرابط المرسل إليك ثم تسجيل الدخول لإرسال الإيصال.'
+          );
+          setAuthMode('login');
+          return;
+        }
+        setAuthUser(res.data.user);
+        const prof = await fetchMyProfile();
+        if (prof.data) setProfile(prof.data);
+      }
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedPlan) return;
 
-    const cleanName = ownerName.trim();
-    const cleanPhone = ownerPhone.replace(/\D/g, '');
-    if (cleanName.length < 3) {
-      setErrorMsg('يرجى كتابة اسم المعلن أو المكتب ثلاثياً على الأقل.');
-      return;
-    }
-    if (cleanPhone.length < 10) {
-      setErrorMsg('يرجى إدخال رقم هاتف مصري صحيح مكون من ١١ رقماً.');
+    if (!authUser) {
+      setErrorMsg('يجب تسجيل الدخول أولاً لإرسال طلب الاشتراك.');
       return;
     }
     if (!receiptFile) {
@@ -93,34 +199,17 @@ export function PricingPage({ onNavigate, onSubscriptionSubmitted }: PricingPage
     setErrorMsg('');
     setSubmitting(true);
     try {
-      const uploadRes = await uploadSubscriptionReceiptFile(receiptFile, cleanPhone);
+      const uploadRes = await uploadSubscriptionReceiptFile(receiptFile);
       if (uploadRes.error || !uploadRes.data) {
         setErrorMsg(uploadRes.error ?? 'تعذر رفع صورة الإيصال.');
         return;
       }
 
-      const subRes = await createSubscriptionRequest({
-        ownerName: cleanName,
-        ownerPhone: cleanPhone,
-        planId: selectedPlan.id,
-        planName: selectedPlan.name,
-        price: selectedPlan.price,
-        maxUnits: selectedPlan.maxUnits,
-        receiptPath: uploadRes.data.path,
-        receiptUrl: uploadRes.data.publicUrl,
-      });
-
-      if (subRes.error || !subRes.data) {
-        setErrorMsg(subRes.error ?? 'تعذر تسجيل طلب الاشتراك.');
+      const subRes = await submitSubscriptionRequestRpc(selectedPlan.id, uploadRes.data.path);
+      if (subRes.error) {
+        setErrorMsg(subRes.error);
         return;
       }
-
-      const normalizedPhone = normalizeEgyptianPhone(cleanPhone);
-      saveOwnerSession({
-        name: cleanName,
-        phone: normalizedPhone,
-        loggedInAt: new Date().toISOString(),
-      });
 
       setSuccessMsg(
         `تم استلام طلب اشتراكك في "${selectedPlan.name}" بنجاح! سيقوم الأدمن بمراجعة الإيصال وتفعيل الباقة وظهور شارة "إعلان مميز" على وحداتك قريباً.`
@@ -149,7 +238,7 @@ export function PricingPage({ onNavigate, onSubscriptionSubmitted }: PricingPage
 
       {/* 4 Minimalist Package Cards */}
       <div className="mt-10 grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-4">
-        {SUBSCRIPTION_PLANS.map((plan) => {
+        {plans.map((plan) => {
           const isPro = plan.id === 'pro';
           const isSelected = selectedPlan?.id === plan.id;
           return (
@@ -173,9 +262,7 @@ export function PricingPage({ onNavigate, onSubscriptionSubmitted }: PricingPage
                 >
                   {plan.badge}
                 </span>
-                {plan.isFeaturedEligible && (
-                  <Sparkles className="h-4 w-4 text-[#C5A880]" />
-                )}
+                {plan.isFeaturedEligible && <Sparkles className="h-4 w-4 text-[#C5A880]" />}
               </div>
 
               <h2 className="mt-4 text-lg font-bold text-[#1F2937]">{plan.name}</h2>
@@ -203,16 +290,17 @@ export function PricingPage({ onNavigate, onSubscriptionSubmitted }: PricingPage
 
               <button
                 type="button"
+                disabled={loadingPlans}
                 onClick={() => handleSelectPlan(plan)}
-                className={`mt-6 min-h-[44px] w-full rounded-xl px-4 py-2.5 text-xs font-bold shadow-xs transition ${
-                  plan.id === 'free'
+                className={`mt-6 min-h-[44px] w-full rounded-xl px-4 py-2.5 text-xs font-bold shadow-xs transition disabled:opacity-60 ${
+                  plan.price === 0
                     ? 'border border-[#1E3A5F] bg-white text-[#1E3A5F] hover:bg-[#FAF9F6]'
                     : isPro || isSelected
                     ? 'bg-[#1E3A5F] text-white hover:bg-[#172E4D]'
                     : 'bg-[#C5A880] text-[#1F2937] hover:bg-[#b5976d]'
                 }`}
               >
-                {plan.id === 'free' ? 'ابدأ النشر مجاناً' : 'اشترك في هذه الباقة'}
+                {plan.price === 0 ? 'ابدأ النشر مجاناً' : 'اشترك في هذه الباقة'}
               </button>
             </div>
           );
@@ -229,7 +317,7 @@ export function PricingPage({ onNavigate, onSubscriptionSubmitted }: PricingPage
             <thead className="border-b border-stone-200/70 text-[#6B7280]">
               <tr>
                 <th className="px-6 py-3.5 font-semibold">الميزة</th>
-                {SUBSCRIPTION_PLANS.map((p) => (
+                {plans.map((p) => (
                   <th key={p.id} className="px-4 py-3.5 font-bold text-[#1E3A5F]">
                     {p.name}
                   </th>
@@ -239,7 +327,7 @@ export function PricingPage({ onNavigate, onSubscriptionSubmitted }: PricingPage
             <tbody className="divide-y divide-stone-200/70 text-[#1F2937]">
               <tr>
                 <td className="px-6 py-3.5 font-semibold text-[#6B7280]">قيمة الاشتراك</td>
-                {SUBSCRIPTION_PLANS.map((p) => (
+                {plans.map((p) => (
                   <td key={p.id} className="px-4 py-3.5 font-bold text-[#1E3A5F]">
                     {p.price === 0 ? 'مجاناً (٠ ج.م)' : formatEGP(p.price)}
                   </td>
@@ -247,7 +335,7 @@ export function PricingPage({ onNavigate, onSubscriptionSubmitted }: PricingPage
               </tr>
               <tr>
                 <td className="px-6 py-3.5 font-semibold text-[#6B7280]">عدد الإعلانات المتاح</td>
-                {SUBSCRIPTION_PLANS.map((p) => (
+                {plans.map((p) => (
                   <td key={p.id} className="px-4 py-3.5 font-semibold">
                     {p.maxUnits.toLocaleString('ar-EG')} {p.maxUnits === 1 ? 'إعلان' : 'إعلانات'}
                   </td>
@@ -255,7 +343,7 @@ export function PricingPage({ onNavigate, onSubscriptionSubmitted }: PricingPage
               </tr>
               <tr>
                 <td className="px-6 py-3.5 font-semibold text-[#6B7280]">شارة إعلان مميز</td>
-                {SUBSCRIPTION_PLANS.map((p) => (
+                {plans.map((p) => (
                   <td key={p.id} className="px-4 py-3.5">
                     {p.isFeaturedEligible ? (
                       <span className="inline-flex items-center gap-1 font-semibold text-emerald-700">
@@ -269,7 +357,7 @@ export function PricingPage({ onNavigate, onSubscriptionSubmitted }: PricingPage
               </tr>
               <tr>
                 <td className="px-6 py-3.5 font-semibold text-[#6B7280]">أولوية الظهور</td>
-                {SUBSCRIPTION_PLANS.map((p) => (
+                {plans.map((p) => (
                   <td key={p.id} className="px-4 py-3.5 text-[#6B7280]">
                     {p.priorityLabel}
                   </td>
@@ -356,44 +444,165 @@ export function PricingPage({ onNavigate, onSubscriptionSubmitted }: PricingPage
                 <span>الانتقال إلى بوابة المعلن</span>
               </button>
             </div>
+          ) : !authUser ? (
+            <div className="mt-6 rounded-2xl border border-stone-200/70 bg-[#FAF9F6] p-5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-sm font-bold text-[#1E3A5F]">
+                  سجّل دخولك أولاً لإتمام طلب الاشتراك
+                </h3>
+                <div className="flex rounded-xl border border-stone-200/70 bg-white p-1 text-xs font-bold">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAuthMode('login');
+                      setErrorMsg('');
+                    }}
+                    className={`rounded-lg px-3 py-1 transition ${
+                      authMode === 'login' ? 'bg-[#1E3A5F] text-white' : 'text-[#6B7280]'
+                    }`}
+                  >
+                    تسجيل الدخول
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAuthMode('signup');
+                      setErrorMsg('');
+                    }}
+                    className={`rounded-lg px-3 py-1 transition ${
+                      authMode === 'signup' ? 'bg-[#1E3A5F] text-white' : 'text-[#6B7280]'
+                    }`}
+                  >
+                    حساب جديد
+                  </button>
+                </div>
+              </div>
+
+              {authMessage && (
+                <div className="mt-3 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs font-semibold text-emerald-800">
+                  {authMessage}
+                </div>
+              )}
+
+              <form onSubmit={handleInlineAuthSubmit} className="mt-4 space-y-3">
+                {authMode === 'signup' && (
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div>
+                      <label className="mb-1 block text-xs font-semibold text-[#6B7280]">
+                        الاسم / اسم المكتب
+                      </label>
+                      <div className="relative">
+                        <User className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                        <input
+                          type="text"
+                          required
+                          value={authName}
+                          onChange={(e) => setAuthName(e.target.value)}
+                          placeholder="أ. كريم عبد الله"
+                          className="h-10 w-full rounded-xl border border-stone-200/70 bg-white pl-3 pr-9 text-xs text-[#1F2937]"
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-semibold text-[#6B7280]">
+                        رقم الهاتف (واتساب)
+                      </label>
+                      <div className="relative">
+                        <Phone className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                        <input
+                          type="tel"
+                          required
+                          dir="ltr"
+                          value={authPhone}
+                          onChange={(e) => setAuthPhone(e.target.value)}
+                          placeholder="01012345678"
+                          className="h-10 w-full rounded-xl border border-stone-200/70 bg-white pl-3 pr-9 text-right text-xs text-[#1F2937]"
+                        />
+                      </div>
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="mb-1 block text-xs font-semibold text-[#6B7280]">
+                        صفة المعلن
+                      </label>
+                      <select
+                        value={authAdvType}
+                        onChange={(e) => setAuthAdvType(e.target.value as AdvertiserTypeCode)}
+                        className="h-10 w-full rounded-xl border border-stone-200/70 bg-white px-3 text-xs font-semibold text-[#1F2937]"
+                      >
+                        <option value="owner">مالك مباشر</option>
+                        <option value="broker">مكتب / وسيط عقاري</option>
+                      </select>
+                    </div>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div>
+                    <label className="mb-1 block text-xs font-semibold text-[#6B7280]">
+                      البريد الإلكتروني
+                    </label>
+                    <div className="relative">
+                      <Mail className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                      <input
+                        type="email"
+                        required
+                        dir="ltr"
+                        value={authEmail}
+                        onChange={(e) => setAuthEmail(e.target.value)}
+                        placeholder="name@example.com"
+                        className="h-10 w-full rounded-xl border border-stone-200/70 bg-white pl-3 pr-9 text-left text-xs text-[#1F2937]"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-semibold text-[#6B7280]">
+                      كلمة المرور
+                    </label>
+                    <div className="relative">
+                      <Lock className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                      <input
+                        type="password"
+                        required
+                        minLength={6}
+                        dir="ltr"
+                        value={authPassword}
+                        onChange={(e) => setAuthPassword(e.target.value)}
+                        placeholder="••••••"
+                        className="h-10 w-full rounded-xl border border-stone-200/70 bg-white pl-3 pr-9 text-left text-xs text-[#1F2937]"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {errorMsg && (
+                  <div
+                    className="rounded-xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-xs font-semibold text-red-700"
+                    role="alert"
+                  >
+                    {errorMsg}
+                  </div>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={authLoading}
+                  className="inline-flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl bg-[#1E3A5F] px-5 py-2.5 text-xs font-bold text-white hover:bg-[#172E4D] disabled:opacity-60"
+                >
+                  {authLoading && <RefreshCw className="h-4 w-4 animate-spin" />}
+                  <span>{authMode === 'login' ? 'دخول لرفع الإيصال' : 'إنشاء الحساب والمتابعة'}</span>
+                </button>
+              </form>
+            </div>
           ) : (
             <form onSubmit={handleSubmit} className="mt-5 space-y-4">
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <div>
-                  <label
-                    htmlFor="sub-name"
-                    className="mb-1.5 block text-xs font-semibold text-[#6B7280]"
-                  >
-                    اسم المعلن أو المكتب
-                  </label>
-                  <input
-                    id="sub-name"
-                    type="text"
-                    required
-                    value={ownerName}
-                    onChange={(e) => setOwnerName(e.target.value)}
-                    placeholder="مثال: أ. كريم محمد"
-                    className="h-11 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-3 text-sm text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
-                  />
-                </div>
-                <div>
-                  <label
-                    htmlFor="sub-phone"
-                    className="mb-1.5 block text-xs font-semibold text-[#6B7280]"
-                  >
-                    رقم الهاتف المسجل في بوابة المعلن
-                  </label>
-                  <input
-                    id="sub-phone"
-                    type="tel"
-                    required
-                    dir="ltr"
-                    value={ownerPhone}
-                    onChange={(e) => setOwnerPhone(e.target.value)}
-                    placeholder="01012345678"
-                    className="h-11 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-3 text-right text-sm text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
-                  />
-                </div>
+              <div className="rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-4 py-3 text-xs text-[#1F2937]">
+                <span className="font-bold text-[#1E3A5F]">الحساب المسجّل:</span>{' '}
+                <span>{profile?.name || authUser.email}</span>
+                {profile?.phone && (
+                  <span className="mr-2 text-[#6B7280]" dir="ltr">
+                    ({profile.phone})
+                  </span>
+                )}
               </div>
 
               <div>
@@ -401,7 +610,7 @@ export function PricingPage({ onNavigate, onSubscriptionSubmitted }: PricingPage
                   htmlFor="sub-receipt"
                   className="mb-1.5 block text-xs font-semibold text-[#6B7280]"
                 >
-                  صورة إيصال التحويل
+                  صورة إيصال التحويل (تُرفع في مساحة خاصة وآمنة)
                 </label>
                 <label
                   htmlFor="sub-receipt"
@@ -411,7 +620,7 @@ export function PricingPage({ onNavigate, onSubscriptionSubmitted }: PricingPage
                   <span className="text-xs font-semibold text-[#1F2937]">
                     {receiptFile
                       ? `تم اختيار: ${receiptFile.name}`
-                      : 'اضغط لاختيار صورة إيصال إنستاباي أو المحفظة (JPG / PNG / PDF)'}
+                      : 'اضغط لاختيار صورة إيصال إنستاباي أو المحفظة (JPG / PNG / WebP / PDF)'}
                   </span>
                   <input
                     id="sub-receipt"

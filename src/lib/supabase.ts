@@ -110,12 +110,13 @@ export async function testSupabaseUnitsConnection(): Promise<SupabaseUnitsTestRe
   }
 
   try {
-    const [chaletsRes, subsRes] = await Promise.all([
+    const [chaletsRes, subsRes, plansRes] = await Promise.all([
       supabase
         .from('chalets')
         .select('id, title, governorate, price_per_night', { count: 'exact' })
         .limit(5),
       supabase.from('subscriptions').select('id', { count: 'exact' }).limit(1),
+      supabase.from('plans').select('id', { count: 'exact' }).limit(1),
     ]);
 
     if (chaletsRes.error) {
@@ -151,9 +152,9 @@ export async function testSupabaseUnitsConnection(): Promise<SupabaseUnitsTestRe
       tableName: 'chalets',
       count: typeof chaletsRes.count === 'number' ? chaletsRes.count : rows.length,
       sampleRows: rows,
-      subscriptionsOk: !subsRes.error,
+      subscriptionsOk: !subsRes.error && !plansRes.error,
       subscriptionsCount: typeof subsRes.count === 'number' ? subsRes.count : 0,
-      subscriptionsError: subsRes.error?.message,
+      subscriptionsError: subsRes.error?.message ?? plansRes.error?.message,
       checkedAt,
     };
   } catch (err) {

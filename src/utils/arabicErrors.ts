@@ -1,19 +1,23 @@
 export const MESSAGES: Record<string, string> = {
-  not_authenticated: 'يجب تسجيل الدخول أولاً',
-  dates_unavailable: 'هذه التواريخ غير متاحة',
-  owner_not_verified: 'يجب توثيق حسابك قبل نشر الإعلان',
-  phone_invalid: 'رقم الموبايل غير صحيح (مثال: 01012345678)',
-  policy_not_accepted: 'يجب الموافقة على سياسة الإلغاء',
-  duplicate_request: 'لديك طلب سابق لنفس التواريخ',
-  invalid_state: 'لا يمكن تنفيذ هذا الإجراء في حالة الحجز الحالية',
-  stay_not_finished: 'لا يمكن إنهاء الحجز قبل تاريخ المغادرة',
-  listing_suspended: 'هذا الإعلان موقوف من الإدارة',
-  invalid_guests: 'عدد الضيوف يتجاوز سعة الوحدة',
-  invalid_dates: 'التواريخ غير صحيحة',
-  cannot_book_own: 'لا يمكنك حجز وحدتك',
-  forbidden: 'غير مسموح لك بهذا الإجراء',
-  'row-level security': 'غير مسموح لك بهذا الإجراء',
-  'duplicate key': 'هذا السجل موجود بالفعل',
+  not_authenticated: 'يجب تسجيل الدخول أولاً للمتابعة.',
+  quota_exceeded:
+    'لقد وصلت إلى الحد الأقصى لعدد الإعلانات المسموح بها في باقتك الحالية. قم بالترقية لإضافة المزيد.',
+  rate_limited:
+    'تم تجاوز الحد المسموح به لعرض أرقام التواصل خلال هذه الساعة، يرجى المحاولة لاحقاً.',
+  contact_not_available: 'رقم التواصل الخاص بهذا الإعلان غير متاح حالياً.',
+  duplicate_request: 'لديك طلب اشتراك قيد المراجعة بالفعل. يرجى انتظار مراجعة الإدارة.',
+  invalid_plan: 'الباقة المختارة غير متاحة حالياً.',
+  subscription_not_found: 'تعذر العثور على طلب الاشتراك المطلوب.',
+  already_reviewed: 'تمت مراجعة طلب الاشتراك هذا مسبقاً.',
+  dates_unavailable: 'هذه التواريخ غير متاحة.',
+  owner_not_verified: 'يجب توثيق حسابك قبل نشر الإعلان.',
+  phone_invalid: 'رقم الموبايل المصري غير صحيح (يجب أن يبدأ بـ 010 أو 011 أو 012 أو 015 ومكون من ١١ رقماً).',
+  policy_not_accepted: 'يجب الموافقة على الشروط والأحكام.',
+  invalid_state: 'لا يمكن تنفيذ هذا الإجراء في الحالة الحالية.',
+  listing_suspended: 'هذا الإعلان موقوف حالياً من الإدارة.',
+  forbidden: 'غير مسموح لك بتنفيذ هذا الإجراء.',
+  'row-level security': 'غير مسموح لك بتنفيذ هذا الإجراء (صلاحيات غير كافية).',
+  'duplicate key': 'هذا السجل موجود بالفعل.',
 };
 
 const ARABIC_CHAR_REGEX = /[\u0600-\u06FF]/;
@@ -50,6 +54,26 @@ export function toArabicError(
   return 'حدث خطأ غير متوقع، حاول مرة أخرى';
 }
 
+export function extractErrorCodeKey(err: unknown): string | null {
+  if (!err) return null;
+  const msg =
+    typeof err === 'string'
+      ? err
+      : String((err as { message?: string; details?: string }).message ?? '');
+  const lower = msg.toLowerCase();
+  const keys = [
+    'not_authenticated',
+    'quota_exceeded',
+    'rate_limited',
+    'contact_not_available',
+    'duplicate_request',
+    'invalid_plan',
+    'phone_invalid',
+    'forbidden',
+  ];
+  return keys.find((k) => lower.includes(k)) ?? null;
+}
+
 export function formatSupabaseError(err: unknown, fallback?: string): string {
   const defaultFallback = fallback ?? 'حدث خطأ غير متوقع، حاول مرة أخرى';
   if (!err) return defaultFallback;
@@ -80,6 +104,9 @@ export function formatSupabaseError(err: unknown, fallback?: string): string {
   }
   if (lowerMsg.includes('password should be at least')) {
     return 'كلمة المرور يجب أن تتكون من ٦ أحرف على الأقل.';
+  }
+  if (lowerMsg.includes('rate limit') || lowerMsg.includes('email rate limit exceeded')) {
+    return 'تم إرسال طلبات كثيرة في وقت قصير، يرجى الانتظار قليلاً ثم المحاولة مرة أخرى.';
   }
   if (lowerMsg.includes('jwt expired') || lowerMsg.includes('session not found')) {
     return MESSAGES.not_authenticated;

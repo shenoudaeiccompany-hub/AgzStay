@@ -9,7 +9,9 @@ import {
   Eye,
   EyeOff,
   ImagePlus,
+  Lock,
   LogOut,
+  Mail,
   MapPin,
   Phone,
   Plus,
@@ -33,27 +35,36 @@ import {
   getAreasForCity,
   getCitiesForGovernorate,
 } from '@/data/egyptLocations';
-import { normalizeEgyptianPhone, resolveOwnerQuota } from '@/data/subscriptions';
+import { normalizeEgyptianPhone } from '@/data/subscriptions';
 import { isSupabaseConfigured } from '@/lib/supabase';
 import {
   deleteChaletRecord,
-  fetchOwnerChaletsByPhone,
-  fetchSubscriptionsByPhone,
-  insertChaletRecord,
-  loadOwnerSession,
-  saveOwnerSession,
-  updateChaletRecord,
+  ensureOwnerRole,
+  fetchMyProfile,
+  fetchMySubscriptionSummary,
+  fetchOwnerChalets,
+  getCurrentAuthUser,
+  insertChaletWithContact,
+  isValidEgyptianMobile,
+  onAuthStateChange,
+  signInWithEmailPassword,
+  signOutAuth,
+  signUpOwnerAccount,
+  updateChaletWithContact,
+  updateMyProfile,
   uploadPropertyImages,
 } from '@/services/agzstayRepository';
 import type {
   AdvertiserRoleLabel,
+  AdvertiserTypeCode,
   AmenityId,
+  AuthUserSummary,
   Chalet,
   DepositType,
-  OwnerSession,
+  MySubscriptionSummary,
   PropertyType,
   RouteSection,
-  SubscriptionRecord,
+  UserProfile,
 } from '@/types/chalet';
 import { addDaysIso, formatArabicDate, formatIsoDate } from '@/utils/bookingPricing';
 
@@ -72,6 +83,7 @@ interface UnitFormState {
   manualAreaMode: boolean;
   propertyType: PropertyType;
   advertiserRole: AdvertiserRoleLabel;
+  ownerPhone: string;
   priceText: string;
   depositType: DepositType;
   depositValueText: string;
@@ -85,7 +97,7 @@ interface UnitFormState {
   manualImageUrl: string;
 }
 
-function createEmptyUnitForm(): UnitFormState {
+function createEmptyUnitForm(defaultPhone = '', defaultAdvType: AdvertiserTypeCode = 'owner'): UnitFormState {
   const defaultGov = 'مطروح';
   const defaultCity = getCitiesForGovernorate(defaultGov)[0]?.name ?? '';
   const defaultArea = getAreasForCity(defaultGov, defaultCity)[0] ?? '';
@@ -98,7 +110,8 @@ function createEmptyUnitForm(): UnitFormState {
     manualLocationMode: false,
     manualAreaMode: false,
     propertyType: 'شاليه',
-    advertiserRole: 'مالك مباشر',
+    advertiserRole: defaultAdvType === 'broker' ? 'مكتب / وسيط' : 'مالك مباشر',
+    ownerPhone: defaultPhone,
     priceText: '',
     depositType: 'percent',
     depositValueText: '',
@@ -113,7 +126,7 @@ function createEmptyUnitForm(): UnitFormState {
   };
 }
 
-function unitToFormState(unit: Chalet): UnitFormState {
+function unitToFormState(unit: Chalet, fallbackPhone = ''): UnitFormState {
   const govCities = getCitiesForGovernorate(unit.governorate);
   const matchedCity = govCities.some((c) => c.name === unit.city);
   const cityAreas = matchedCity ? getAreasForCity(unit.governorate, unit.city) : [];
@@ -129,6 +142,7 @@ function unitToFormState(unit: Chalet): UnitFormState {
     manualAreaMode: matchedCity && Boolean(unit.areaOrVillage) && !matchedArea,
     propertyType: unit.propertyType,
     advertiserRole: unit.advertiserRole,
+    ownerPhone: unit.ownerPhone || fallbackPhone,
     priceText: unit.pricePerNight > 0 ? String(unit.pricePerNight) : '',
     depositType: unit.depositType,
     depositValueText: unit.depositValue > 0 ? String(unit.depositValue) : '',
@@ -144,22 +158,41 @@ function unitToFormState(unit: Chalet): UnitFormState {
 }
 
 export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
-  const [session, setSession] = useState<OwnerSession | null>(() => loadOwnerSession());
-  const [loginName, setLoginName] = useState(session?.name ?? '');
-  const [loginPhone, setLoginPhone] = useState(session?.phone ?? '');
-  const [loginError, setLoginError] = useState('');
+  const [authChecking, setAuthChecking] = useState(true);
+  const [authUser, setAuthUser] = useState<AuthUserSummary | null>(null);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+
+  // Supabase Auth form states
+  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [signupName, setSignupName] = useState('');
+  const [signupPhone, setSignupPhone] = useState('');
+  const [signupAdvType, setSignupAdvType] = useState<AdvertiserTypeCode>('owner');
+  const [authSubmitting, setAuthSubmitting] = useState(false);
+  const [authError, setAuthError] = useState('');
+  const [authSuccessNotice, setAuthSuccessNotice] = useState('');
+
+  // Profile editor toggle
+  const [isProfileEditOpen, setIsProfileEditOpen] = useState(false);
+  const [editProfileName, setEditProfileName] = useState('');
+  const [editProfilePhone, setEditProfilePhone] = useState('');
+  const [editProfileAdvType, setEditProfileAdvType] = useState<AdvertiserTypeCode>('owner');
+  const [savingProfile, setSavingProfile] = useState(false);
 
   const [units, setUnits] = useState<Chalet[]>([]);
-  const [subscriptions, setSubscriptions] = useState<SubscriptionRecord[]>([]);
+  const [subSummary, setSubSummary] = useState<MySubscriptionSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState('');
-  const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(
-    null
-  );
+  const [feedback, setFeedback] = useState<{
+    type: 'success' | 'error';
+    text: string;
+    showUpgradeCta?: boolean;
+  } | null>(null);
 
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingUnitId, setEditingUnitId] = useState<string | null>(null);
-  const [form, setForm] = useState<UnitFormState>(createEmptyUnitForm);
+  const [form, setForm] = useState<UnitFormState>(() => createEmptyUnitForm());
   const [uploadingImages, setUploadingImages] = useState(false);
   const [savingUnit, setSavingUnit] = useState(false);
 
@@ -168,22 +201,37 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
   const [blockEndDate, setBlockEndDate] = useState(() => formatIsoDate(new Date()));
   const [savingCalendar, setSavingCalendar] = useState(false);
 
-  const loadOwnerData = useCallback(async (activeSession: OwnerSession | null) => {
-    if (!activeSession) return;
+  const loadOwnerData = useCallback(async (user: AuthUserSummary | null) => {
+    if (!user) return;
     setLoading(true);
     setLoadError('');
     try {
-      const [unitsRes, subsRes] = await Promise.all([
-        fetchOwnerChaletsByPhone(activeSession.phone),
-        fetchSubscriptionsByPhone(activeSession.phone),
+      let profRes = await fetchMyProfile();
+      if (profRes.data && profRes.data.role === 'guest') {
+        const upgraded = await ensureOwnerRole(profRes.data.advertiserType);
+        if (upgraded.data) profRes = upgraded;
+      }
+
+      if (profRes.data) {
+        setProfile(profRes.data);
+        setEditProfileName(profRes.data.name);
+        setEditProfilePhone(profRes.data.phone);
+        setEditProfileAdvType(profRes.data.advertiserType);
+      }
+
+      const [unitsRes, subRes] = await Promise.all([
+        fetchOwnerChalets(),
+        fetchMySubscriptionSummary(),
       ]);
+
       if (unitsRes.error) {
         setLoadError(unitsRes.error);
       } else {
         setUnits(unitsRes.data ?? []);
       }
-      if (!subsRes.error && subsRes.data) {
-        setSubscriptions(subsRes.data);
+
+      if (!subRes.error && subRes.data) {
+        setSubSummary(subRes.data);
       }
     } finally {
       setLoading(false);
@@ -191,15 +239,43 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
   }, []);
 
   useEffect(() => {
-    void loadOwnerData(session);
-  }, [loadOwnerData, session]);
+    let active = true;
+    const init = async () => {
+      try {
+        const user = await getCurrentAuthUser();
+        if (!active) return;
+        setAuthUser(user);
+        if (user) {
+          await loadOwnerData(user);
+        }
+      } finally {
+        if (active) setAuthChecking(false);
+      }
+    };
+    void init();
 
-  const quota = useMemo(() => {
-    if (!session) return null;
-    return resolveOwnerQuota(session.phone, subscriptions);
-  }, [session, subscriptions]);
+    const unsubscribe = onAuthStateChange((user) => {
+      setAuthUser(user);
+      if (user) {
+        void loadOwnerData(user);
+      } else {
+        setProfile(null);
+        setUnits([]);
+        setSubSummary(null);
+      }
+    });
 
-  const canAddAnotherUnit = quota ? units.length < quota.maxUnits : true;
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [loadOwnerData]);
+
+  const maxUnits = subSummary?.maxUnits ?? 1;
+  const usedUnitsCount = subSummary ? Math.max(subSummary.usedUnits, units.length) : units.length;
+  const remainingUnitsCount = Math.max(0, maxUnits - usedUnitsCount);
+  const canAddAnotherUnit = usedUnitsCount < maxUnits;
+
   const citiesForSelectedGov = useMemo(
     () => getCitiesForGovernorate(form.governorate),
     [form.governorate]
@@ -209,33 +285,90 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
     [form.governorate, form.city]
   );
 
-  const handleLoginSubmit = (e: React.FormEvent) => {
+  const handleAuthSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const cleanName = loginName.trim();
-    const cleanPhone = normalizeEgyptianPhone(loginPhone);
-    if (cleanName.length < 3) {
-      setLoginError('يرجى إدخال الاسم ثلاثياً على الأقل.');
-      return;
+    setAuthError('');
+    setAuthSuccessNotice('');
+    setAuthSubmitting(true);
+
+    try {
+      if (authMode === 'login') {
+        const res = await signInWithEmailPassword(authEmail, authPassword);
+        if (res.error || !res.data) {
+          setAuthError(res.error ?? 'تعذر تسجيل الدخول.');
+          return;
+        }
+        setAuthUser(res.data);
+        await loadOwnerData(res.data);
+      } else {
+        if (signupName.trim().length < 3) {
+          setAuthError('يرجى إدخال الاسم ثلاثياً على الأقل.');
+          return;
+        }
+        if (!isValidEgyptianMobile(signupPhone)) {
+          setAuthError('يرجى إدخال رقم هاتف مصري صحيح يبدأ بـ 010 أو 011 أو 012 أو 015.');
+          return;
+        }
+        const res = await signUpOwnerAccount({
+          email: authEmail,
+          password: authPassword,
+          name: signupName,
+          phone: signupPhone,
+          advertiserType: signupAdvType,
+        });
+        if (res.error || !res.data) {
+          setAuthError(res.error ?? 'تعذر إنشاء الحساب الجديد.');
+          return;
+        }
+        if (res.data.needsEmailConfirmation) {
+          setAuthSuccessNotice(
+            'تم إنشاء حسابك بنجاح! يرجى فتح رسالة التأكيد المرسلة إلى بريدك الإلكتروني ثم تسجيل الدخول.'
+          );
+          setAuthMode('login');
+          return;
+        }
+        setAuthUser(res.data.user);
+        await loadOwnerData(res.data.user);
+      }
+    } finally {
+      setAuthSubmitting(false);
     }
-    if (cleanPhone.length < 10) {
-      setLoginError('يرجى إدخال رقم هاتف مصري صحيح.');
-      return;
-    }
-    setLoginError('');
-    const nextSession: OwnerSession = {
-      name: cleanName,
-      phone: cleanPhone,
-      loggedInAt: new Date().toISOString(),
-    };
-    saveOwnerSession(nextSession);
-    setSession(nextSession);
   };
 
-  const handleLogout = () => {
-    saveOwnerSession(null);
-    setSession(null);
+  const handleSaveProfile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authUser) return;
+    if (editProfileName.trim().length < 3) {
+      setFeedback({ type: 'error', text: 'يرجى إدخال الاسم ثلاثياً على الأقل.' });
+      return;
+    }
+    setSavingProfile(true);
+    setFeedback(null);
+    try {
+      const res = await updateMyProfile({
+        name: editProfileName,
+        phone: editProfilePhone,
+        advertiserType: editProfileAdvType,
+      });
+      if (res.error || !res.data) {
+        setFeedback({ type: 'error', text: res.error ?? 'تعذر تحديث بيانات الملف الشخصي.' });
+        return;
+      }
+      setProfile(res.data);
+      await ensureOwnerRole(res.data.advertiserType);
+      setIsProfileEditOpen(false);
+      setFeedback({ type: 'success', text: 'تم تحديث بيانات حسابك بنجاح.' });
+    } finally {
+      setSavingProfile(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    await signOutAuth();
+    setAuthUser(null);
+    setProfile(null);
     setUnits([]);
-    setSubscriptions([]);
+    setSubSummary(null);
     setIsFormOpen(false);
     setEditingUnitId(null);
     setFeedback(null);
@@ -246,18 +379,19 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
       setFeedback({
         type: 'error',
         text: 'لقد وصلت إلى الحد الأقصى لعدد الإعلانات في باقتك الحالية. قم بالترقية لإضافة المزيد.',
+        showUpgradeCta: true,
       });
       return;
     }
     setEditingUnitId(null);
-    setForm(createEmptyUnitForm());
+    setForm(createEmptyUnitForm(profile?.phone ?? '', profile?.advertiserType ?? 'owner'));
     setIsFormOpen(true);
     setFeedback(null);
   };
 
   const openEditForm = (unit: Chalet) => {
     setEditingUnitId(unit.id);
-    setForm(unitToFormState(unit));
+    setForm(unitToFormState(unit, profile?.phone ?? ''));
     setIsFormOpen(true);
     setFeedback(null);
   };
@@ -296,12 +430,12 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
   const handleUploadFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? []);
     e.target.value = '';
-    if (files.length === 0 || !session) return;
+    if (files.length === 0 || !authUser) return;
 
     setUploadingImages(true);
     setFeedback(null);
     try {
-      const res = await uploadPropertyImages(files, session.phone);
+      const res = await uploadPropertyImages(files);
       if (res.error || !res.data) {
         setFeedback({ type: 'error', text: res.error ?? 'تعذر رفع الصور.' });
         return;
@@ -330,7 +464,7 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
 
   const handleSaveUnit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!session) return;
+    if (!authUser) return;
 
     if (!isSupabaseConfigured) {
       setFeedback({ type: 'error', text: 'الاتصال بقاعدة البيانات غير مهيأ في هذه البيئة.' });
@@ -340,6 +474,16 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
       setFeedback({
         type: 'error',
         text: 'تجاوزت الحد الأقصى للباقة الحالية. يرجى ترقية الباقة من صفحة باقات الإعلان.',
+        showUpgradeCta: true,
+      });
+      return;
+    }
+
+    const normalizedPhone = normalizeEgyptianPhone(form.ownerPhone || profile?.phone || '');
+    if (!isValidEgyptianMobile(normalizedPhone)) {
+      setFeedback({
+        type: 'error',
+        text: 'يرجى إدخال رقم واتساب مصري صحيح (١١ رقماً يبدأ بـ 010 أو 011 أو 012 أو 015).',
       });
       return;
     }
@@ -365,7 +509,7 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
       .filter(Boolean);
 
     const existingUnit = editingUnitId ? units.find((u) => u.id === editingUnitId) : undefined;
-    const isFeatured = Boolean(quota?.activePlan.isFeaturedEligible || existingUnit?.isFeatured);
+    const ownerDisplayName = profile?.name?.trim() || authUser.email.split('@')[0] || 'معلن AgzStay';
 
     const payload = {
       title: form.title.trim(),
@@ -375,9 +519,8 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
       areaOrVillage: form.areaOrVillage.trim(),
       propertyType: form.propertyType,
       advertiserRole: form.advertiserRole,
-      ownerName: session.name,
-      ownerPhone: session.phone,
-      isFeatured,
+      ownerName: ownerDisplayName,
+      ownerPhone: normalizedPhone,
       depositType: form.depositType,
       depositValue: Number.isFinite(parsedDeposit) && parsedDeposit > 0 ? parsedDeposit : 0,
       pricePerNight: parsedPrice,
@@ -397,21 +540,27 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
     setFeedback(null);
     try {
       const res = editingUnitId
-        ? await updateChaletRecord(editingUnitId, payload)
-        : await insertChaletRecord(payload);
+        ? await updateChaletWithContact(editingUnitId, payload)
+        : await insertChaletWithContact(payload);
 
       if (res.error || !res.data) {
-        setFeedback({ type: 'error', text: res.error ?? 'تعذر حفظ الوحدة.' });
+        setFeedback({
+          type: 'error',
+          text: res.error ?? 'تعذر حفظ الوحدة.',
+          showUpgradeCta: res.errorCode === 'quota_exceeded',
+        });
         return;
       }
 
       setFeedback({
         type: 'success',
-        text: editingUnitId ? 'تم تحديث بيانات الوحدة بنجاح.' : 'تم نشر وحدتك بنجاح وظهرت الآن في الرئيسية.',
+        text: editingUnitId
+          ? 'تم تحديث بيانات الوحدة ورقم التواصل بنجاح.'
+          : 'تم نشر وحدتك بنجاح وحفظ رقم التواصل بأمان.',
       });
       setIsFormOpen(false);
       setEditingUnitId(null);
-      await loadOwnerData(session);
+      await loadOwnerData(authUser);
       onDataChanged?.();
     } finally {
       setSavingUnit(false);
@@ -419,9 +568,9 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
   };
 
   const handleToggleVisibility = async (unit: Chalet) => {
-    if (!session) return;
+    if (!authUser) return;
     const nextStatus = unit.availabilityStatus === 'active' ? 'hidden' : 'active';
-    const res = await updateChaletRecord(unit.id, { availabilityStatus: nextStatus });
+    const res = await updateChaletWithContact(unit.id, { availabilityStatus: nextStatus });
     if (res.error) {
       setFeedback({ type: 'error', text: res.error });
       return;
@@ -430,12 +579,12 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
       type: 'success',
       text: nextStatus === 'active' ? 'تم إظهار الوحدة في البحث.' : 'تم إخفاء الوحدة مؤقتاً.',
     });
-    await loadOwnerData(session);
+    await loadOwnerData(authUser);
     onDataChanged?.();
   };
 
   const handleDeleteUnit = async (unit: Chalet) => {
-    if (!session) return;
+    if (!authUser) return;
     if (!window.confirm(`هل أنت متأكد من حذف "${unit.title}" نهائياً؟`)) return;
     const res = await deleteChaletRecord(unit.id);
     if (res.error) {
@@ -443,12 +592,12 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
       return;
     }
     setFeedback({ type: 'success', text: 'تم حذف الوحدة بنجاح.' });
-    await loadOwnerData(session);
+    await loadOwnerData(authUser);
     onDataChanged?.();
   };
 
   const handleAddBlockedDatesRange = async (unit: Chalet) => {
-    if (!session || !blockStartDate) return;
+    if (!authUser || !blockStartDate) return;
     const end = blockEndDate && blockEndDate >= blockStartDate ? blockEndDate : blockStartDate;
     const addedDates: string[] = [];
     let cursor = blockStartDate;
@@ -460,13 +609,13 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
     const nextBlocked = Array.from(new Set([...unit.blockedDates, ...addedDates])).sort();
     setSavingCalendar(true);
     try {
-      const res = await updateChaletRecord(unit.id, { blockedDates: nextBlocked });
+      const res = await updateChaletWithContact(unit.id, { blockedDates: nextBlocked });
       if (res.error) {
         setFeedback({ type: 'error', text: res.error });
         return;
       }
       setFeedback({ type: 'success', text: 'تم تحديث التواريخ المغلقة بنجاح.' });
-      await loadOwnerData(session);
+      await loadOwnerData(authUser);
       onDataChanged?.();
     } finally {
       setSavingCalendar(false);
@@ -474,84 +623,227 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
   };
 
   const handleRemoveBlockedDate = async (unit: Chalet, dateIso: string) => {
-    if (!session) return;
+    if (!authUser) return;
     const nextBlocked = unit.blockedDates.filter((d) => d !== dateIso);
     setSavingCalendar(true);
     try {
-      const res = await updateChaletRecord(unit.id, { blockedDates: nextBlocked });
+      const res = await updateChaletWithContact(unit.id, { blockedDates: nextBlocked });
       if (res.error) {
         setFeedback({ type: 'error', text: res.error });
         return;
       }
-      await loadOwnerData(session);
+      await loadOwnerData(authUser);
       onDataChanged?.();
     } finally {
       setSavingCalendar(false);
     }
   };
 
-  // Fast Phone + Name Gate
-  if (!session) {
+  if (authChecking) {
+    return (
+      <main className="mx-auto flex w-full max-w-xl flex-1 items-center justify-center px-4 py-16">
+        <div className="inline-flex items-center gap-2 rounded-2xl border border-stone-200/70 bg-white px-6 py-4 text-sm font-bold text-[#1E3A5F] shadow-xs">
+          <RefreshCw className="h-4 w-4 animate-spin text-[#C5A880]" />
+          <span>جاري التحقق من جلسة حسابك...</span>
+        </div>
+      </main>
+    );
+  }
+
+  // Supabase Auth Gate (Login / Sign Up)
+  if (!authUser) {
     return (
       <main className="mx-auto w-full max-w-xl flex-1 px-4 py-12 sm:px-6">
         <div className="rounded-2xl border border-stone-200/70 bg-white p-6 shadow-xs sm:p-8">
-          <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[#1E3A5F] text-white">
-            <Building2 className="h-6 w-6 text-[#C5A880]" />
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[#1E3A5F] text-white">
+              <Building2 className="h-6 w-6 text-[#C5A880]" />
+            </div>
+
+            <div className="flex rounded-xl border border-stone-200/70 bg-[#FAF9F6] p-1 text-xs font-bold">
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthMode('login');
+                  setAuthError('');
+                }}
+                className={`rounded-lg px-3.5 py-1.5 transition ${
+                  authMode === 'login' ? 'bg-[#1E3A5F] text-white shadow-xs' : 'text-[#6B7280]'
+                }`}
+              >
+                تسجيل الدخول
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthMode('signup');
+                  setAuthError('');
+                }}
+                className={`rounded-lg px-3.5 py-1.5 transition ${
+                  authMode === 'signup' ? 'bg-[#1E3A5F] text-white shadow-xs' : 'text-[#6B7280]'
+                }`}
+              >
+                إنشاء حساب جديد
+              </button>
+            </div>
           </div>
-          <h1 className="mt-4 text-2xl font-bold text-[#1E3A5F]">بوابة المعلن السريعة</h1>
+
+          <h1 className="mt-4 text-2xl font-bold text-[#1E3A5F]">
+            {authMode === 'login' ? 'تسجيل دخول المعلن' : 'إنشاء حساب معلن في AgzStay'}
+          </h1>
           <p className="mt-2 text-sm leading-relaxed text-[#6B7280]">
-            أدخل اسمك ورقم هاتفك (واتساب) للدخول الفوري وإدارة وحداتك وتقويم الحجوزات بدون تعقيد.
+            {authMode === 'login'
+              ? 'ادخل بحسابك الموثق لإدارة وحداتك، متابعة باقة الاشتراك، وضبط التواريخ المتاحة بأمان.'
+              : 'أنشئ حساباً جديداً كمُؤجّر أو مكتب عقاري لنشر وحداتك واستقبال التواصل المحمي عبر واتساب.'}
           </p>
 
-          <form onSubmit={handleLoginSubmit} className="mt-6 space-y-4">
-            <div>
-              <label htmlFor="owner-name" className="mb-1.5 block text-xs font-semibold text-slate-700">
-                الاسم بالكامل أو اسم المكتب العقاري
-              </label>
-              <div className="relative">
-                <User className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                <input
-                  id="owner-name"
-                  type="text"
-                  required
-                  value={loginName}
-                  onChange={(e) => setLoginName(e.target.value)}
-                  placeholder="مثال: أ. كريم عبد الله"
-                  className="h-11 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] pl-3 pr-10 text-sm text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
-                />
-              </div>
+          {!isSupabaseConfigured && (
+            <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-900">
+              ملاحظة: يجب تهيئة متغيرات Supabase البيئية في لوحة Secrets قبل تسجيل الدخول.
             </div>
+          )}
+
+          {authSuccessNotice && (
+            <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 p-3.5 text-xs font-bold text-emerald-900">
+              {authSuccessNotice}
+            </div>
+          )}
+
+          <form onSubmit={handleAuthSubmit} className="mt-6 space-y-4">
+            {authMode === 'signup' && (
+              <>
+                <div>
+                  <label
+                    htmlFor="owner-signup-name"
+                    className="mb-1.5 block text-xs font-semibold text-slate-700"
+                  >
+                    الاسم بالكامل أو اسم المكتب العقاري
+                  </label>
+                  <div className="relative">
+                    <User className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                    <input
+                      id="owner-signup-name"
+                      type="text"
+                      required
+                      value={signupName}
+                      onChange={(e) => setSignupName(e.target.value)}
+                      placeholder="مثال: أ. كريم عبد الله"
+                      className="h-11 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] pl-3 pr-10 text-sm text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <div>
+                    <label
+                      htmlFor="owner-signup-phone"
+                      className="mb-1.5 block text-xs font-semibold text-slate-700"
+                    >
+                      رقم الهاتف / واتساب المصري
+                    </label>
+                    <div className="relative">
+                      <Phone className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                      <input
+                        id="owner-signup-phone"
+                        type="tel"
+                        required
+                        dir="ltr"
+                        value={signupPhone}
+                        onChange={(e) => setSignupPhone(e.target.value)}
+                        placeholder="01012345678"
+                        className="h-11 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] pl-3 pr-10 text-right text-sm text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label
+                      htmlFor="owner-signup-type"
+                      className="mb-1.5 block text-xs font-semibold text-slate-700"
+                    >
+                      صفة المعلن
+                    </label>
+                    <select
+                      id="owner-signup-type"
+                      value={signupAdvType}
+                      onChange={(e) => setSignupAdvType(e.target.value as AdvertiserTypeCode)}
+                      className="h-11 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-3 text-sm font-semibold text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
+                    >
+                      <option value="owner">مالك مباشر</option>
+                      <option value="broker">مكتب / وسيط عقاري</option>
+                    </select>
+                  </div>
+                </div>
+              </>
+            )}
 
             <div>
-              <label htmlFor="owner-phone" className="mb-1.5 block text-xs font-semibold text-slate-700">
-                رقم الهاتف / واتساب
+              <label
+                htmlFor="owner-auth-email"
+                className="mb-1.5 block text-xs font-semibold text-slate-700"
+              >
+                البريد الإلكتروني
               </label>
               <div className="relative">
-                <Phone className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                <Mail className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                 <input
-                  id="owner-phone"
-                  type="tel"
+                  id="owner-auth-email"
+                  type="email"
                   required
                   dir="ltr"
-                  value={loginPhone}
-                  onChange={(e) => setLoginPhone(e.target.value)}
-                  placeholder="01012345678"
-                  className="h-11 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] pl-3 pr-10 text-right text-sm text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
+                  value={authEmail}
+                  onChange={(e) => setAuthEmail(e.target.value)}
+                  placeholder="owner@example.com"
+                  className="h-11 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] pl-3 pr-10 text-left text-sm text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
                 />
               </div>
             </div>
 
-            {loginError && (
-              <div className="rounded-xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-xs font-semibold text-red-700">
-                {loginError}
+            <div>
+              <label
+                htmlFor="owner-auth-password"
+                className="mb-1.5 block text-xs font-semibold text-slate-700"
+              >
+                كلمة المرور
+              </label>
+              <div className="relative">
+                <Lock className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                <input
+                  id="owner-auth-password"
+                  type="password"
+                  required
+                  minLength={6}
+                  dir="ltr"
+                  value={authPassword}
+                  onChange={(e) => setAuthPassword(e.target.value)}
+                  placeholder="••••••"
+                  className="h-11 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] pl-3 pr-10 text-left text-sm text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
+                />
+              </div>
+            </div>
+
+            {authError && (
+              <div
+                className="rounded-xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-xs font-semibold text-red-700"
+                role="alert"
+              >
+                {authError}
               </div>
             )}
 
             <button
               type="submit"
-              className="min-h-[48px] w-full rounded-xl bg-[#1E3A5F] px-5 py-3 text-sm font-bold text-white shadow-xs transition hover:bg-[#172E4D]"
+              disabled={authSubmitting}
+              className="inline-flex min-h-[48px] w-full items-center justify-center gap-2 rounded-xl bg-[#1E3A5F] px-5 py-3 text-sm font-bold text-white shadow-xs transition hover:bg-[#172E4D] disabled:opacity-60"
             >
-              دخول إلى بوابة المعلن
+              {authSubmitting && <RefreshCw className="h-4 w-4 animate-spin" />}
+              <span>
+                {authSubmitting
+                  ? 'جاري المعالجة...'
+                  : authMode === 'login'
+                  ? 'دخول إلى بوابة المعلن'
+                  : 'إنشاء حساب المعلن'}
+              </span>
             </button>
           </form>
         </div>
@@ -560,23 +852,39 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
   }
 
   const isMonthlySelected = form.propertyType === 'شقة فاضية';
+  const displayName = profile?.name || authUser.email;
 
   return (
     <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-8 sm:px-6">
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-stone-200/70 bg-white p-5 shadow-xs">
         <div>
-          <span className="inline-flex items-center gap-1.5 rounded-full bg-[#FAF9F6] px-3 py-1 text-xs font-semibold text-[#1E3A5F]">
-            <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
-            أهلاً بك، {session.name} ({session.phone})
-          </span>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-[#FAF9F6] px-3 py-1 text-xs font-semibold text-[#1E3A5F]">
+              <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
+              أهلاً بك، {displayName}
+              {profile?.phone && (
+                <span className="text-[#6B7280]" dir="ltr">
+                  ({profile.phone})
+                </span>
+              )}
+            </span>
+            <button
+              type="button"
+              onClick={() => setIsProfileEditOpen((p) => !p)}
+              className="inline-flex items-center gap-1 rounded-full border border-stone-200/70 bg-white px-2.5 py-1 text-[11px] font-semibold text-[#6B7280] hover:text-[#1E3A5F]"
+            >
+              <Edit3 className="h-3 w-3" />
+              <span>تعديل بياناتي</span>
+            </button>
+          </div>
           <h1 className="mt-2 text-2xl font-bold text-[#1E3A5F]">إدارة وحداتك وإعلاناتك</h1>
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5">
           <button
             type="button"
-            onClick={() => void loadOwnerData(session)}
+            onClick={() => void loadOwnerData(authUser)}
             disabled={loading}
             className="inline-flex min-h-[42px] items-center gap-1.5 rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-3.5 py-2 text-xs font-semibold text-[#1E3A5F] hover:bg-slate-100 disabled:opacity-60"
           >
@@ -599,17 +907,79 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
 
           <button
             type="button"
-            onClick={handleLogout}
+            onClick={() => void handleLogout()}
             className="inline-flex min-h-[42px] items-center gap-1.5 rounded-xl border border-stone-200/70 bg-white px-3.5 py-2 text-xs font-semibold text-[#6B7280] hover:bg-slate-50"
           >
             <LogOut className="h-4 w-4" />
-            <span>تغيير الرقم</span>
+            <span>تسجيل الخروج</span>
           </button>
         </div>
       </div>
 
-      {/* Quota & Subscription Dashboard Card */}
-      {quota && (
+      {/* Inline Profile Editor (`name`, `phone`, `advertiser_type` only) */}
+      {isProfileEditOpen && (
+        <form
+          onSubmit={handleSaveProfile}
+          className="mt-4 rounded-2xl border border-stone-200/70 bg-white p-5 shadow-xs"
+        >
+          <div className="flex items-center justify-between border-b border-stone-100 pb-3">
+            <h2 className="text-sm font-bold text-[#1E3A5F]">تحديث بيانات المعلن في الملف الشخصي</h2>
+            <button
+              type="button"
+              onClick={() => setIsProfileEditOpen(false)}
+              className="rounded-lg p-1 text-[#6B7280] hover:bg-stone-100"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+          <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-[#6B7280]">الاسم</label>
+              <input
+                type="text"
+                required
+                value={editProfileName}
+                onChange={(e) => setEditProfileName(e.target.value)}
+                className="h-10 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-3 text-xs text-[#1F2937]"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-[#6B7280]">رقم الهاتف</label>
+              <input
+                type="tel"
+                required
+                dir="ltr"
+                value={editProfilePhone}
+                onChange={(e) => setEditProfilePhone(e.target.value)}
+                className="h-10 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-3 text-right text-xs text-[#1F2937]"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-[#6B7280]">صفة المعلن</label>
+              <select
+                value={editProfileAdvType}
+                onChange={(e) => setEditProfileAdvType(e.target.value as AdvertiserTypeCode)}
+                className="h-10 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-3 text-xs font-semibold text-[#1F2937]"
+              >
+                <option value="owner">مالك مباشر</option>
+                <option value="broker">مكتب / وسيط</option>
+              </select>
+            </div>
+          </div>
+          <div className="mt-4 flex justify-end gap-2">
+            <button
+              type="submit"
+              disabled={savingProfile}
+              className="rounded-xl bg-[#1E3A5F] px-4 py-2 text-xs font-bold text-white hover:bg-[#172E4D] disabled:opacity-60"
+            >
+              {savingProfile ? 'جاري الحفظ...' : 'حفظ البيانات'}
+            </button>
+          </div>
+        </form>
+      )}
+
+      {/* Quota & Subscription Dashboard Card (`my_subscription` RPC) */}
+      {subSummary && (
         <section
           aria-label="ملخص رصيد الإعلانات والاشتراك"
           className="mt-5 rounded-2xl border border-stone-200/70 bg-white p-5 shadow-xs sm:p-6"
@@ -618,30 +988,32 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
             <div className="flex flex-wrap items-center gap-2">
               <Crown className="h-5 w-5 text-[#C5A880]" />
               <span className="text-base font-bold text-[#1E3A5F]">
-                باقتك الحالية: {quota.activePlan.name}
+                باقتك الحالية: {subSummary.planName}
               </span>
 
               <span
                 className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${
-                  quota.subscriptionStatus === 'active'
+                  subSummary.status === 'active'
                     ? 'bg-emerald-50 text-emerald-700'
-                    : quota.subscriptionStatus === 'pending'
+                    : subSummary.pendingRequest || subSummary.status === 'pending'
                     ? 'bg-amber-50 text-amber-800'
-                    : quota.subscriptionStatus === 'rejected'
+                    : subSummary.status === 'rejected'
                     ? 'bg-red-50 text-red-700'
                     : 'bg-stone-100 text-[#6B7280]'
                 }`}
               >
-                {quota.subscriptionStatus === 'active'
+                {subSummary.status === 'active'
                   ? 'اشتراك مفعّل'
-                  : quota.subscriptionStatus === 'pending'
+                  : subSummary.pendingRequest || subSummary.status === 'pending'
                   ? 'طلب ترقية قيد المراجعة'
-                  : quota.subscriptionStatus === 'rejected'
+                  : subSummary.status === 'rejected'
                   ? 'طلب سابق مرفوض'
+                  : subSummary.status === 'expired'
+                  ? 'انتهى الاشتراك'
                   : 'باقة مجانية'}
               </span>
 
-              {quota.activePlan.isFeaturedEligible && (
+              {subSummary.isFeaturedEligible && (
                 <span className="inline-flex items-center gap-1 rounded-full bg-[#C5A880] px-2.5 py-0.5 text-[11px] font-bold text-[#1F2937]">
                   <Sparkles className="h-3 w-3" />
                   شارة مميز مفعّلة
@@ -670,9 +1042,9 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
                 الإعلانات المستخدمة
               </span>
               <span className="mt-1 block text-xl font-bold text-[#1E3A5F]">
-                {units.length.toLocaleString('ar-EG')}
+                {usedUnitsCount.toLocaleString('ar-EG')}
                 <span className="mr-1 text-xs font-medium text-[#6B7280]">
-                  من أصل {quota.maxUnits.toLocaleString('ar-EG')}
+                  من أصل {maxUnits.toLocaleString('ar-EG')}
                 </span>
               </span>
             </div>
@@ -686,19 +1058,23 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
                   canAddAnotherUnit ? 'text-emerald-700' : 'text-amber-700'
                 }`}
               >
-                {Math.max(0, quota.maxUnits - units.length).toLocaleString('ar-EG')}
+                {remainingUnitsCount.toLocaleString('ar-EG')}
                 <span className="mr-1 text-xs font-medium text-[#6B7280]">
-                  {Math.max(0, quota.maxUnits - units.length) === 1 ? 'إعلان متبقٍ' : 'إعلانات متبقية'}
+                  {remainingUnitsCount === 1 ? 'إعلان متبقٍ' : 'إعلانات متبقية'}
                 </span>
               </span>
             </div>
 
             <div className="rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-4 py-3">
               <span className="block text-[11px] font-semibold text-[#6B7280]">
-                حالة الاشتراك والتمييز
+                صلاحية الاشتراك
               </span>
               <span className="mt-1 block text-sm font-bold text-[#1F2937]">
-                {quota.activePlan.priorityLabel}
+                {subSummary.expiresAt
+                  ? `سارٍ حتى ${formatArabicDate(subSummary.expiresAt.slice(0, 10))}`
+                  : subSummary.isFeaturedEligible
+                  ? 'مفعّل — تمييز تلقائي للوحدات'
+                  : 'مفتوحة (الباقة المجانية)'}
               </span>
             </div>
           </div>
@@ -706,8 +1082,8 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
           {!canAddAnotherUnit && (
             <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-semibold text-amber-950">
               <span>
-                وصلت للحد الأقصى المسموح به في باقتك الحالية ({quota.maxUnits.toLocaleString('ar-EG')}{' '}
-                {quota.maxUnits === 1 ? 'إعلان' : 'إعلانات'}). قم بالترقية لإضافة وحدات جديدة وتفعيل شارة الإعلان المميز.
+                وصلت للحد الأقصى المسموح به في باقتك الحالية ({maxUnits.toLocaleString('ar-EG')}{' '}
+                {maxUnits === 1 ? 'إعلان' : 'إعلانات'}). قم بالترقية لإضافة وحدات جديدة وتفعيل شارة الإعلان المميز.
               </span>
               <button
                 type="button"
@@ -719,15 +1095,15 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
             </div>
           )}
 
-          {quota.pendingSubscription && (
+          {subSummary.pendingRequest && (
             <p className="mt-3 rounded-xl border border-amber-200/80 bg-amber-50/70 px-4 py-2.5 text-xs font-semibold text-amber-900">
-              طلبك قيد المراجعة: {quota.pendingSubscription.planName} — سيتم تفعيل الباقة وتمييز وحداتك تلقائياً فور اعتماد الإيصال من الأدمن.
+              طلبك قيد المراجعة: {subSummary.pendingRequest.planName} — سيتم تفعيل الباقة وتمييز وحداتك تلقائياً فور اعتماد الإيصال من الإدارة.
             </p>
           )}
 
-          {!quota.activeSubscription && !quota.pendingSubscription && quota.latestRejectedSubscription && (
+          {subSummary.status === 'rejected' && subSummary.adminNote && (
             <p className="mt-3 rounded-xl border border-red-200 bg-red-50 px-4 py-2.5 text-xs font-semibold text-red-800">
-              تنبيه: تم رفض طلب اشتراك ({quota.latestRejectedSubscription.planName}). يرجى مراجعة الإيصال وإعادة التقديم من صفحة الباقات.
+              ملاحظة الإدارة على آخر طلب: {subSummary.adminNote}
             </p>
           )}
         </section>
@@ -735,7 +1111,7 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
 
       {feedback && (
         <div
-          className={`mt-5 flex items-center justify-between gap-2 rounded-2xl border px-4 py-3 text-xs font-bold ${
+          className={`mt-5 flex flex-wrap items-center justify-between gap-2 rounded-2xl border px-4 py-3 text-xs font-bold ${
             feedback.type === 'success'
               ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
               : 'border-red-200 bg-red-50 text-red-800'
@@ -750,14 +1126,25 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
             )}
             {feedback.text}
           </span>
-          <button
-            type="button"
-            onClick={() => setFeedback(null)}
-            className="rounded-lg p-1 hover:bg-black/5"
-            aria-label="إغلاق التنبيه"
-          >
-            <X className="h-4 w-4" />
-          </button>
+          <div className="flex items-center gap-2">
+            {feedback.showUpgradeCta && (
+              <button
+                type="button"
+                onClick={() => onNavigate('pricing')}
+                className="rounded-lg bg-[#1E3A5F] px-3 py-1 text-[11px] font-bold text-white hover:bg-[#172E4D]"
+              >
+                ترقية الباقة
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setFeedback(null)}
+              className="rounded-lg p-1 hover:bg-black/5"
+              aria-label="إغلاق التنبيه"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
         </div>
       )}
 
@@ -788,8 +1175,8 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
           </div>
 
           <form onSubmit={handleSaveUnit} className="mt-5 space-y-5">
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              <div className="md:col-span-2">
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+              <div className="md:col-span-3">
                 <label className="mb-1.5 block text-xs font-semibold text-slate-700">
                   عنوان الإعلان
                 </label>
@@ -842,6 +1229,21 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
                     </option>
                   ))}
                 </select>
+              </div>
+
+              <div>
+                <label className="mb-1.5 block text-xs font-semibold text-slate-700">
+                  رقم الواتساب للتواصل (محمي في chalet_contacts)
+                </label>
+                <input
+                  type="tel"
+                  required
+                  dir="ltr"
+                  value={form.ownerPhone}
+                  onChange={(e) => setForm((p) => ({ ...p, ownerPhone: e.target.value }))}
+                  placeholder="01012345678"
+                  className="h-11 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-3 text-right text-sm font-semibold text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
+                />
               </div>
             </div>
 
@@ -1114,7 +1516,7 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <span className="block text-xs font-bold text-[#1E3A5F]">
-                    صور الوحدة (تُرفع في حاوية property-images)
+                    صور الوحدة (تُرفع في مسار حسابك داخل حاوية property-images)
                   </span>
                   <span className="text-[11px] text-[#6B7280]">
                     يتم ضغط الصور تلقائياً بصيغة WebP لتسريع التحميل.
@@ -1292,6 +1694,11 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
                           <strong className="text-[#1E3A5F]">
                             {formatEGP(unit.pricePerNight)} ({getPriceUnitLabel(unit)})
                           </strong>
+                          {unit.ownerPhone && (
+                            <span className="mr-2 text-[#6B7280]" dir="ltr">
+                              • {unit.ownerPhone}
+                            </span>
+                          )}
                         </p>
                       </div>
                     </div>
