@@ -68,6 +68,7 @@ interface UnitFormState {
   city: string;
   areaOrVillage: string;
   manualLocationMode: boolean;
+  manualAreaMode: boolean;
   propertyType: PropertyType;
   advertiserRole: AdvertiserRoleLabel;
   priceText: string;
@@ -94,6 +95,7 @@ function createEmptyUnitForm(): UnitFormState {
     city: defaultCity,
     areaOrVillage: defaultArea,
     manualLocationMode: false,
+    manualAreaMode: false,
     propertyType: 'شاليه',
     advertiserRole: 'مالك مباشر',
     priceText: '',
@@ -122,7 +124,8 @@ function unitToFormState(unit: Chalet): UnitFormState {
     governorate: unit.governorate || ALL_GOVERNORATE_NAMES[0],
     city: unit.city,
     areaOrVillage: unit.areaOrVillage,
-    manualLocationMode: !(matchedCity && (matchedArea || !unit.areaOrVillage)),
+    manualLocationMode: !matchedCity,
+    manualAreaMode: matchedCity && Boolean(unit.areaOrVillage) && !matchedArea,
     propertyType: unit.propertyType,
     advertiserRole: unit.advertiserRole,
     priceText: unit.pricePerNight > 0 ? String(unit.pricePerNight) : '',
@@ -266,7 +269,7 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
       ...prev,
       governorate: gov,
       city: prev.manualLocationMode ? '' : nextCity,
-      areaOrVillage: prev.manualLocationMode ? '' : nextArea,
+      areaOrVillage: prev.manualLocationMode || prev.manualAreaMode ? '' : nextArea,
     }));
   };
 
@@ -275,6 +278,7 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
     setForm((prev) => ({
       ...prev,
       city: cityName,
+      manualAreaMode: false,
       areaOrVillage: nextArea,
     }));
   };
@@ -908,18 +912,42 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
                   <label className="mb-1 block text-xs font-semibold text-[#6B7280]">
                     القرية / المنطقة / الحي
                   </label>
-                  {form.manualLocationMode ? (
-                    <input
-                      type="text"
-                      value={form.areaOrVillage}
-                      onChange={(e) => setForm((p) => ({ ...p, areaOrVillage: e.target.value }))}
-                      placeholder="اكتب اسم القرية أو الحي..."
-                      className="h-11 w-full rounded-xl border border-stone-200/70 bg-white px-3 text-xs font-semibold text-[#1F2937] focus:border-[#1E3A5F] focus:outline-none sm:text-sm"
-                    />
+                  {form.manualLocationMode || form.manualAreaMode ? (
+                    <div className="flex gap-1.5">
+                      <input
+                        type="text"
+                        value={form.areaOrVillage}
+                        onChange={(e) => setForm((p) => ({ ...p, areaOrVillage: e.target.value }))}
+                        placeholder="اكتب اسم القرية أو الكمبوند يدوياً..."
+                        className="h-11 w-full rounded-xl border border-stone-200/70 bg-white px-3 text-xs font-semibold text-[#1F2937] focus:border-[#1E3A5F] focus:outline-none sm:text-sm"
+                      />
+                      {!form.manualLocationMode && areasForSelectedCity.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setForm((p) => ({
+                              ...p,
+                              manualAreaMode: false,
+                              areaOrVillage: areasForSelectedCity[0] ?? '',
+                            }))
+                          }
+                          className="h-11 shrink-0 rounded-xl border border-stone-200/70 bg-white px-2.5 text-[11px] font-semibold text-[#1E3A5F] hover:bg-stone-50"
+                        >
+                          القائمة
+                        </button>
+                      )}
+                    </div>
                   ) : (
                     <select
                       value={form.areaOrVillage}
-                      onChange={(e) => setForm((p) => ({ ...p, areaOrVillage: e.target.value }))}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val === '__custom__') {
+                          setForm((p) => ({ ...p, manualAreaMode: true, areaOrVillage: '' }));
+                        } else {
+                          setForm((p) => ({ ...p, areaOrVillage: val }));
+                        }
+                      }}
                       className="h-11 w-full rounded-xl border border-stone-200/70 bg-white px-3 text-xs font-semibold text-[#1F2937] focus:border-[#1E3A5F] focus:outline-none sm:text-sm"
                     >
                       <option value="">اختر المنطقة (اختياري)</option>
@@ -928,6 +956,7 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
                           {a}
                         </option>
                       ))}
+                      <option value="__custom__">+ أخرى (كتابة اسم قرية أو كمبوند يدوياً)</option>
                     </select>
                   )}
                 </div>

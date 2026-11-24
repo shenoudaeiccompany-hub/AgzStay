@@ -147,10 +147,15 @@ export function PropertyDetailPage({
       lines.push(`التكلفة التقديرية: ${formatEGP(quote.subtotal)}`);
     }
     if (quote.hasInformationalDeposit) {
-      lines.push(`جدية الحجز المذكورة في الإعلان (بعد التواصل والمعاينة): ${quote.depositDisplayText}`);
+      lines.push(
+        `جدية الحجز (${chalet.depositType === 'fixed' ? 'مبلغ ثابت' : 'نسبة مئوية'}): ${quote.depositDisplayText} (تُدفع للمعلن بعد التواصل والمعاينة)`
+      );
+    } else {
+      lines.push('جدية الحجز: تُحدد مباشرة مع المعلن بعد التواصل والمعاينة');
     }
     return lines.join('\n');
   }, [
+    chalet.depositType,
     chalet.ownerName,
     chalet.propertyType,
     chalet.title,
@@ -253,7 +258,7 @@ export function PropertyDetailPage({
             className="inline-flex min-h-[38px] items-center gap-1.5 rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white shadow-xs transition hover:bg-emerald-700"
           >
             <Share2 className="h-3.5 w-3.5" />
-            <span>مشاركة واتساب</span>
+            <span>مشاركة الإعلان</span>
           </a>
         </div>
       </div>

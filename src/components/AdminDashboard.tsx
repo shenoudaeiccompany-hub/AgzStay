@@ -27,7 +27,11 @@ import {
   formatEGP,
   getPriceUnitLabel,
 } from '@/data/chalets';
-import { ALL_GOVERNORATE_NAMES } from '@/data/egyptLocations';
+import {
+  ALL_GOVERNORATE_NAMES,
+  getAreasForCity,
+  getCitiesForGovernorate,
+} from '@/data/egyptLocations';
 import {
   isSupabaseConfigured,
   testSupabaseUnitsConnection,
@@ -95,6 +99,8 @@ export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
   const [editGovernorate, setEditGovernorate] = useState('مطروح');
   const [editCity, setEditCity] = useState('');
   const [editArea, setEditArea] = useState('');
+  const [editManualCity, setEditManualCity] = useState(false);
+  const [editManualArea, setEditManualArea] = useState(false);
   const [savingEdit, setSavingEdit] = useState(false);
 
   // Receipt Preview Modal
@@ -242,14 +248,22 @@ export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
   };
 
   const openEditUnitModal = (unit: Chalet) => {
+    const gov = unit.governorate || ALL_GOVERNORATE_NAMES[0];
+    const govCities = getCitiesForGovernorate(gov);
+    const matchedCity = govCities.some((c) => c.name === unit.city);
+    const cityAreas = matchedCity ? getAreasForCity(gov, unit.city) : [];
+    const matchedArea = matchedCity && cityAreas.includes(unit.areaOrVillage);
+
     setEditingUnit(unit);
     setEditTitle(unit.title);
     setEditPrice(String(unit.pricePerNight));
     setEditPropertyType(unit.propertyType);
     setEditAdvertiserRole(unit.advertiserRole);
-    setEditGovernorate(unit.governorate || ALL_GOVERNORATE_NAMES[0]);
+    setEditGovernorate(gov);
     setEditCity(unit.city);
     setEditArea(unit.areaOrVillage);
+    setEditManualCity(!matchedCity && Boolean(unit.city));
+    setEditManualArea(Boolean(unit.areaOrVillage) && (!matchedCity || !matchedArea));
   };
 
   const handleSaveAdminUnitEdit = async (e: React.FormEvent) => {
@@ -842,12 +856,22 @@ export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
                 </div>
               </div>
 
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                 <div>
                   <label className="mb-1 block text-xs font-semibold text-slate-700">المحافظة</label>
                   <select
                     value={editGovernorate}
-                    onChange={(e) => setEditGovernorate(e.target.value)}
+                    onChange={(e) => {
+                      const nextGov = e.target.value;
+                      const nextCities = getCitiesForGovernorate(nextGov);
+                      const nextCity = nextCities[0]?.name ?? '';
+                      const nextArea = getAreasForCity(nextGov, nextCity)[0] ?? '';
+                      setEditGovernorate(nextGov);
+                      setEditCity(nextCity);
+                      setEditArea(nextArea);
+                      setEditManualCity(false);
+                      setEditManualArea(false);
+                    }}
                     className="h-10 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-2 text-xs"
                   >
                     {ALL_GOVERNORATE_NAMES.map((g) => (
@@ -859,21 +883,104 @@ export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
                 </div>
                 <div>
                   <label className="mb-1 block text-xs font-semibold text-slate-700">المدينة</label>
-                  <input
-                    type="text"
-                    value={editCity}
-                    onChange={(e) => setEditCity(e.target.value)}
-                    className="h-10 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-2.5 text-xs"
-                  />
+                  {editManualCity ? (
+                    <div className="flex gap-1">
+                      <input
+                        type="text"
+                        value={editCity}
+                        onChange={(e) => setEditCity(e.target.value)}
+                        placeholder="اكتب المدينة..."
+                        className="h-10 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-2.5 text-xs"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const firstCity = getCitiesForGovernorate(editGovernorate)[0]?.name ?? '';
+                          setEditManualCity(false);
+                          setEditCity(firstCity);
+                          setEditArea(getAreasForCity(editGovernorate, firstCity)[0] ?? '');
+                        }}
+                        className="h-10 shrink-0 rounded-xl border border-stone-200/70 px-2 text-[11px] font-semibold text-[#1E3A5F]"
+                      >
+                        قائمة
+                      </button>
+                    </div>
+                  ) : (
+                    <select
+                      value={editCity}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val === '__custom__') {
+                          setEditManualCity(true);
+                          setEditManualArea(true);
+                          setEditCity('');
+                          setEditArea('');
+                        } else {
+                          setEditCity(val);
+                          setEditManualArea(false);
+                          setEditArea(getAreasForCity(editGovernorate, val)[0] ?? '');
+                        }
+                      }}
+                      className="h-10 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-2 text-xs"
+                    >
+                      {getCitiesForGovernorate(editGovernorate).map((c) => (
+                        <option key={c.name} value={c.name}>
+                          {c.name}
+                        </option>
+                      ))}
+                      <option value="__custom__">+ أخرى (كتابة يدوياً)</option>
+                    </select>
+                  )}
                 </div>
                 <div>
-                  <label className="mb-1 block text-xs font-semibold text-slate-700">المنطقة</label>
-                  <input
-                    type="text"
-                    value={editArea}
-                    onChange={(e) => setEditArea(e.target.value)}
-                    className="h-10 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-2.5 text-xs"
-                  />
+                  <label className="mb-1 block text-xs font-semibold text-slate-700">
+                    القرية / المنطقة
+                  </label>
+                  {editManualCity || editManualArea ? (
+                    <div className="flex gap-1">
+                      <input
+                        type="text"
+                        value={editArea}
+                        onChange={(e) => setEditArea(e.target.value)}
+                        placeholder="اكتب القرية أو الكمبوند..."
+                        className="h-10 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-2.5 text-xs"
+                      />
+                      {!editManualCity && getAreasForCity(editGovernorate, editCity).length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditManualArea(false);
+                            setEditArea(getAreasForCity(editGovernorate, editCity)[0] ?? '');
+                          }}
+                          className="h-10 shrink-0 rounded-xl border border-stone-200/70 px-2 text-[11px] font-semibold text-[#1E3A5F]"
+                        >
+                          قائمة
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    <select
+                      value={editArea}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val === '__custom__') {
+                          setEditManualArea(true);
+                          setEditArea('');
+                        } else {
+                          setEditArea(val);
+                        }
+                      }}
+                      className="h-10 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-2 text-xs"
+                    >
+                      <option value="">اختر المنطقة (اختياري)</option>
+                      {getAreasForCity(editGovernorate, editCity).map((a) => (
+                        <option key={a} value={a}>
+                          {a}
+                        </option>
+                      ))}
+                      <option value="__custom__">+ أخرى (كتابة قرية أو كمبوند يدوياً)</option>
+                    </select>
+                  )}
                 </div>
               </div>
 

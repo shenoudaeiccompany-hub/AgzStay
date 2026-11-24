@@ -106,7 +106,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
 
   const title = chalet?.title
     ? `${chalet.title} | ${locationLabel || 'AgzStay'} — AgzStay`
-    : 'AgzStay — شاليهات، شقق مفروشة، وشقق فاضية للإيجار في مصر';
+    : 'AgzStay - إجازة ستاي | شاليهات، شقق مفروشة، وشقق فاضية للإيجار في مصر';
 
   const isMonthly = chalet?.property_type === 'شقة فاضية';
   const priceText =
