@@ -35,6 +35,7 @@ import {
   getCitiesForGovernorate,
 } from '@/data/egyptLocations';
 import {
+  getSupabaseConfigStatus,
   isSupabaseConfigured,
   testSupabaseUnitsConnection,
   type SupabaseUnitsTestResult,
@@ -555,6 +556,24 @@ export function AdminDashboard({ onNavigate, onDataChanged }: AdminDashboardProp
                   هذا الحساب غير مضاف بعد كحساب مدير في جدول الصلاحيات.
                 </p>
               )}
+              <div className="mt-2 space-y-1 border-t border-stone-200/70 pt-2 text-[11px] text-[#6B7280]">
+                {getSupabaseConfigStatus().urlHost && (
+                  <p>
+                    المشروع المتصل:{' '}
+                    <span dir="ltr" className="font-mono text-[#1E3A5F]">
+                      {getSupabaseConfigStatus().urlHost}
+                    </span>
+                  </p>
+                )}
+                {accessDiagnostic.userId && (
+                  <p>
+                    معرّف الصف في جدول profiles:{' '}
+                    <span dir="ltr" className="font-mono text-[#1E3A5F]">
+                      {accessDiagnostic.userId}
+                    </span>
+                  </p>
+                )}
+              </div>
               <p className="mt-1.5 text-[11px] text-[#6B7280]">
                 يمكن لمالك المشروع ترقية الحساب إلى مدير من لوحة تحكم Supabase ثم الضغط على «إعادة التحقق».
               </p>

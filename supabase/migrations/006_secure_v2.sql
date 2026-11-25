@@ -42,6 +42,14 @@ alter table public.profiles
   add column if not exists verification_status text not null default 'unverified',
   add column if not exists created_at timestamptz not null default pg_catalog.now();
 
+update public.profiles
+set advertiser_type = case when advertiser_type in ('owner', 'broker') then advertiser_type else 'owner' end,
+    role = case when role in ('guest', 'owner', 'admin') then role else 'guest' end,
+    verification_status = case when verification_status in ('unverified', 'pending', 'verified') then verification_status else 'unverified' end
+where advertiser_type is distinct from case when advertiser_type in ('owner', 'broker') then advertiser_type else 'owner' end
+   or role is distinct from case when role in ('guest', 'owner', 'admin') then role else 'guest' end
+   or verification_status is distinct from case when verification_status in ('unverified', 'pending', 'verified') then verification_status else 'unverified' end;
+
 do $$
 begin
   if not exists (
