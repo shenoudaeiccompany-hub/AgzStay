@@ -609,6 +609,51 @@ export async function checkIsAdmin(): Promise<{
   }
 }
 
+export interface AdminAccessDiagnostic {
+  userId: string;
+  email: string;
+  profileExists: boolean;
+  currentRole: string | null;
+  rpcIsAdmin: boolean;
+  errorMessage: string | null;
+}
+
+export async function fetchAdminAccessDiagnostic(): Promise<AdminAccessDiagnostic | null> {
+  if (!isSupabaseConfigured || !supabase) return null;
+
+  try {
+    const { data: userData, error: userError } = await supabase.auth.getUser();
+    const user = !userError && userData?.user ? userData.user : null;
+    if (!user) return null;
+
+    const [rpcRes, profileRes] = await Promise.all([
+      supabase.rpc('is_admin'),
+      supabase.from('profiles').select('id, role').eq('id', user.id).maybeSingle(),
+    ]);
+
+    const profileRow = profileRes.data as { id?: string; role?: string } | null;
+    const errorMessage = profileRes.error?.message ?? rpcRes.error?.message ?? null;
+
+    return {
+      userId: user.id,
+      email: user.email ?? '',
+      profileExists: Boolean(profileRow?.id),
+      currentRole: profileRow?.role ?? null,
+      rpcIsAdmin: !rpcRes.error && rpcRes.data === true,
+      errorMessage,
+    };
+  } catch (err) {
+    return {
+      userId: '',
+      email: '',
+      profileExists: false,
+      currentRole: null,
+      rpcIsAdmin: false,
+      errorMessage: err instanceof Error ? err.message : 'تعذر فحص حالة الصلاحية.',
+    };
+  }
+}
+
 // ---------- Storage Uploads (`property-images` & private `receipts`) ----------
 
 export async function uploadPropertyImages(files: File[]): Promise<RepoResult<string[]>> {

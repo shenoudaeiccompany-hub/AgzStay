@@ -139,6 +139,25 @@ create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function public.handle_new_user();
 
+-- Backfill any pre-existing auth.users missing from public.profiles (strict 'guest' default)
+insert into public.profiles (id, name, phone, advertiser_type, role, verification_status)
+select
+  u.id,
+  coalesce(
+    nullif(trim(u.raw_user_meta_data ->> 'name'), ''),
+    nullif(pg_catalog.split_part(coalesce(u.email, ''), '@', 1), ''),
+    'مستخدم إجازة ستاي'
+  ),
+  nullif(trim(coalesce(u.raw_user_meta_data ->> 'phone', '')), ''),
+  case
+    when coalesce(u.raw_user_meta_data ->> 'advertiser_type', '') = 'broker' then 'broker'
+    else 'owner'
+  end,
+  'guest',
+  'unverified'
+from auth.users u
+on conflict (id) do nothing;
+
 -- SECURITY INVOKER so current_user reflects the real caller (never 'none' bypass!)
 create or replace function public.prevent_profile_role_self_change()
 returns trigger
