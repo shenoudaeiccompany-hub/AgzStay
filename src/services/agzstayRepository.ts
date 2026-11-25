@@ -579,24 +579,33 @@ export async function checkIsAdmin(): Promise<{
   isAdmin: boolean;
   email: string;
 }> {
-  const user = await getCurrentAuthUser();
-  if (!user || !supabase) {
+  if (!isSupabaseConfigured || !supabase) {
     return { authenticated: false, isAdmin: false, email: '' };
   }
 
   try {
-    const rpcRes = await supabase.rpc('is_admin');
-    if (!rpcRes.error && typeof rpcRes.data === 'boolean') {
-      return { authenticated: true, isAdmin: rpcRes.data, email: user.email };
+    const { data: userData, error: userError } = await supabase.auth.getUser();
+    const user = !userError && userData?.user ? userData.user : null;
+    if (!user) {
+      return { authenticated: false, isAdmin: false, email: '' };
     }
-    const profileRes = await fetchMyProfile();
+
+    const [rpcRes, profileRes] = await Promise.all([
+      supabase.rpc('is_admin'),
+      supabase.from('profiles').select('role').eq('id', user.id).single(),
+    ]);
+
+    const rpcIsAdmin = !rpcRes.error && rpcRes.data === true;
+    const profileRole = (profileRes.data as { role?: string } | null)?.role;
+    const profileIsAdmin = !profileRes.error && profileRole === 'admin';
+
     return {
       authenticated: true,
-      isAdmin: profileRes.data?.role === 'admin',
-      email: user.email,
+      isAdmin: rpcIsAdmin || profileIsAdmin,
+      email: user.email ?? '',
     };
   } catch {
-    return { authenticated: true, isAdmin: false, email: user.email };
+    return { authenticated: false, isAdmin: false, email: '' };
   }
 }
 

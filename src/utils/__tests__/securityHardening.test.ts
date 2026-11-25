@@ -4,6 +4,8 @@ import migrationSql from '../../../supabase/migrations/006_secure_v2.sql?raw';
 import pgTapSql from '../../../supabase/tests/006_secure_v2.test.sql?raw';
 import repoSource from '@/services/agzstayRepository.ts?raw';
 
+import adminDashboardSource from '@/components/AdminDashboard.tsx?raw';
+
 describe('006_secure_v2.sql security & concurrency invariants', () => {
   it('explicitly binds chalets_protect trigger, locks owner profile FOR UPDATE, and merges verification gate', () => {
     expect(migrationSql).toMatch(/create\s+trigger\s+trg_01_chalets_protect/i);
@@ -25,7 +27,9 @@ describe('006_secure_v2.sql security & concurrency invariants', () => {
     expect(fnBody).toContain('on conflict (actor_key, window_start) do update');
     expect(fnBody).toContain('where rl.request_count < v_hourly_limit');
     expect(fnBody).toContain('pg_catalog.inet_client_addr()');
-    expect(fnBody.toLowerCase()).not.toContain('x-forwarded-for');
+    const fnCodeOnly = fnBody.replace(/--.*$/gm, '').toLowerCase();
+    expect(fnCodeOnly).not.toContain('x-forwarded-for');
+    expect(fnCodeOnly).not.toContain('request.headers');
   });
 
   it('pins search_path = empty on all SECURITY DEFINER functions and removes role = none bypasses', () => {
@@ -74,7 +78,7 @@ describe('006_secure_v2.sql security & concurrency invariants', () => {
 
     // Match explicit GRANT SELECT (...) ON public.chalets with repository allowlist
     const grantMatch = migrationSql.match(
-      /grant\s+select\s*\(([\s\S]*?)\)\s*on\s+public\.chalets\s+to\s+anon,\s*authenticated/i
+      /grant\s+select\s*\(([^)]*)\)\s*on\s+public\.chalets\s+to\s+anon,\s*authenticated/i
     );
     expect(grantMatch).not.toBeNull();
     const sqlCols = grantMatch![1]
@@ -94,5 +98,13 @@ describe('006_secure_v2.sql security & concurrency invariants', () => {
     const planMatch = pgTapSql.match(/select\s+plan\((\d+)\)/i);
     expect(planMatch).not.toBeNull();
     expect(Number(planMatch![1])).toBe(35);
+  });
+
+  it('enforces real Supabase Auth & DB role check on /admin without hardcoded emails or PINs', () => {
+    expect(adminDashboardSource).not.toContain('VITE_ADMIN_PIN');
+    expect(adminDashboardSource).toContain('هذا الحساب لا يملك صلاحية الإدارة');
+    expect(adminDashboardSource).toContain('العودة للرئيسية');
+    expect(repoSource).toContain("supabase.rpc('is_admin')");
+    expect(repoSource).toContain("supabase.from('profiles').select('role').eq('id', user.id).single()");
   });
 });

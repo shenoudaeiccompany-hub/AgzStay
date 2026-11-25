@@ -272,6 +272,12 @@ vi.mock('@/lib/supabase', () => {
               data: mockState.profiles.get(id) ?? null,
               error: null,
             }),
+            single: async () => {
+              const found = mockState.profiles.get(id);
+              return found
+                ? { data: found, error: null }
+                : { data: null, error: { message: 'not_found' } };
+            },
           }),
           in: async (_col: string, ids: string[]) => ({
             data: ids.map((id) => mockState.profiles.get(id)).filter(Boolean),
@@ -673,5 +679,30 @@ describe('006_secure_v2.sql secure flows (Auth, chalet_contacts, reveal_listing_
     expect(revSuccesses).toHaveLength(1);
     expect(revErrors).toHaveLength(1);
     expect(revErrors[0]?.error).toContain('مسبقا');
+  });
+
+  it('verifies /admin authorization via supabase.auth.getUser() and dual rpc(is_admin) || profiles.role check', async () => {
+    // 1. Unauthenticated -> authenticated: false
+    mockState.currentUser = null;
+    const unauthCheck = await checkIsAdmin();
+    expect(unauthCheck).toEqual({ authenticated: false, isAdmin: false, email: '' });
+
+    // 2. Logged in owner (non-admin) -> authenticated: true, isAdmin: false
+    mockState.currentUser = { id: 'user-owner-1', email: 'owner@agzstay.com' };
+    const ownerCheck = await checkIsAdmin();
+    expect(ownerCheck).toEqual({
+      authenticated: true,
+      isAdmin: false,
+      email: 'owner@agzstay.com',
+    });
+
+    // 3. Logged in admin -> authenticated: true, isAdmin: true
+    mockState.currentUser = { id: 'user-admin-1', email: 'admin@agzstay.com' };
+    const adminCheck = await checkIsAdmin();
+    expect(adminCheck).toEqual({
+      authenticated: true,
+      isAdmin: true,
+      email: 'admin@agzstay.com',
+    });
   });
 });

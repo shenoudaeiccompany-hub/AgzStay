@@ -57,18 +57,20 @@ import type {
   AdvertiserRoleLabel,
   Chalet,
   PropertyType,
+  RouteSection,
   SubscriptionRecord,
 } from '@/types/chalet';
 import { formatArabicDate } from '@/utils/bookingPricing';
 
 interface AdminDashboardProps {
+  onNavigate?: (section: RouteSection) => void;
   onDataChanged?: () => void;
 }
 
 const QUICK_V2_SQL_HINT = `-- يرجى تنفيذ ملف الترحيل الأمني 006_secure_v2.sql في Supabase SQL Editor
 -- وتعيين role = 'admin' لحساب المدير في جدول profiles.`;
 
-export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
+export function AdminDashboard({ onNavigate, onDataChanged }: AdminDashboardProps) {
   const [authChecking, setAuthChecking] = useState(true);
   const [authState, setAuthState] = useState<{
     authenticated: boolean;
@@ -141,23 +143,30 @@ export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
     }
   }, []);
 
-  const verifyAdminSession = useCallback(async () => {
-    setAuthChecking(true);
-    try {
-      const res = await checkIsAdmin();
-      setAuthState(res);
-      if (res.authenticated && res.isAdmin) {
-        await loadAdminData();
+  const verifyAdminSession = useCallback(
+    async (options?: { silent?: boolean }) => {
+      if (!options?.silent) {
+        setAuthChecking(true);
       }
-    } finally {
-      setAuthChecking(false);
-    }
-  }, [loadAdminData]);
+      try {
+        const res = await checkIsAdmin();
+        setAuthState(res);
+        if (res.authenticated && res.isAdmin) {
+          await loadAdminData();
+        }
+      } finally {
+        if (!options?.silent) {
+          setAuthChecking(false);
+        }
+      }
+    },
+    [loadAdminData]
+  );
 
   useEffect(() => {
     void verifyAdminSession();
     const unsubscribe = onAuthStateChange(() => {
-      void verifyAdminSession();
+      void verifyAdminSession({ silent: true });
     });
     return unsubscribe;
   }, [verifyAdminSession]);
@@ -172,7 +181,7 @@ export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
         setLoginError(res.error ?? 'تعذر تسجيل الدخول.');
         return;
       }
-      await verifyAdminSession();
+      await verifyAdminSession({ silent: true });
     } finally {
       setLoginLoading(false);
     }
@@ -513,19 +522,33 @@ export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
           <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-red-50 text-red-600">
             <ShieldAlert className="h-6 w-6" />
           </div>
-          <h1 className="mt-4 text-xl font-bold text-[#1F2937]">صلاحية الإدارة مطلوبة</h1>
+          <h1 className="mt-4 text-xl font-bold text-[#1F2937]">هذا الحساب لا يملك صلاحية الإدارة</h1>
           <p className="mt-2 text-sm leading-relaxed text-[#6B7280]">
-            الحساب المسجّل حالياً (<span dir="ltr">{authState.email}</span>) لا يملك صلاحية المدير (
-            <code>role = &apos;admin&apos;</code>).
+            الحساب المسجّل حالياً (<span dir="ltr">{authState.email}</span>) غير مصرح له بالدخول إلى لوحة الإدارة (<code>role = &apos;admin&apos;</code>).
           </p>
-          <button
-            type="button"
-            onClick={() => void handleAdminLogout()}
-            className="mt-6 inline-flex min-h-[44px] items-center gap-2 rounded-xl bg-[#1E3A5F] px-5 py-2.5 text-xs font-bold text-white hover:bg-[#172E4D]"
-          >
-            <LogOut className="h-4 w-4" />
-            <span>تسجيل الخروج والدخول بحساب المدير</span>
-          </button>
+          <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+            <button
+              type="button"
+              onClick={() => void handleAdminLogout()}
+              className="inline-flex min-h-[44px] items-center gap-2 rounded-xl bg-[#1E3A5F] px-5 py-2.5 text-xs font-bold text-white hover:bg-[#172E4D]"
+            >
+              <LogOut className="h-4 w-4" />
+              <span>تسجيل الخروج</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (onNavigate) {
+                  onNavigate('home');
+                } else {
+                  window.location.assign('/');
+                }
+              }}
+              className="inline-flex min-h-[44px] items-center gap-2 rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-5 py-2.5 text-xs font-bold text-[#1E3A5F] hover:bg-slate-100"
+            >
+              <span>العودة للرئيسية</span>
+            </button>
+          </div>
         </div>
       </main>
     );

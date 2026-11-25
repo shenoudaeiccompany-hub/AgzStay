@@ -276,7 +276,10 @@ export function App() {
         </Suspense>
       ) : activeSection === 'admin' ? (
         <Suspense fallback={<LazySectionLoader />}>
-          <AdminDashboard onDataChanged={() => void loadChalets(false)} />
+          <AdminDashboard
+            onNavigate={navigateToSection}
+            onDataChanged={() => void loadChalets(false)}
+          />
         </Suspense>
       ) : (
         <>
