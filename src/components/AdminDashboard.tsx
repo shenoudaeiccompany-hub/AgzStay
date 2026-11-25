@@ -80,7 +80,6 @@ export function AdminDashboard({ onNavigate, onDataChanged }: AdminDashboardProp
     email: string;
   }>({ authenticated: false, isAdmin: false, email: '' });
   const [accessDiagnostic, setAccessDiagnostic] = useState<AdminAccessDiagnostic | null>(null);
-  const [promoteSqlCopied, setPromoteSqlCopied] = useState(false);
 
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
@@ -526,79 +525,41 @@ export function AdminDashboard({ onNavigate, onDataChanged }: AdminDashboardProp
 
   // Logged in, but NOT an admin
   if (!authState.isAdmin) {
-    const safeEmailLiteral = authState.email.replace(/'/g, "''");
-    const promoteAdminSql = `insert into public.profiles (id, name, role, advertiser_type, verification_status)\nselect id, coalesce(raw_user_meta_data ->> 'name', split_part(email, '@', 1), 'Admin'), 'admin', 'owner', 'verified'\nfrom auth.users\nwhere lower(email) = lower('${safeEmailLiteral}')\non conflict (id) do update set role = 'admin', verification_status = 'verified';`;
-
-    const handleCopyPromoteSql = async () => {
-      try {
-        await navigator.clipboard?.writeText(promoteAdminSql);
-        setPromoteSqlCopied(true);
-        window.setTimeout(() => setPromoteSqlCopied(false), 2000);
-      } catch {
-        // ignore
-      }
-    };
-
     return (
-      <main className="mx-auto w-full max-w-xl flex-1 px-4 py-12 sm:px-6">
-        <div className="rounded-2xl border border-red-200 bg-white p-6 text-center shadow-xs sm:p-7">
+      <main className="mx-auto w-full max-w-lg flex-1 px-4 py-14 sm:px-6">
+        <div className="rounded-2xl border border-red-200 bg-white p-7 text-center shadow-xs">
           <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-red-50 text-red-600">
             <ShieldAlert className="h-6 w-6" />
           </div>
           <h1 className="mt-4 text-xl font-bold text-[#1F2937]">هذا الحساب لا يملك صلاحية الإدارة</h1>
           <p className="mt-2 text-sm leading-relaxed text-[#6B7280]">
-            الحساب المسجّل حالياً (<span dir="ltr">{authState.email}</span>) غير مصرح له بالدخول إلى لوحة الإدارة (<code>role = &apos;admin&apos;</code>).
+            الحساب المسجّل حالياً (<span dir="ltr">{authState.email}</span>) غير مصرح له بالدخول إلى لوحة الإدارة.
           </p>
 
           {accessDiagnostic && (
-            <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50/70 p-3.5 text-right text-xs text-amber-950">
-              <div className="font-bold text-[#1E3A5F]">تشخيص حالة الحساب في قاعدة البيانات:</div>
-              <ul className="mt-1.5 space-y-1 text-[#4B5563]">
-                <li>
-                  • حالة السجل في <code>profiles</code>:{' '}
-                  <strong className="text-[#1F2937]">
-                    {accessDiagnostic.profileExists
-                      ? `موجود (الدور الحالي: ${accessDiagnostic.currentRole ?? 'غير محدد'})`
-                      : 'غير موجود بعد في جدول profiles'}
-                  </strong>
-                </li>
-                {accessDiagnostic.errorMessage && (
-                  <li className="text-red-700">
-                    • خطأ قاعدة البيانات:{' '}
-                    <span dir="ltr" className="font-mono">
-                      {accessDiagnostic.errorMessage}
-                    </span>
-                  </li>
-                )}
-              </ul>
+            <div className="mt-4 rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-4 py-3 text-xs text-[#4B5563]">
+              {accessDiagnostic.errorMessage ? (
+                <p className="font-medium text-red-700">
+                  تعذر التحقق من جدول الصلاحيات في قاعدة البيانات. يرجى التأكد من تطبيق الترحيل الأمني على Supabase.
+                </p>
+              ) : accessDiagnostic.profileExists ? (
+                <p>
+                  الدور الحالي لهذا الحساب في قاعدة البيانات:{' '}
+                  <strong className="text-[#1E3A5F]">
+                    {accessDiagnostic.currentRole ?? 'غير محدد'}
+                  </strong>{' '}
+                  (المطلوب: <strong className="text-[#1E3A5F]">admin</strong>).
+                </p>
+              ) : (
+                <p>
+                  هذا الحساب غير مضاف بعد كحساب مدير في جدول الصلاحيات.
+                </p>
+              )}
+              <p className="mt-1.5 text-[11px] text-[#6B7280]">
+                يمكن لمالك المشروع ترقية الحساب إلى مدير من لوحة تحكم Supabase ثم الضغط على «إعادة التحقق».
+              </p>
             </div>
           )}
-
-          <div className="mt-4 rounded-xl border border-stone-200/70 bg-[#FAF9F6] p-3.5 text-right">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="text-xs font-bold text-[#1E3A5F]">
-                لتفعيل صلاحية المدير لهذا الحساب، شغّل الأمر التالي في Supabase SQL Editor (بعد تنفيذ 006_secure_v2.sql):
-              </span>
-              <button
-                type="button"
-                onClick={() => void handleCopyPromoteSql()}
-                className="inline-flex items-center gap-1 rounded-lg border border-stone-200 bg-white px-2.5 py-1 text-[11px] font-bold text-[#1E3A5F] hover:bg-slate-50"
-              >
-                {promoteSqlCopied ? (
-                  <Check className="h-3.5 w-3.5 text-emerald-600" />
-                ) : (
-                  <Copy className="h-3.5 w-3.5" />
-                )}
-                <span>{promoteSqlCopied ? 'تم النسخ' : 'نسخ SQL'}</span>
-              </button>
-            </div>
-            <pre
-              dir="ltr"
-              className="mt-2 overflow-x-auto rounded-lg bg-[#1F2937] p-3 text-left font-mono text-[11px] leading-relaxed text-stone-100"
-            >
-              {promoteAdminSql}
-            </pre>
-          </div>
 
           <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
             <button
