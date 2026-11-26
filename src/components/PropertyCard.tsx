@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import {
+  BadgeCheck,
   Bath,
   BedDouble,
   Briefcase,
@@ -100,8 +101,8 @@ export function PropertyCard({
           />
         </button>
 
-        {/* Bottom Advertiser Role Badge */}
-        <div className="absolute bottom-3 right-3">
+        {/* Bottom Advertiser Role & Verified Badges */}
+        <div className="absolute bottom-3 right-3 flex flex-wrap items-center gap-1.5">
           {isDirectOwner ? (
             <span className="inline-flex items-center gap-1 rounded-full bg-emerald-600/95 px-2.5 py-1 text-[11px] font-semibold text-white shadow-xs backdrop-blur-sm">
               <ShieldCheck className="h-3.5 w-3.5" />
@@ -111,6 +112,12 @@ export function PropertyCard({
             <span className="inline-flex items-center gap-1 rounded-full bg-[#1E3A5F]/90 px-2.5 py-1 text-[11px] font-semibold text-white shadow-xs backdrop-blur-sm">
               <Briefcase className="h-3.5 w-3.5 text-[#C5A880]" />
               مكتب / وسيط
+            </span>
+          )}
+          {property.ownerVerified && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-white/95 px-2.5 py-1 text-[11px] font-bold text-emerald-700 shadow-xs backdrop-blur-sm">
+              <BadgeCheck className="h-3.5 w-3.5 text-emerald-600" />
+              معلن موثق
             </span>
           )}
         </div>

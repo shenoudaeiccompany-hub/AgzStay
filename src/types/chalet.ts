@@ -31,6 +31,8 @@ export type SortOption = 'featured' | 'price-asc' | 'price-desc';
 
 export type ViewMode = 'grid' | 'map';
 
+export type RentalSegment = 'all' | 'vacation' | 'monthly';
+
 export interface Coordinates {
   lat: number;
   lng: number;
@@ -55,6 +57,7 @@ export interface Chalet {
    */
   ownerPhone?: string;
   isFeatured: boolean;
+  ownerVerified?: boolean;
   depositType: DepositType;
   depositValue: number;
   pricePerNight: number;
@@ -142,6 +145,7 @@ export interface AuthUserSummary {
 }
 
 export interface FilterState {
+  rentalSegment: RentalSegment;
   searchQuery: string;
   governorate: string;
   city: string;
@@ -163,4 +167,55 @@ export interface BookingRangeLike {
   checkOut?: string;
   nights?: number;
   status?: string;
+}
+
+export type VerificationDocumentType =
+  | 'national-id'
+  | 'resort-card'
+  | 'ownership-contract'
+  | 'authorization';
+
+export type OwnerVerificationStatus = 'unverified' | 'pending' | 'verified';
+
+export interface OwnerVerificationRecord {
+  id: string;
+  ownerId: string;
+  ownerName: string;
+  phone: string;
+  documentType: VerificationDocumentType;
+  documentNumber: string;
+  documentPath: string;
+  status: OwnerVerificationStatus;
+  rejectionReason?: string;
+  submittedAt: string;
+  reviewedAt?: string;
+}
+
+export interface ChaletRevealStat {
+  chaletId: string;
+  totalReveals: number;
+  revealsLast7Days: number;
+  lastRevealedAt?: string;
+}
+
+export interface OwnerRevealStats {
+  totalReveals: number;
+  revealsLast7Days: number;
+  revealsLast30Days: number;
+  perChalet: Record<string, ChaletRevealStat>;
+}
+
+export type ListingReportStatus = 'open' | 'resolved' | 'dismissed';
+
+export interface ListingReportRecord {
+  id: string;
+  chaletId: string;
+  chaletTitle?: string;
+  reporterId?: string;
+  reason: string;
+  details: string;
+  status: ListingReportStatus;
+  adminNote?: string;
+  createdAt: string;
+  reviewedAt?: string;
 }

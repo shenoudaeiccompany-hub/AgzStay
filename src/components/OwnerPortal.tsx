@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  BadgeCheck,
+  BarChart3,
   Building2,
   Calendar,
   CheckCircle2,
@@ -8,6 +10,7 @@ import {
   Edit3,
   Eye,
   EyeOff,
+  FileCheck2,
   ImagePlus,
   Lock,
   LogOut,
@@ -19,6 +22,7 @@ import {
   ShieldCheck,
   Sparkles,
   Trash2,
+  Upload,
   User,
   X,
 } from 'lucide-react';
@@ -40,9 +44,11 @@ import { isSupabaseConfigured } from '@/lib/supabase';
 import {
   deleteChaletRecord,
   ensureOwnerRole,
+  fetchMyOwnerVerification,
   fetchMyProfile,
   fetchMySubscriptionSummary,
   fetchOwnerChalets,
+  fetchOwnerContactRevealStats,
   getCurrentAuthUser,
   insertChaletWithContact,
   isValidEgyptianMobile,
@@ -51,10 +57,12 @@ import {
   signInWithEmailPassword,
   signOutAuth,
   signUpOwnerAccount,
+  submitOwnerVerificationRpc,
   updateChaletWithContact,
   updateMyPassword,
   updateMyProfile,
   uploadPropertyImages,
+  uploadVerificationDocumentFile,
 } from '@/services/agzstayRepository';
 import type {
   AdvertiserRoleLabel,
@@ -64,9 +72,12 @@ import type {
   Chalet,
   DepositType,
   MySubscriptionSummary,
+  OwnerRevealStats,
+  OwnerVerificationRecord,
   PropertyType,
   RouteSection,
   UserProfile,
+  VerificationDocumentType,
 } from '@/types/chalet';
 import { addDaysIso, formatArabicDate, formatIsoDate } from '@/utils/bookingPricing';
 
@@ -198,6 +209,8 @@ export function OwnerPortal({
 
   const [units, setUnits] = useState<Chalet[]>([]);
   const [subSummary, setSubSummary] = useState<MySubscriptionSummary | null>(null);
+  const [myVerification, setMyVerification] = useState<OwnerVerificationRecord | null>(null);
+  const [revealStats, setRevealStats] = useState<OwnerRevealStats | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState('');
   const [feedback, setFeedback] = useState<{
@@ -205,6 +218,14 @@ export function OwnerPortal({
     text: string;
     showUpgradeCta?: boolean;
   } | null>(null);
+
+  // Verification submission form state
+  const [isVerificationFormOpen, setIsVerificationFormOpen] = useState(false);
+  const [verDocType, setVerDocType] = useState<VerificationDocumentType>('national-id');
+  const [verDocNumber, setVerDocNumber] = useState('');
+  const [verPhone, setVerPhone] = useState('');
+  const [verFile, setVerFile] = useState<File | null>(null);
+  const [submittingVerification, setSubmittingVerification] = useState(false);
 
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingUnitId, setEditingUnitId] = useState<string | null>(null);
@@ -233,11 +254,14 @@ export function OwnerPortal({
         setEditProfileName(profRes.data.name);
         setEditProfilePhone(profRes.data.phone);
         setEditProfileAdvType(profRes.data.advertiserType);
+        setVerPhone((prev) => prev || profRes.data?.phone || '');
       }
 
-      const [unitsRes, subRes] = await Promise.all([
+      const [unitsRes, subRes, verRes, statsRes] = await Promise.all([
         fetchOwnerChalets(),
         fetchMySubscriptionSummary(),
+        fetchMyOwnerVerification(),
+        fetchOwnerContactRevealStats(),
       ]);
 
       if (unitsRes.error) {
@@ -248,6 +272,19 @@ export function OwnerPortal({
 
       if (!subRes.error && subRes.data) {
         setSubSummary(subRes.data);
+      }
+
+      if (!verRes.error) {
+        setMyVerification(verRes.data);
+        if (verRes.data) {
+          setVerDocType(verRes.data.documentType);
+          setVerDocNumber(verRes.data.documentNumber);
+          if (verRes.data.phone) setVerPhone(verRes.data.phone);
+        }
+      }
+
+      if (!statsRes.error && statsRes.data) {
+        setRevealStats(statsRes.data);
       }
     } finally {
       setLoading(false);
@@ -281,6 +318,8 @@ export function OwnerPortal({
         setProfile(null);
         setUnits([]);
         setSubSummary(null);
+        setMyVerification(null);
+        setRevealStats(null);
       }
     });
 
@@ -438,9 +477,74 @@ export function OwnerPortal({
     setProfile(null);
     setUnits([]);
     setSubSummary(null);
+    setMyVerification(null);
+    setRevealStats(null);
+    setIsVerificationFormOpen(false);
     setIsFormOpen(false);
     setEditingUnitId(null);
     setFeedback(null);
+  };
+
+  const handleSubmitVerification = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authUser) return;
+    if (!isSupabaseConfigured) {
+      setFeedback({ type: 'error', text: 'الاتصال بقاعدة البيانات غير مهيأ في هذه البيئة.' });
+      return;
+    }
+    const normalizedPhone = normalizeEgyptianPhone(verPhone || profile?.phone || '');
+    if (!isValidEgyptianMobile(normalizedPhone)) {
+      setFeedback({
+        type: 'error',
+        text: 'يرجى إدخال رقم هاتف مصري صحيح لتوثيق الحساب.',
+      });
+      return;
+    }
+    if (!verFile) {
+      setFeedback({
+        type: 'error',
+        text: 'يرجى إرفاق صورة واضحة أو ملف PDF لمستند التوثيق.',
+      });
+      return;
+    }
+
+    setSubmittingVerification(true);
+    setFeedback(null);
+    try {
+      const uploadRes = await uploadVerificationDocumentFile(verFile);
+      if (uploadRes.error || !uploadRes.data) {
+        setFeedback({ type: 'error', text: uploadRes.error ?? 'تعذر رفع مستند التوثيق.' });
+        return;
+      }
+
+      const submitRes = await submitOwnerVerificationRpc({
+        ownerName: profile?.name?.trim() || authUser.email.split('@')[0] || 'معلن AgzStay',
+        phone: normalizedPhone,
+        documentType: verDocType,
+        documentNumber: verDocNumber,
+        documentPath: uploadRes.data.path,
+      });
+
+      if (submitRes.error || !submitRes.data) {
+        setFeedback({
+          type: 'error',
+          text: submitRes.error ?? 'تعذر إرسال طلب التوثيق للمراجعة.',
+        });
+        return;
+      }
+
+      setMyVerification(submitRes.data);
+      setVerFile(null);
+      setIsVerificationFormOpen(false);
+      setFeedback({
+        type: 'success',
+        text: 'تم استلام مستند التوثيق بنجاح. ستظهر شارة «معلن موثق» على وحداتك فور اعتماد الإدارة.',
+      });
+      await loadOwnerData(authUser);
+      onDataChanged?.();
+    } finally {
+      setSubmittingVerification(false);
+    }
   };
 
   const openAddForm = () => {
@@ -1293,6 +1397,233 @@ export function OwnerPortal({
         </section>
       )}
 
+      {/* Owner Contact Reveal Analytics + Verification Status */}
+      <div className="mt-5 grid grid-cols-1 gap-5 lg:grid-cols-2">
+        {/* Privacy-Safe Contact Reveal Stats */}
+        <section
+          aria-label="إحصائيات كشف رقم التواصل"
+          className="rounded-2xl border border-stone-200/70 bg-white p-5 shadow-xs sm:p-6"
+        >
+          <div className="flex items-start justify-between gap-3 border-b border-stone-100 pb-3.5">
+            <div className="flex items-center gap-2">
+              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[#FAF9F6] text-[#1E3A5F]">
+                <BarChart3 className="h-4.5 w-4.5 text-[#C5A880]" />
+              </div>
+              <div>
+                <h2 className="text-sm font-bold text-[#1E3A5F]">
+                  إحصائيات كشف رقم التواصل (التفاعل)
+                </h2>
+                <p className="text-[11px] text-[#6B7280]">
+                  أرقام مجمّعة لعدد مرات طلب رقمك دون كشف هوية الزوار.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-4 grid grid-cols-3 gap-2.5">
+            <div className="rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-3 py-3 text-center">
+              <span className="block text-[11px] font-semibold text-[#6B7280]">الإجمالي الكلي</span>
+              <span className="mt-1 block text-xl font-bold text-[#1E3A5F]">
+                {(revealStats?.totalReveals ?? 0).toLocaleString('ar-EG')}
+              </span>
+            </div>
+            <div className="rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-3 py-3 text-center">
+              <span className="block text-[11px] font-semibold text-[#6B7280]">آخر ٧ أيام</span>
+              <span className="mt-1 block text-xl font-bold text-emerald-700">
+                {(revealStats?.revealsLast7Days ?? 0).toLocaleString('ar-EG')}
+              </span>
+            </div>
+            <div className="rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-3 py-3 text-center">
+              <span className="block text-[11px] font-semibold text-[#6B7280]">آخر ٣٠ يوماً</span>
+              <span className="mt-1 block text-xl font-bold text-[#1F2937]">
+                {(revealStats?.revealsLast30Days ?? 0).toLocaleString('ar-EG')}
+              </span>
+            </div>
+          </div>
+        </section>
+
+        {/* Owner Verification Card */}
+        <section
+          aria-label="حالة توثيق المعلن"
+          className="rounded-2xl border border-stone-200/70 bg-white p-5 shadow-xs sm:p-6"
+        >
+          {(() => {
+            const effStatus =
+              myVerification?.status ??
+              (profile?.verificationStatus === 'verified'
+                ? 'verified'
+                : profile?.verificationStatus === 'pending'
+                ? 'pending'
+                : 'unverified');
+            const isVerified = effStatus === 'verified';
+            const isPending = effStatus === 'pending';
+
+            return (
+              <>
+                <div className="flex flex-wrap items-start justify-between gap-3 border-b border-stone-100 pb-3.5">
+                  <div className="flex items-center gap-2">
+                    <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[#FAF9F6] text-[#1E3A5F]">
+                      <BadgeCheck
+                        className={`h-5 w-5 ${isVerified ? 'text-emerald-600' : 'text-[#C5A880]'}`}
+                      />
+                    </div>
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h2 className="text-sm font-bold text-[#1E3A5F]">توثيق حساب المعلن</h2>
+                        <span
+                          className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${
+                            isVerified
+                              ? 'bg-emerald-50 text-emerald-700'
+                              : isPending
+                              ? 'bg-amber-50 text-amber-800'
+                              : 'bg-stone-100 text-[#6B7280]'
+                          }`}
+                        >
+                          {isVerified
+                            ? 'حساب موثق'
+                            : isPending
+                            ? 'قيد المراجعة'
+                            : myVerification?.rejectionReason
+                            ? 'مرفوض — يحتاج إعادة رفع'
+                            : 'غير موثق'}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-[#6B7280]">
+                        {isVerified
+                          ? 'شارة «معلن موثق» ظاهرة الآن على جميع وحداتك لرفع ثقة المستأجرين.'
+                          : 'ارفع إثبات الهوية أو ملكية الوحدة للحصول على شارة «معلن موثق».'}
+                      </p>
+                    </div>
+                  </div>
+
+                  {!isPending && (
+                    <button
+                      type="button"
+                      onClick={() => setIsVerificationFormOpen((prev) => !prev)}
+                      className="inline-flex min-h-[38px] items-center gap-1.5 rounded-xl bg-[#1E3A5F] px-3.5 py-1.5 text-xs font-bold text-white hover:bg-[#172E4D]"
+                    >
+                      <FileCheck2 className="h-3.5 w-3.5 text-[#C5A880]" />
+                      <span>
+                        {isVerificationFormOpen
+                          ? 'إخفاء النموذج'
+                          : isVerified
+                          ? 'تحديث المستند'
+                          : 'توثيق الحساب الآن'}
+                      </span>
+                    </button>
+                  )}
+                </div>
+
+                {myVerification?.status === 'unverified' && myVerification.rejectionReason && (
+                  <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-xs font-semibold text-red-800">
+                    سبب رفض الطلب السابق: {myVerification.rejectionReason}
+                  </div>
+                )}
+
+                {isPending && (
+                  <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs font-semibold text-amber-900">
+                    تم استلام مستندك وهو قيد المراجعة من إدارة AgzStay حالياً.
+                  </div>
+                )}
+
+                {isVerificationFormOpen && (
+                  <form onSubmit={handleSubmitVerification} className="mt-4 space-y-3">
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      <div>
+                        <label className="mb-1 block text-xs font-semibold text-[#6B7280]">
+                          نوع المستند
+                        </label>
+                        <select
+                          value={verDocType}
+                          onChange={(e) =>
+                            setVerDocType(e.target.value as VerificationDocumentType)
+                          }
+                          className="h-10 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-2.5 text-xs font-semibold text-[#1F2937]"
+                        >
+                          <option value="national-id">بطاقة رقم قومي</option>
+                          <option value="ownership-contract">عقد ملكية أو إيجار موثق</option>
+                          <option value="resort-card">كارنيه قرية / اتحاد ملاك</option>
+                          <option value="authorization">تفويض رسمي من المالك</option>
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="mb-1 block text-xs font-semibold text-[#6B7280]">
+                          رقم المستند (اختياري)
+                        </label>
+                        <input
+                          type="text"
+                          dir="ltr"
+                          value={verDocNumber}
+                          onChange={(e) => setVerDocNumber(e.target.value)}
+                          placeholder="مثال: آخر ٤ أرقام أو رقم العقد"
+                          className="h-10 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-3 text-left text-xs text-[#1F2937]"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      <div>
+                        <label className="mb-1 block text-xs font-semibold text-[#6B7280]">
+                          رقم الهاتف للتأكيد
+                        </label>
+                        <input
+                          type="tel"
+                          required
+                          dir="ltr"
+                          value={verPhone}
+                          onChange={(e) => setVerPhone(e.target.value)}
+                          placeholder="01012345678"
+                          className="h-10 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-3 text-right text-xs text-[#1F2937]"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="mb-1 block text-xs font-semibold text-[#6B7280]">
+                          ملف المستند (JPG / PNG / WebP / PDF حتى ٥ ميجا)
+                        </label>
+                        <label className="flex h-10 cursor-pointer items-center justify-center gap-2 rounded-xl border border-dashed border-[#1E3A5F]/40 bg-[#FAF9F6] px-3 text-xs font-semibold text-[#1E3A5F] hover:bg-stone-100">
+                          <Upload className="h-3.5 w-3.5" />
+                          <span className="truncate">
+                            {verFile ? verFile.name : 'اختر صورة أو ملف PDF'}
+                          </span>
+                          <input
+                            type="file"
+                            accept="image/jpeg,image/png,image/webp,application/pdf"
+                            onChange={(e) => setVerFile(e.target.files?.[0] ?? null)}
+                            className="sr-only"
+                          />
+                        </label>
+                      </div>
+                    </div>
+
+                    <div className="flex justify-end gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => setIsVerificationFormOpen(false)}
+                        className="rounded-xl border border-stone-200/70 px-3.5 py-2 text-xs font-bold text-[#6B7280]"
+                      >
+                        إلغاء
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={submittingVerification}
+                        className="inline-flex items-center gap-1.5 rounded-xl bg-[#1E3A5F] px-4 py-2 text-xs font-bold text-white hover:bg-[#172E4D] disabled:opacity-60"
+                      >
+                        {submittingVerification && <RefreshCw className="h-3.5 w-3.5 animate-spin" />}
+                        <span>
+                          {submittingVerification ? 'جاري الرفع والإرسال...' : 'إرسال للمراجعة'}
+                        </span>
+                      </button>
+                    </div>
+                  </form>
+                )}
+              </>
+            );
+          })()}
+        </section>
+      </div>
+
       {feedback && (
         <div
           className={`mt-5 flex flex-wrap items-center justify-between gap-2 rounded-2xl border px-4 py-3 text-xs font-bold ${
@@ -1865,6 +2196,24 @@ export function OwnerPortal({
                             <span className="inline-flex items-center gap-1 rounded-full bg-[#C5A880] px-2.5 py-0.5 text-[11px] font-bold text-[#1F2937]">
                               <Sparkles className="h-3 w-3" />
                               مميز
+                            </span>
+                          )}
+                          {unit.ownerVerified && (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11px] font-bold text-emerald-700">
+                              <BadgeCheck className="h-3 w-3" />
+                              معلن موثق
+                            </span>
+                          )}
+                          {revealStats?.perChalet[unit.id] && (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-[#FAF9F6] px-2.5 py-0.5 text-[11px] font-semibold text-[#1E3A5F]">
+                              <Phone className="h-3 w-3 text-[#C5A880]" />
+                              كشف الرقم:{' '}
+                              {revealStats.perChalet[unit.id].totalReveals.toLocaleString('ar-EG')}
+                              {revealStats.perChalet[unit.id].revealsLast7Days > 0 && (
+                                <span className="text-emerald-700">
+                                  ({revealStats.perChalet[unit.id].revealsLast7Days.toLocaleString('ar-EG')} آخر ٧ أيام)
+                                </span>
+                              )}
                             </span>
                           )}
                         </div>

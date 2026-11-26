@@ -29,6 +29,7 @@ import type {
   Chalet,
   FilterState,
   PropertyType,
+  RentalSegment,
   SortOption,
   ViewMode,
 } from '@/types/chalet';
@@ -58,6 +59,7 @@ const SupportContactModal = lazy(() =>
 );
 
 const DEFAULT_FILTERS: FilterState = {
+  rentalSegment: 'all',
   searchQuery: '',
   governorate: 'الكل',
   city: 'الكل',
@@ -179,6 +181,12 @@ export function App() {
 
     const list = allDisplayChalets.filter((chalet) => {
       if (chalet.availabilityStatus !== 'active') return false;
+      if (filters.rentalSegment === 'vacation' && chalet.propertyType === 'شقة فاضية') {
+        return false;
+      }
+      if (filters.rentalSegment === 'monthly' && chalet.propertyType !== 'شقة فاضية') {
+        return false;
+      }
       if (
         hasValidDateRange &&
         chalet.propertyType !== 'شقة فاضية' &&
@@ -317,6 +325,23 @@ export function App() {
             totalResults={filteredChalets.length}
             totalAvailable={allDisplayChalets.length}
             onSearchChange={(searchQuery) => setFilters((prev) => ({ ...prev, searchQuery }))}
+            onRentalSegmentChange={(rentalSegment: RentalSegment) =>
+              setFilters((prev) => {
+                const nextPropertyType =
+                  rentalSegment === 'monthly'
+                    ? 'الكل'
+                    : rentalSegment === 'vacation' && prev.propertyType === 'شقة فاضية'
+                    ? 'الكل'
+                    : prev.propertyType;
+                return {
+                  ...prev,
+                  rentalSegment,
+                  propertyType: nextPropertyType,
+                  checkInDate: rentalSegment === 'monthly' ? '' : prev.checkInDate,
+                  checkOutDate: rentalSegment === 'monthly' ? '' : prev.checkOutDate,
+                };
+              })
+            }
             onGovernorateChange={(governorate) =>
               setFilters((prev) => ({
                 ...prev,
@@ -430,7 +455,13 @@ export function App() {
             <div className="mb-7 flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h2 className="text-xl font-bold text-[#1E3A5F] sm:text-2xl">
-                  {filters.favoritesOnly ? 'وحداتك المفضلة' : 'الوحدات المتاحة للإيجار في مصر'}
+                  {filters.favoritesOnly
+                    ? 'وحداتك المفضلة'
+                    : filters.rentalSegment === 'vacation'
+                    ? 'مصايف وإيجار يومي وأسبوعي'
+                    : filters.rentalSegment === 'monthly'
+                    ? 'شقق الإيجار الشهري والسكني'
+                    : 'الوحدات المتاحة للإيجار في مصر'}
                 </h2>
                 <p className="mt-1 text-xs text-[#6B7280] sm:text-sm">
                   {isInitialLoading

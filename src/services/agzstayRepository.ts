@@ -11,9 +11,15 @@ import type {
   AmenityId,
   AuthUserSummary,
   Chalet,
+  ChaletRevealStat,
   DepositType,
   ListingAvailabilityStatus,
+  ListingReportRecord,
+  ListingReportStatus,
   MySubscriptionSummary,
+  OwnerRevealStats,
+  OwnerVerificationRecord,
+  OwnerVerificationStatus,
   PendingSubscriptionInfo,
   ProfileRole,
   PropertyType,
@@ -22,6 +28,7 @@ import type {
   SubscriptionRecord,
   SubscriptionStatus,
   UserProfile,
+  VerificationDocumentType,
 } from '@/types/chalet';
 import { MESSAGES, extractErrorCodeKey, formatSupabaseError } from '@/utils/arabicErrors';
 import { compressImage } from '@/utils/imageCompression';
@@ -176,6 +183,7 @@ function mapChaletFromRow(row: Record<string, unknown>, ownerPhoneOverride?: str
     ownerName: String(row.owner_name ?? 'معلن AgzStay'),
     ownerPhone: ownerPhoneOverride,
     isFeatured: Boolean(row.is_featured ?? row.featured ?? false),
+    ownerVerified: Boolean(row.owner_verified ?? false),
     depositType: normalizeDepositType(row.deposit_type),
     depositValue: Number.isFinite(depositValueRaw) ? depositValueRaw : 0,
     pricePerNight: Number(row.price_per_night ?? 0),
@@ -1551,4 +1559,455 @@ export async function linkLegacyOwner(
     };
   }
 }
+
+// ---------- Owner Verification Workflow (`008_verification_reports_and_stats.sql`) ----------
+
+function mapVerificationFromRow(row: Record<string, unknown>): OwnerVerificationRecord {
+  const docTypeRaw = String(row.document_type ?? 'national-id');
+  const documentType: VerificationDocumentType =
+    docTypeRaw === 'resort-card' ||
+    docTypeRaw === 'ownership-contract' ||
+    docTypeRaw === 'authorization'
+      ? docTypeRaw
+      : 'national-id';
+
+  const statusRaw = String(row.status ?? 'pending');
+  const status: OwnerVerificationStatus =
+    statusRaw === 'verified' || statusRaw === 'unverified' ? statusRaw : 'pending';
+
+  return {
+    id: String(row.id),
+    ownerId: String(row.owner_id),
+    ownerName: String(row.owner_name ?? 'معلن AgzStay'),
+    phone: String(row.phone ?? ''),
+    documentType,
+    documentNumber: String(row.document_number ?? ''),
+    documentPath: String(row.document_path ?? ''),
+    status,
+    rejectionReason: row.rejection_reason ? String(row.rejection_reason) : undefined,
+    submittedAt: String(row.submitted_at ?? new Date().toISOString()),
+    reviewedAt: row.reviewed_at ? String(row.reviewed_at) : undefined,
+  };
+}
+
+export async function uploadVerificationDocumentFile(
+  file: File
+): Promise<RepoResult<{ path: string }>> {
+  if (!isSupabaseConfigured || !supabase) {
+    return { data: null, error: 'الاتصال بـ Supabase غير مهيأ في هذه البيئة.' };
+  }
+  const user = await getCurrentAuthUser();
+  if (!user) {
+    return { data: null, error: MESSAGES.not_authenticated, errorCode: 'not_authenticated' };
+  }
+  if (file.size <= 0 || file.size > MAX_UPLOAD_BYTES) {
+    return { data: null, error: 'حجم مستند التوثيق يجب أن يكون أقل من ٥ ميجابايت.' };
+  }
+  const ext = RECEIPT_MIME_EXT[file.type];
+  if (!ext) {
+    return { data: null, error: 'صيغة المستند غير مدعومة (يُقبل JPG, PNG, WebP, PDF).' };
+  }
+
+  const safeName = sanitizeFileName(file.name, ext);
+  const path = `${user.id}/${Date.now()}_${safeName}`;
+
+  try {
+    const { error } = await supabase.storage
+      .from('verifications')
+      .upload(path, file, { contentType: file.type, upsert: false });
+
+    if (error) {
+      return {
+        data: null,
+        error: formatSupabaseError(error, 'تعذر رفع مستند التوثيق إلى حاوية verifications.'),
+      };
+    }
+
+    return { data: { path }, error: null };
+  } catch (err) {
+    return {
+      data: null,
+      error: formatSupabaseError(err, 'تعذر رفع مستند التوثيق.'),
+    };
+  }
+}
+
+export async function resolveVerificationDocumentUrl(
+  documentPath?: string
+): Promise<RepoResult<string>> {
+  if (!documentPath) {
+    return { data: null, error: 'لا يوجد مستند مرفق لهذا الطلب.' };
+  }
+  if (!isSupabaseConfigured || !supabase) {
+    return { data: null, error: 'الاتصال بـ Supabase غير مهيأ.' };
+  }
+  try {
+    const signed = await supabase.storage
+      .from('verifications')
+      .createSignedUrl(documentPath, 3600);
+    if (!signed.error && signed.data?.signedUrl) {
+      return { data: signed.data.signedUrl, error: null };
+    }
+    return {
+      data: null,
+      error: formatSupabaseError(signed.error, 'تعذر إنشاء رابط معاينة مؤقت لمستند التوثيق.'),
+    };
+  } catch (err) {
+    return { data: null, error: formatSupabaseError(err, 'تعذر فتح مستند التوثيق.') };
+  }
+}
+
+export async function fetchMyOwnerVerification(): Promise<
+  RepoResult<OwnerVerificationRecord | null>
+> {
+  if (!isSupabaseConfigured || !supabase) {
+    return { data: null, error: null };
+  }
+  const user = await getCurrentAuthUser();
+  if (!user) {
+    return { data: null, error: MESSAGES.not_authenticated, errorCode: 'not_authenticated' };
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('owner_verifications')
+      .select('*')
+      .eq('owner_id', user.id)
+      .maybeSingle();
+
+    if (error) {
+      return {
+        data: null,
+        error: formatSupabaseError(error, 'تعذر تحميل حالة توثيق المعلن.'),
+      };
+    }
+
+    return {
+      data: data ? mapVerificationFromRow(data as Record<string, unknown>) : null,
+      error: null,
+    };
+  } catch (err) {
+    return {
+      data: null,
+      error: formatSupabaseError(err, 'تعذر تحميل حالة التوثيق.'),
+    };
+  }
+}
+
+export async function submitOwnerVerificationRpc(payload: {
+  ownerName: string;
+  phone: string;
+  documentType: VerificationDocumentType;
+  documentNumber: string;
+  documentPath: string;
+}): Promise<RepoResult<OwnerVerificationRecord>> {
+  if (!isSupabaseConfigured || !supabase) {
+    return { data: null, error: 'الاتصال بـ Supabase غير مهيأ.' };
+  }
+  const user = await getCurrentAuthUser();
+  if (!user) {
+    return { data: null, error: MESSAGES.not_authenticated, errorCode: 'not_authenticated' };
+  }
+
+  const normalizedPhone = normalizeEgyptianPhone(payload.phone);
+  if (!isValidEgyptianMobile(normalizedPhone)) {
+    return { data: null, error: MESSAGES.phone_invalid, errorCode: 'phone_invalid' };
+  }
+
+  try {
+    const { data, error } = await supabase.rpc('submit_owner_verification', {
+      p_owner_name: payload.ownerName.trim(),
+      p_phone: normalizedPhone,
+      p_document_type: payload.documentType,
+      p_document_number: payload.documentNumber.trim(),
+      p_document_path: payload.documentPath,
+    });
+
+    if (error || !data || typeof data !== 'object') {
+      return {
+        data: null,
+        error: formatSupabaseError(error, 'تعذر إرسال طلب توثيق المعلن.'),
+        errorCode: extractErrorCodeKey(error) ?? undefined,
+      };
+    }
+
+    return { data: mapVerificationFromRow(data as Record<string, unknown>), error: null };
+  } catch (err) {
+    return {
+      data: null,
+      error: formatSupabaseError(err, 'تعذر إرسال طلب التوثيق.'),
+      errorCode: extractErrorCodeKey(err) ?? undefined,
+    };
+  }
+}
+
+export async function fetchAllOwnerVerificationsAdmin(): Promise<
+  RepoResult<OwnerVerificationRecord[]>
+> {
+  if (!isSupabaseConfigured || !supabase) {
+    return { data: [], error: null };
+  }
+  try {
+    const { data, error } = await supabase
+      .from('owner_verifications')
+      .select('*')
+      .order('submitted_at', { ascending: false });
+
+    if (error) {
+      return {
+        data: null,
+        error: formatSupabaseError(error, 'تعذر تحميل طلبات توثيق الملاك.'),
+      };
+    }
+
+    return {
+      data: (data ?? []).map((r) => mapVerificationFromRow(r as Record<string, unknown>)),
+      error: null,
+    };
+  } catch (err) {
+    return { data: null, error: formatSupabaseError(err, 'تعذر تحميل طلبات التوثيق.') };
+  }
+}
+
+export async function adminReviewOwnerVerificationRpc(
+  verificationId: string,
+  decision: 'verified' | 'unverified',
+  rejectionReason?: string
+): Promise<RepoResult<OwnerVerificationRecord>> {
+  if (!isSupabaseConfigured || !supabase) {
+    return { data: null, error: 'الاتصال بـ Supabase غير مهيأ.' };
+  }
+
+  try {
+    const { data, error } = await supabase.rpc('admin_review_owner_verification', {
+      p_verification_id: verificationId,
+      p_decision: decision,
+      p_rejection_reason: rejectionReason?.trim() || null,
+    });
+
+    if (error || !data || typeof data !== 'object') {
+      return {
+        data: null,
+        error: formatSupabaseError(error, 'تعذر تحديث حالة توثيق المعلن.'),
+        errorCode: extractErrorCodeKey(error) ?? undefined,
+      };
+    }
+
+    return { data: mapVerificationFromRow(data as Record<string, unknown>), error: null };
+  } catch (err) {
+    return {
+      data: null,
+      error: formatSupabaseError(err, 'تعذر مراجعة طلب التوثيق.'),
+      errorCode: extractErrorCodeKey(err) ?? undefined,
+    };
+  }
+}
+
+// ---------- Owner Contact Reveal Analytics (`get_owner_contact_reveal_stats`) ----------
+
+export async function fetchOwnerContactRevealStats(): Promise<RepoResult<OwnerRevealStats>> {
+  const emptyStats: OwnerRevealStats = {
+    totalReveals: 0,
+    revealsLast7Days: 0,
+    revealsLast30Days: 0,
+    perChalet: {},
+  };
+
+  if (!isSupabaseConfigured || !supabase) {
+    return { data: emptyStats, error: null };
+  }
+  const user = await getCurrentAuthUser();
+  if (!user) {
+    return { data: null, error: MESSAGES.not_authenticated, errorCode: 'not_authenticated' };
+  }
+
+  try {
+    const { data, error } = await supabase.rpc('get_owner_contact_reveal_stats');
+    if (error) {
+      return {
+        data: null,
+        error: formatSupabaseError(error, 'تعذر تحميل إحصائيات كشف الرقم.'),
+        errorCode: extractErrorCodeKey(error) ?? undefined,
+      };
+    }
+
+    const obj = (data as Record<string, unknown> | null) ?? {};
+    const perMap: Record<string, ChaletRevealStat> = {};
+    const rows = Array.isArray(obj.per_chalet) ? (obj.per_chalet as Record<string, unknown>[]) : [];
+    for (const r of rows) {
+      if (!r.chalet_id) continue;
+      const cid = String(r.chalet_id);
+      perMap[cid] = {
+        chaletId: cid,
+        totalReveals: Number(r.total_reveals ?? 0),
+        revealsLast7Days: Number(r.reveals_last_7_days ?? 0),
+        lastRevealedAt: r.last_revealed_at ? String(r.last_revealed_at) : undefined,
+      };
+    }
+
+    return {
+      data: {
+        totalReveals: Number(obj.total_reveals ?? 0),
+        revealsLast7Days: Number(obj.reveals_last_7_days ?? 0),
+        revealsLast30Days: Number(obj.reveals_last_30_days ?? 0),
+        perChalet: perMap,
+      },
+      error: null,
+    };
+  } catch (err) {
+    return {
+      data: null,
+      error: formatSupabaseError(err, 'تعذر قراءة إحصائيات التفاعل.'),
+    };
+  }
+}
+
+// ---------- Guarded Listing Violation Reports ----------
+
+function mapListingReportFromRow(
+  row: Record<string, unknown>,
+  chaletTitleMap?: Map<string, string>
+): ListingReportRecord {
+  const statusRaw = String(row.status ?? 'open');
+  const status: ListingReportStatus =
+    statusRaw === 'resolved' || statusRaw === 'dismissed' ? statusRaw : 'open';
+  const chaletId = String(row.chalet_id ?? '');
+
+  return {
+    id: String(row.id),
+    chaletId,
+    chaletTitle: row.chalet_title
+      ? String(row.chalet_title)
+      : chaletTitleMap?.get(chaletId),
+    reporterId: row.reporter_id ? String(row.reporter_id) : undefined,
+    reason: String(row.reason ?? ''),
+    details: String(row.details ?? ''),
+    status,
+    adminNote: row.admin_note ? String(row.admin_note) : undefined,
+    createdAt: String(row.created_at ?? new Date().toISOString()),
+    reviewedAt: row.reviewed_at ? String(row.reviewed_at) : undefined,
+  };
+}
+
+export async function submitListingReportRpc(
+  chaletId: string,
+  reason: string,
+  details = ''
+): Promise<RepoResult<{ id: string; status: string }>> {
+  if (!isSupabaseConfigured || !supabase) {
+    return { data: null, error: 'الاتصال بـ Supabase غير مهيأ.' };
+  }
+  const cleanReason = reason.trim();
+  if (!cleanReason) {
+    return { data: null, error: 'يرجى اختيار سبب البلاغ.' };
+  }
+
+  try {
+    const { data, error } = await supabase.rpc('submit_listing_report', {
+      p_chalet_id: chaletId,
+      p_reason: cleanReason,
+      p_details: details.trim(),
+    });
+
+    if (error || !data || typeof data !== 'object') {
+      return {
+        data: null,
+        error: formatSupabaseError(error, 'تعذر إرسال البلاغ الآن.'),
+        errorCode: extractErrorCodeKey(error) ?? undefined,
+      };
+    }
+
+    const r = data as Record<string, unknown>;
+    return {
+      data: {
+        id: String(r.id ?? ''),
+        status: String(r.status ?? 'open'),
+      },
+      error: null,
+    };
+  } catch (err) {
+    return {
+      data: null,
+      error: formatSupabaseError(err, 'تعذر إرسال البلاغ الآن.'),
+      errorCode: extractErrorCodeKey(err) ?? undefined,
+    };
+  }
+}
+
+export async function fetchAllListingReportsAdmin(
+  chaletsForTitleLookup?: Chalet[]
+): Promise<RepoResult<ListingReportRecord[]>> {
+  if (!isSupabaseConfigured || !supabase) {
+    return { data: [], error: null };
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('listing_reports')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      return {
+        data: null,
+        error: formatSupabaseError(error, 'تعذر تحميل البلاغات الواردة.'),
+      };
+    }
+
+    const titleMap = new Map<string, string>();
+    for (const c of chaletsForTitleLookup ?? []) {
+      titleMap.set(c.id, c.title);
+    }
+
+    return {
+      data: (data ?? []).map((row) =>
+        mapListingReportFromRow(row as Record<string, unknown>, titleMap)
+      ),
+      error: null,
+    };
+  } catch (err) {
+    return {
+      data: null,
+      error: formatSupabaseError(err, 'تعذر تحميل البلاغات.'),
+    };
+  }
+}
+
+export async function adminReviewListingReportRpc(
+  reportId: string,
+  action: 'dismiss' | 'resolve_keep' | 'hide_listing',
+  adminNote?: string
+): Promise<RepoResult<ListingReportRecord>> {
+  if (!isSupabaseConfigured || !supabase) {
+    return { data: null, error: 'الاتصال بـ Supabase غير مهيأ.' };
+  }
+
+  try {
+    const { data, error } = await supabase.rpc('admin_review_listing_report', {
+      p_report_id: reportId,
+      p_action: action,
+      p_admin_note: adminNote?.trim() || null,
+    });
+
+    if (error || !data || typeof data !== 'object') {
+      return {
+        data: null,
+        error: formatSupabaseError(error, 'تعذر تحديث حالة البلاغ.'),
+        errorCode: extractErrorCodeKey(error) ?? undefined,
+      };
+    }
+
+    return {
+      data: mapListingReportFromRow(data as Record<string, unknown>),
+      error: null,
+    };
+  } catch (err) {
+    return {
+      data: null,
+      error: formatSupabaseError(err, 'تعذر مراجعة البلاغ.'),
+      errorCode: extractErrorCodeKey(err) ?? undefined,
+    };
+  }
+}
+
 

@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import {
   AlertTriangle,
   ArrowRight,
+  BadgeCheck,
   Bath,
   BedDouble,
   Briefcase,
@@ -9,6 +10,7 @@ import {
   Check,
   CheckCircle2,
   Copy,
+  Flag,
   MapPin,
   MessageCircle,
   Phone,
@@ -18,6 +20,7 @@ import {
   ShieldCheck,
   Sparkles,
   Users,
+  X,
 } from 'lucide-react';
 import {
   ArabicDateRangeField,
@@ -33,7 +36,7 @@ import {
   getShortPriceUnitLabel,
   isMonthlyOnlyProperty,
 } from '@/data/chalets';
-import { revealListingContact } from '@/services/agzstayRepository';
+import { revealListingContact, submitListingReportRpc } from '@/services/agzstayRepository';
 import type { Chalet } from '@/types/chalet';
 import {
   addDaysIso,
@@ -70,6 +73,13 @@ export function PropertyDetailPage({
   const [revealedPhones, setRevealedPhones] = useState<Record<string, string>>({});
   const [revealingContact, setRevealingContact] = useState(false);
   const [contactError, setContactError] = useState<string | null>(null);
+
+  const [isReportOpen, setIsReportOpen] = useState(false);
+  const [reportReason, setReportReason] = useState('سعر مختلف عن الحقيقة');
+  const [reportDetails, setReportDetails] = useState('');
+  const [submittingReport, setSubmittingReport] = useState(false);
+  const [reportError, setReportError] = useState('');
+  const [reportSuccess, setReportSuccess] = useState('');
 
   const todayIso = useMemo(() => formatIsoDate(new Date()), []);
   const blockedSet = useMemo(() => getBlockedDatesSet(chalet), [chalet]);
@@ -247,6 +257,28 @@ export function PropertyDetailPage({
     }
   };
 
+  const handleSubmitReport = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setReportError('');
+    setReportSuccess('');
+    if (chalet.isDemo) {
+      setReportError('هذه وحدة تجريبية للمعاينة فقط ولا يمكن إرسال بلاغ عليها.');
+      return;
+    }
+    setSubmittingReport(true);
+    try {
+      const res = await submitListingReportRpc(chalet.id, reportReason, reportDetails);
+      if (res.error) {
+        setReportError(res.error);
+        return;
+      }
+      setReportSuccess('تم استلام بلاغك بنجاح وستقوم الإدارة بمراجعة الإعلان قريباً.');
+      setReportDetails('');
+    } finally {
+      setSubmittingReport(false);
+    }
+  };
+
   return (
     <main className="mx-auto w-full max-w-7xl flex-1 px-4 pb-28 pt-8 sm:px-6 sm:py-10 lg:pb-12">
       {/* Top Bar */}
@@ -325,6 +357,13 @@ export function PropertyDetailPage({
                 <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-700 px-3 py-1 text-xs font-semibold text-white">
                   <ShieldCheck className="h-3.5 w-3.5" />
                   مالك مباشر
+                </span>
+              )}
+
+              {chalet.ownerVerified && (
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-800">
+                  <BadgeCheck className="h-3.5 w-3.5 text-emerald-600" />
+                  معلن موثق
                 </span>
               )}
 
@@ -636,6 +675,19 @@ export function PropertyDetailPage({
                   <span>إظهار رقم هاتف المعلن للاتصال المباشر</span>
                 </button>
               )}
+
+              <button
+                type="button"
+                onClick={() => {
+                  setReportError('');
+                  setReportSuccess('');
+                  setIsReportOpen(true);
+                }}
+                className="flex min-h-[40px] w-full items-center justify-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold text-[#6B7280] transition hover:bg-red-50 hover:text-red-700"
+              >
+                <Flag className="h-3.5 w-3.5" />
+                <span>الإبلاغ عن مخالفة في هذا الإعلان</span>
+              </button>
             </div>
           </div>
         </aside>
@@ -692,6 +744,122 @@ export function PropertyDetailPage({
           }}
           onClose={() => setIsLightboxOpen(false)}
         />
+      )}
+
+      {/* Listing Violation Report Modal */}
+      {isReportOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="report-listing-title"
+        >
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-stone-100 pb-3">
+              <div className="flex items-center gap-2">
+                <Flag className="h-4 w-4 text-red-600" />
+                <h2 id="report-listing-title" className="text-base font-bold text-[#1E3A5F]">
+                  الإبلاغ عن إعلان مخالف
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsReportOpen(false)}
+                className="rounded-lg p-1.5 text-[#6B7280] hover:bg-stone-100"
+                aria-label="إغلاق"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {reportSuccess ? (
+              <div className="mt-5 space-y-4 text-center">
+                <CheckCircle2 className="mx-auto h-10 w-10 text-emerald-600" />
+                <p className="text-sm font-bold text-emerald-900">{reportSuccess}</p>
+                <button
+                  type="button"
+                  onClick={() => setIsReportOpen(false)}
+                  className="min-h-[42px] w-full rounded-xl bg-[#1E3A5F] px-4 py-2 text-xs font-bold text-white"
+                >
+                  حسناً
+                </button>
+              </div>
+            ) : (
+              <form onSubmit={handleSubmitReport} className="mt-4 space-y-4">
+                <div>
+                  <label
+                    htmlFor="report-reason"
+                    className="mb-1.5 block text-xs font-semibold text-slate-700"
+                  >
+                    سبب البلاغ
+                  </label>
+                  <select
+                    id="report-reason"
+                    value={reportReason}
+                    onChange={(e) => setReportReason(e.target.value)}
+                    className="h-11 w-full rounded-xl border border-stone-200/80 bg-[#FAF9F6] px-3 text-xs font-semibold text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
+                  >
+                    <option value="سعر مختلف عن الحقيقة">سعر مختلف عن الحقيقة</option>
+                    <option value="صور أو بيانات غير مطابقة للواقع">
+                      صور أو بيانات غير مطابقة للواقع
+                    </option>
+                    <option value="رقم لا يرد أو غير صحيح">رقم لا يرد أو غير صحيح</option>
+                    <option value="اشتباه احتيال أو طلب تحويل مسبق">
+                      اشتباه احتيال أو طلب تحويل مسبق
+                    </option>
+                    <option value="وحدة مكررة أو غير متاحة">وحدة مكررة أو غير متاحة</option>
+                    <option value="مخالفة أخرى">مخالفة أخرى</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="report-details"
+                    className="mb-1.5 block text-xs font-semibold text-slate-700"
+                  >
+                    تفاصيل إضافية (اختياري)
+                  </label>
+                  <textarea
+                    id="report-details"
+                    rows={3}
+                    maxLength={500}
+                    value={reportDetails}
+                    onChange={(e) => setReportDetails(e.target.value)}
+                    placeholder="اكتب أي تفاصيل تساعد الإدارة في التحقق..."
+                    className="w-full rounded-xl border border-stone-200/80 bg-[#FAF9F6] p-3 text-xs text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
+                  />
+                </div>
+
+                {reportError && (
+                  <div
+                    className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700"
+                    role="alert"
+                  >
+                    {reportError}
+                  </div>
+                )}
+
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsReportOpen(false)}
+                    className="min-h-[42px] rounded-xl border border-stone-200/70 px-4 py-2 text-xs font-bold text-[#6B7280]"
+                  >
+                    إلغاء
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={submittingReport}
+                    className="inline-flex min-h-[42px] items-center gap-2 rounded-xl bg-red-600 px-5 py-2 text-xs font-bold text-white hover:bg-red-700 disabled:opacity-60"
+                  >
+                    {submittingReport && <RefreshCw className="h-3.5 w-3.5 animate-spin" />}
+                    <span>{submittingReport ? 'جاري الإرسال...' : 'إرسال البلاغ'}</span>
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
       )}
     </main>
   );

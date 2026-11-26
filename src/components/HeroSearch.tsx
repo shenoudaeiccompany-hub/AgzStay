@@ -8,6 +8,7 @@ import {
   Navigation,
   RotateCcw,
   Search,
+  Umbrella,
 } from 'lucide-react';
 import { ArabicDateRangeField } from '@/components/ArabicCalendarPicker';
 import { ADVERTISER_ROLES, PROPERTY_TYPES, formatEGP } from '@/data/chalets';
@@ -20,6 +21,7 @@ import type {
   AdvertiserRoleLabel,
   FilterState,
   PropertyType,
+  RentalSegment,
   SortOption,
   ViewMode,
 } from '@/types/chalet';
@@ -30,6 +32,7 @@ interface HeroSearchProps {
   totalResults: number;
   totalAvailable: number;
   onSearchChange: (val: string) => void;
+  onRentalSegmentChange: (segment: RentalSegment) => void;
   onGovernorateChange: (gov: string) => void;
   onCityChange: (city: string) => void;
   onAreaChange: (area: string) => void;
@@ -50,6 +53,7 @@ export function HeroSearch({
   totalResults,
   totalAvailable,
   onSearchChange,
+  onRentalSegmentChange,
   onGovernorateChange,
   onCityChange,
   onAreaChange,
@@ -64,7 +68,15 @@ export function HeroSearch({
   const cities = getCitiesForGovernorate(filters.governorate);
   const areas = getAreasForCity(filters.governorate, filters.city);
 
+  const segmentPropertyTypes =
+    filters.rentalSegment === 'vacation'
+      ? PROPERTY_TYPES.filter((t) => t !== 'شقة فاضية')
+      : filters.rentalSegment === 'monthly'
+      ? (['الكل', 'شقة فاضية'] as const)
+      : PROPERTY_TYPES;
+
   const hasAnyFilter =
+    filters.rentalSegment !== 'all' ||
     filters.searchQuery.trim() !== '' ||
     filters.governorate !== 'الكل' ||
     filters.city !== 'الكل' ||
@@ -99,6 +111,58 @@ export function HeroSearch({
 
         {/* Unified White Search & Filter Card */}
         <div className="mx-auto mt-8 max-w-6xl rounded-2xl border border-stone-200/70 bg-white p-5 shadow-xs sm:p-6">
+          {/* Segmented Mode Tabs: All / Vacation Daily / Monthly Residential */}
+          <div
+            role="tablist"
+            aria-label="تصنيف نوع الإيجار"
+            className="mb-5 flex flex-wrap items-center gap-2 border-b border-stone-100 pb-4"
+          >
+            <button
+              type="button"
+              role="tab"
+              aria-selected={filters.rentalSegment === 'all'}
+              onClick={() => onRentalSegmentChange('all')}
+              className={`inline-flex min-h-[42px] items-center gap-2 rounded-xl px-4 py-2 text-xs font-bold transition sm:text-sm ${
+                filters.rentalSegment === 'all'
+                  ? 'bg-[#1E3A5F] text-white shadow-xs'
+                  : 'border border-stone-200/70 bg-[#FAF9F6] text-[#1F2937] hover:border-[#C5A880]'
+              }`}
+            >
+              <LayoutGrid className="h-4 w-4 text-[#C5A880]" />
+              <span>كل الوحدات</span>
+            </button>
+
+            <button
+              type="button"
+              role="tab"
+              aria-selected={filters.rentalSegment === 'vacation'}
+              onClick={() => onRentalSegmentChange('vacation')}
+              className={`inline-flex min-h-[42px] items-center gap-2 rounded-xl px-4 py-2 text-xs font-bold transition sm:text-sm ${
+                filters.rentalSegment === 'vacation'
+                  ? 'bg-[#1E3A5F] text-white shadow-xs'
+                  : 'border border-stone-200/70 bg-[#FAF9F6] text-[#1F2937] hover:border-[#C5A880]'
+              }`}
+            >
+              <Umbrella className="h-4 w-4 text-[#C5A880]" />
+              <span>مصايف وإيجار يومي</span>
+            </button>
+
+            <button
+              type="button"
+              role="tab"
+              aria-selected={filters.rentalSegment === 'monthly'}
+              onClick={() => onRentalSegmentChange('monthly')}
+              className={`inline-flex min-h-[42px] items-center gap-2 rounded-xl px-4 py-2 text-xs font-bold transition sm:text-sm ${
+                filters.rentalSegment === 'monthly'
+                  ? 'bg-[#1E3A5F] text-white shadow-xs'
+                  : 'border border-stone-200/70 bg-[#FAF9F6] text-[#1F2937] hover:border-[#C5A880]'
+              }`}
+            >
+              <Building2 className="h-4 w-4 text-[#C5A880]" />
+              <span>إيجار شهري وسكني</span>
+            </button>
+          </div>
+
           {/* Row 1: 3 Cascading Locations + Keyword Search */}
           <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 lg:grid-cols-4">
             {/* Level 1: Governorate */}
@@ -221,7 +285,7 @@ export function HeroSearch({
                   onChange={(e) => onPropertyTypeChange(e.target.value as PropertyType | 'الكل')}
                   className="h-11 w-full appearance-none rounded-xl border border-stone-200/80 bg-[#FAF9F6] pl-3 pr-9 text-xs font-semibold text-[#1F2937] transition focus:border-[#1E3A5F] focus:bg-white focus:outline-none sm:text-sm"
                 >
-                  {PROPERTY_TYPES.map((type) => (
+                  {segmentPropertyTypes.map((type) => (
                     <option key={type} value={type}>
                       {type === 'الكل' ? 'كل أنواع الوحدات' : type}
                     </option>
@@ -261,7 +325,11 @@ export function HeroSearch({
             <div>
               <div className="mb-1.5 flex items-center justify-between text-xs">
                 <label htmlFor="filter-max-price" className="font-semibold text-[#6B7280]">
-                  الحد الأقصى للسعر
+                  {filters.rentalSegment === 'monthly'
+                    ? 'الحد الأقصى للإيجار الشهري'
+                    : filters.rentalSegment === 'vacation'
+                    ? 'الحد الأقصى لسعر الليلة'
+                    : 'الحد الأقصى للسعر'}
                 </label>
                 <span className="font-bold text-[#1E3A5F]">
                   {filters.maxPrice === null ? 'الكل' : formatEGP(sliderVal)}
@@ -286,18 +354,27 @@ export function HeroSearch({
 
             {/* Visual Calendar Range Picker: Check-in & Check-out */}
             <div className="sm:col-span-2 lg:col-span-2">
-              <ArabicDateRangeField
-                checkInDate={filters.checkInDate}
-                checkOutDate={filters.checkOutDate}
-                onChange={onDateRangeChange}
-              />
+              {filters.rentalSegment === 'monthly' ? (
+                <div className="flex h-full min-h-[68px] items-center gap-2.5 rounded-xl border border-stone-200/80 bg-[#FAF9F6] px-4 py-2.5 text-xs text-[#4B5563]">
+                  <Building2 className="h-4 w-4 shrink-0 text-[#C5A880]" />
+                  <span>
+                    وضع الإيجار الشهري والسكني: تُعرض الشقق المتاحة بعقود شهرية أو سنوية — اختر المحافظة والميزانية وحدد موعد المعاينة من صفحة الوحدة.
+                  </span>
+                </div>
+              ) : (
+                <ArabicDateRangeField
+                  checkInDate={filters.checkInDate}
+                  checkOutDate={filters.checkOutDate}
+                  onChange={onDateRangeChange}
+                />
+              )}
             </div>
           </div>
 
           {/* Row 3: Quick Property Pills + Result Count + Sort + Reset + View Switch */}
           <div className="mt-4 flex flex-col gap-3 border-t border-stone-100 pt-4 lg:flex-row lg:items-center lg:justify-between">
             <div className="no-scrollbar flex items-center gap-1.5 overflow-x-auto pb-1 lg:pb-0">
-              {PROPERTY_TYPES.map((type) => {
+              {segmentPropertyTypes.map((type) => {
                 const active = filters.propertyType === type;
                 return (
                   <button

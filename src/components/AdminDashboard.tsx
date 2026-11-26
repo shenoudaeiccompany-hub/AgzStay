@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  BadgeCheck,
   Building2,
   Check,
   CheckCircle2,
@@ -11,6 +12,7 @@ import {
   ExternalLink,
   Eye,
   EyeOff,
+  Flag,
   Link2,
   Lock,
   LogOut,
@@ -42,18 +44,23 @@ import {
   type SupabaseUnitsTestResult,
 } from '@/lib/supabase';
 import {
+  adminReviewListingReportRpc,
+  adminReviewOwnerVerificationRpc,
   adminReviewSubscriptionRpc,
   checkIsAdmin,
   deleteChaletRecord,
   fetchAdminAccessDiagnostic,
   fetchAdminChaletContactsMap,
   fetchAllChaletsFromDb,
+  fetchAllListingReportsAdmin,
+  fetchAllOwnerVerificationsAdmin,
   fetchAllSubscriptionsAdmin,
   insertChaletWithContact,
   isValidEgyptianMobile,
   linkLegacyOwner,
   onAuthStateChange,
   resolveReceiptPreviewUrl,
+  resolveVerificationDocumentUrl,
   signInWithEmailPassword,
   signOutAuth,
   updateChaletWithContact,
@@ -62,9 +69,12 @@ import {
 import type {
   AdvertiserRoleLabel,
   Chalet,
+  ListingReportRecord,
+  OwnerVerificationRecord,
   PropertyType,
   RouteSection,
   SubscriptionRecord,
+  VerificationDocumentType,
 } from '@/types/chalet';
 import { formatArabicDate } from '@/utils/bookingPricing';
 
@@ -73,9 +83,17 @@ interface AdminDashboardProps {
   onDataChanged?: () => void;
 }
 
-const QUICK_V2_SQL_HINT = `-- يرجى تنفيذ ملفي الترحيل الأمني بالترتيب في Supabase SQL Editor:
+const VERIFICATION_DOC_LABELS: Record<VerificationDocumentType, string> = {
+  'national-id': 'بطاقة رقم قومي',
+  'resort-card': 'كارنيه قرية / اتحاد ملاك',
+  'ownership-contract': 'عقد ملكية أو إيجار موثق',
+  authorization: 'تفويض رسمي من المالك',
+};
+
+const QUICK_V2_SQL_HINT = `-- يرجى تنفيذ ملفات الترحيل الأمني بالترتيب في Supabase SQL Editor:
 -- 1) 006_secure_v2.sql
 -- 2) 007_maintenance_and_legacy_triggers_fix.sql
+-- 3) 008_verification_reports_and_stats.sql
 -- وتعيين role = 'admin' لحساب المدير في جدول profiles.`;
 
 export function AdminDashboard({ onNavigate, onDataChanged }: AdminDashboardProps) {
@@ -92,7 +110,9 @@ export function AdminDashboard({ onNavigate, onDataChanged }: AdminDashboardProp
   const [loginLoading, setLoginLoading] = useState(false);
   const [loginError, setLoginError] = useState('');
 
-  const [activeTab, setActiveTab] = useState<'units' | 'subscriptions' | 'legacy'>('units');
+  const [activeTab, setActiveTab] = useState<
+    'units' | 'subscriptions' | 'verifications' | 'reports' | 'legacy'
+  >('units');
   const [units, setUnits] = useState<Chalet[]>([]);
   const [legacyUserId, setLegacyUserId] = useState('');
   const [legacyPhone, setLegacyPhone] = useState('');
@@ -101,6 +121,15 @@ export function AdminDashboard({ onNavigate, onDataChanged }: AdminDashboardProp
   const [subscriptions, setSubscriptions] = useState<SubscriptionRecord[]>([]);
   const [adminNotesBySubId, setAdminNotesBySubId] = useState<Record<string, string>>({});
   const [reviewingSubId, setReviewingSubId] = useState<string | null>(null);
+  const [verifications, setVerifications] = useState<OwnerVerificationRecord[]>([]);
+  const [verFilter, setVerFilter] = useState<'all' | 'pending' | 'verified' | 'unverified'>('all');
+  const [rejectionReasonByVerId, setRejectionReasonByVerId] = useState<Record<string, string>>({});
+  const [reviewingVerId, setReviewingVerId] = useState<string | null>(null);
+  const [reports, setReports] = useState<ListingReportRecord[]>([]);
+  const [reportFilter, setReportFilter] = useState<'all' | 'open' | 'resolved' | 'dismissed'>('all');
+  const [reportNotesById, setReportNotesById] = useState<Record<string, string>>({});
+  const [reviewingReportId, setReviewingReportId] = useState<string | null>(null);
+  const [v008MissingWarning, setV008MissingWarning] = useState(false);
   const [loading, setLoading] = useState(false);
   const [unitSearch, setUnitSearch] = useState('');
   const [subFilter, setSubFilter] = useState<'all' | 'pending' | 'active' | 'rejected'>('all');
@@ -133,11 +162,14 @@ export function AdminDashboard({ onNavigate, onDataChanged }: AdminDashboardProp
 
   const loadAdminData = useCallback(async () => {
     setLoading(true);
+    setV008MissingWarning(false);
     try {
-      const [unitsRes, subsRes, contactsMap] = await Promise.all([
+      const [unitsRes, subsRes, contactsMap, verRes, reportsRes] = await Promise.all([
         fetchAllChaletsFromDb(true),
         fetchAllSubscriptionsAdmin(),
         fetchAdminChaletContactsMap(),
+        fetchAllOwnerVerificationsAdmin(),
+        fetchAllListingReportsAdmin(),
       ]);
       if (unitsRes.error) {
         setFeedback({ type: 'error', text: unitsRes.error });
@@ -149,6 +181,16 @@ export function AdminDashboard({ onNavigate, onDataChanged }: AdminDashboardProp
         setSubscriptions(subsRes.data);
       } else if (subsRes.error) {
         setFeedback({ type: 'error', text: subsRes.error });
+      }
+
+      if (!verRes.error && verRes.data) {
+        setVerifications(verRes.data);
+      }
+      if (!reportsRes.error && reportsRes.data) {
+        setReports(reportsRes.data);
+      }
+      if (verRes.error || reportsRes.error) {
+        setV008MissingWarning(true);
       }
     } finally {
       setLoading(false);
@@ -466,6 +508,88 @@ export function AdminDashboard({ onNavigate, onDataChanged }: AdminDashboardProp
     }
   };
 
+  const handlePreviewVerificationDoc = async (ver: OwnerVerificationRecord) => {
+    const res = await resolveVerificationDocumentUrl(ver.documentPath);
+    if (res.error || !res.data) {
+      setFeedback({ type: 'error', text: res.error ?? 'تعذر فتح مستند التوثيق.' });
+      return;
+    }
+    setReceiptPreviewTitle(`${ver.ownerName} — ${VERIFICATION_DOC_LABELS[ver.documentType]}`);
+    setReceiptPreviewUrl(res.data);
+  };
+
+  const handleReviewVerification = async (
+    ver: OwnerVerificationRecord,
+    decision: 'verified' | 'unverified'
+  ) => {
+    const reason = rejectionReasonByVerId[ver.id]?.trim() || '';
+    if (decision === 'unverified' && !reason) {
+      setFeedback({
+        type: 'error',
+        text: 'يرجى كتابة سبب رفض طلب التوثيق ليظهر للمالك.',
+      });
+      return;
+    }
+
+    setReviewingVerId(ver.id);
+    setFeedback(null);
+    try {
+      const res = await adminReviewOwnerVerificationRpc(ver.id, decision, reason);
+      if (res.error) {
+        setFeedback({ type: 'error', text: res.error });
+        return;
+      }
+      setFeedback({
+        type: 'success',
+        text:
+          decision === 'verified'
+            ? `تم توثيق المعلن "${ver.ownerName}" وتفعيل شارة «معلن موثق» على جميع وحداته.`
+            : `تم رفض طلب توثيق "${ver.ownerName}" وإبلاغه بالسبب.`,
+      });
+      await loadAdminData();
+      onDataChanged?.();
+    } finally {
+      setReviewingVerId(null);
+    }
+  };
+
+  const handleReviewReport = async (
+    report: ListingReportRecord,
+    action: 'dismiss' | 'resolve_keep' | 'hide_listing'
+  ) => {
+    const note = reportNotesById[report.id]?.trim() || '';
+    setReviewingReportId(report.id);
+    setFeedback(null);
+    try {
+      const res = await adminReviewListingReportRpc(report.id, action, note);
+      if (res.error) {
+        setFeedback({ type: 'error', text: res.error });
+        return;
+      }
+      setFeedback({
+        type: 'success',
+        text:
+          action === 'hide_listing'
+            ? 'تم إخفاء الوحدة المخالفة من البحث وإغلاق البلاغ.'
+            : action === 'resolve_keep'
+            ? 'تمت مراجعة البلاغ وإبقاء الوحدة نشطة.'
+            : 'تم تجاهل البلاغ وإغلاقه.',
+      });
+      await loadAdminData();
+      onDataChanged?.();
+    } finally {
+      setReviewingReportId(null);
+    }
+  };
+
+  const unitTitleById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const u of units) {
+      map.set(u.id, u.title);
+    }
+    return map;
+  }, [units]);
+
   const filteredUnits = useMemo(() => {
     const q = unitSearch.trim().toLowerCase();
     if (!q) return units;
@@ -482,7 +606,19 @@ export function AdminDashboard({ onNavigate, onDataChanged }: AdminDashboardProp
     return subscriptions.filter((s) => s.status === subFilter);
   }, [subFilter, subscriptions]);
 
+  const filteredVerifications = useMemo(() => {
+    if (verFilter === 'all') return verifications;
+    return verifications.filter((v) => v.status === verFilter);
+  }, [verFilter, verifications]);
+
+  const filteredReports = useMemo(() => {
+    if (reportFilter === 'all') return reports;
+    return reports.filter((r) => r.status === reportFilter);
+  }, [reportFilter, reports]);
+
   const pendingSubsCount = subscriptions.filter((s) => s.status === 'pending').length;
+  const pendingVerificationsCount = verifications.filter((v) => v.status === 'pending').length;
+  const openReportsCount = reports.filter((r) => r.status === 'open').length;
 
   if (authChecking) {
     return (
@@ -747,6 +883,13 @@ export function AdminDashboard({ onNavigate, onDataChanged }: AdminDashboardProp
         </div>
       )}
 
+      {v008MissingWarning && (
+        <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-semibold text-amber-950">
+          تنبيه: جداول ودوال التوثيق والبلاغات الجديدة تتطلب تشغيل ملف الترحيل{' '}
+          <code className="font-mono">008_verification_reports_and_stats.sql</code> في Supabase SQL Editor لتفعيلها بالكامل.
+        </div>
+      )}
+
       {feedback && (
         <div
           className={`mt-4 flex items-center justify-between gap-2 rounded-2xl border px-4 py-3 text-xs font-bold ${
@@ -769,12 +912,12 @@ export function AdminDashboard({ onNavigate, onDataChanged }: AdminDashboardProp
         </div>
       )}
 
-      {/* Main 2 Tabs */}
+      {/* Main Navigation Tabs */}
       <div className="mt-6 flex flex-wrap gap-2 border-b border-stone-200/70 pb-3">
         <button
           type="button"
           onClick={() => setActiveTab('units')}
-          className={`inline-flex min-h-[42px] items-center gap-2 rounded-xl px-5 py-2 text-sm font-bold transition ${
+          className={`inline-flex min-h-[42px] items-center gap-2 rounded-xl px-4 py-2 text-sm font-bold transition ${
             activeTab === 'units'
               ? 'bg-[#1E3A5F] text-white shadow-xs'
               : 'bg-white text-[#1F2937] hover:bg-slate-100'
@@ -787,14 +930,14 @@ export function AdminDashboard({ onNavigate, onDataChanged }: AdminDashboardProp
         <button
           type="button"
           onClick={() => setActiveTab('subscriptions')}
-          className={`inline-flex min-h-[42px] items-center gap-2 rounded-xl px-5 py-2 text-sm font-bold transition ${
+          className={`inline-flex min-h-[42px] items-center gap-2 rounded-xl px-4 py-2 text-sm font-bold transition ${
             activeTab === 'subscriptions'
               ? 'bg-[#1E3A5F] text-white shadow-xs'
               : 'bg-white text-[#1F2937] hover:bg-slate-100'
           }`}
         >
           <Crown className="h-4 w-4 text-[#C5A880]" />
-          <span>مراجعة اشتراكات الباقات ({subscriptions.length})</span>
+          <span>اشتراكات الباقات ({subscriptions.length})</span>
           {pendingSubsCount > 0 && (
             <span className="rounded-full bg-[#C5A880] px-2 py-0.5 text-[11px] font-bold text-[#1F2937]">
               {pendingSubsCount} جديد
@@ -804,8 +947,44 @@ export function AdminDashboard({ onNavigate, onDataChanged }: AdminDashboardProp
 
         <button
           type="button"
+          onClick={() => setActiveTab('verifications')}
+          className={`inline-flex min-h-[42px] items-center gap-2 rounded-xl px-4 py-2 text-sm font-bold transition ${
+            activeTab === 'verifications'
+              ? 'bg-[#1E3A5F] text-white shadow-xs'
+              : 'bg-white text-[#1F2937] hover:bg-slate-100'
+          }`}
+        >
+          <BadgeCheck className="h-4 w-4 text-[#C5A880]" />
+          <span>توثيق الملاك ({verifications.length})</span>
+          {pendingVerificationsCount > 0 && (
+            <span className="rounded-full bg-[#C5A880] px-2 py-0.5 text-[11px] font-bold text-[#1F2937]">
+              {pendingVerificationsCount} معلق
+            </span>
+          )}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('reports')}
+          className={`inline-flex min-h-[42px] items-center gap-2 rounded-xl px-4 py-2 text-sm font-bold transition ${
+            activeTab === 'reports'
+              ? 'bg-[#1E3A5F] text-white shadow-xs'
+              : 'bg-white text-[#1F2937] hover:bg-slate-100'
+          }`}
+        >
+          <Flag className="h-4 w-4 text-[#C5A880]" />
+          <span>البلاغات ({reports.length})</span>
+          {openReportsCount > 0 && (
+            <span className="rounded-full bg-red-600 px-2 py-0.5 text-[11px] font-bold text-white">
+              {openReportsCount} مفتوح
+            </span>
+          )}
+        </button>
+
+        <button
+          type="button"
           onClick={() => setActiveTab('legacy')}
-          className={`inline-flex min-h-[42px] items-center gap-2 rounded-xl px-5 py-2 text-sm font-bold transition ${
+          className={`inline-flex min-h-[42px] items-center gap-2 rounded-xl px-4 py-2 text-sm font-bold transition ${
             activeTab === 'legacy'
               ? 'bg-[#1E3A5F] text-white shadow-xs'
               : 'bg-white text-[#1F2937] hover:bg-slate-100'
@@ -1096,7 +1275,289 @@ export function AdminDashboard({ onNavigate, onDataChanged }: AdminDashboardProp
         </section>
       )}
 
-      {/* Tab 3: Legacy Owner Linking via `admin_link_legacy_owner` RPC */}
+      {/* Tab 3: Owner Verifications via `admin_review_owner_verification` & Signed URLs */}
+      {activeTab === 'verifications' && (
+        <section className="mt-6 space-y-4">
+          <div className="flex flex-wrap gap-2">
+            {(
+              [
+                { id: 'all', label: 'الكل' },
+                { id: 'pending', label: 'قيد المراجعة' },
+                { id: 'verified', label: 'موثقون' },
+                { id: 'unverified', label: 'مرفوضون' },
+              ] as const
+            ).map((f) => (
+              <button
+                key={f.id}
+                type="button"
+                onClick={() => setVerFilter(f.id)}
+                className={`rounded-xl px-3.5 py-2 text-xs font-bold transition ${
+                  verFilter === f.id
+                    ? 'bg-[#1E3A5F] text-white'
+                    : 'border border-stone-200/70 bg-white text-[#1F2937] hover:bg-slate-50'
+                }`}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+
+          {filteredVerifications.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-stone-300 bg-white p-10 text-center text-sm text-[#6B7280]">
+              لا توجد طلبات توثيق في هذا القسم حالياً.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {filteredVerifications.map((ver) => (
+                <div
+                  key={ver.id}
+                  className="flex flex-col justify-between gap-4 rounded-2xl border border-stone-200/70 bg-white p-4 shadow-xs sm:p-5"
+                >
+                  <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-center">
+                    <div className="space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span
+                          className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${
+                            ver.status === 'verified'
+                              ? 'bg-emerald-50 text-emerald-700'
+                              : ver.status === 'unverified'
+                              ? 'bg-red-50 text-red-700'
+                              : 'bg-amber-50 text-amber-800'
+                          }`}
+                        >
+                          {ver.status === 'verified'
+                            ? 'موثق'
+                            : ver.status === 'unverified'
+                            ? 'مرفوض'
+                            : 'قيد المراجعة'}
+                        </span>
+                        <span className="rounded-full bg-[#FAF9F6] px-2.5 py-0.5 text-[11px] font-bold text-[#1E3A5F]">
+                          {VERIFICATION_DOC_LABELS[ver.documentType]}
+                        </span>
+                      </div>
+
+                      <h3 className="text-base font-bold text-[#1F2937]">
+                        {ver.ownerName}
+                        {ver.phone && (
+                          <>
+                            {' '}
+                            — <span dir="ltr">{ver.phone}</span>
+                          </>
+                        )}
+                      </h3>
+                      <p className="text-xs text-[#6B7280]">
+                        تاريخ التقديم: {formatArabicDate(ver.submittedAt.slice(0, 10))}
+                        {ver.documentNumber && ` • رقم المستند: ${ver.documentNumber}`}
+                      </p>
+                      {ver.rejectionReason && (
+                        <p className="text-[11px] font-semibold text-red-700">
+                          سبب الرفض المسجل: {ver.rejectionReason}
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      {ver.documentPath && (
+                        <button
+                          type="button"
+                          onClick={() => void handlePreviewVerificationDoc(ver)}
+                          className="inline-flex min-h-[38px] items-center gap-1 rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-3 py-1.5 text-xs font-semibold text-[#1E3A5F] hover:bg-slate-100"
+                        >
+                          <ExternalLink className="h-3.5 w-3.5" />
+                          <span>معاينة المستند (رابط مؤقت)</span>
+                        </button>
+                      )}
+
+                      {ver.status !== 'verified' && (
+                        <button
+                          type="button"
+                          disabled={reviewingVerId === ver.id}
+                          onClick={() => void handleReviewVerification(ver, 'verified')}
+                          className="inline-flex min-h-[38px] items-center gap-1 rounded-xl bg-emerald-600 px-3.5 py-1.5 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-60"
+                        >
+                          <CheckCircle2 className="h-3.5 w-3.5" />
+                          <span>اعتماد وتفعيل «معلن موثق»</span>
+                        </button>
+                      )}
+
+                      {ver.status !== 'unverified' && (
+                        <button
+                          type="button"
+                          disabled={reviewingVerId === ver.id}
+                          onClick={() => void handleReviewVerification(ver, 'unverified')}
+                          className="inline-flex min-h-[38px] items-center gap-1 rounded-xl border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-bold text-red-700 hover:bg-red-100 disabled:opacity-60"
+                        >
+                          <XCircle className="h-3.5 w-3.5" />
+                          <span>رفض التوثيق</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {ver.status !== 'unverified' && (
+                    <div className="border-t border-stone-100 pt-3">
+                      <input
+                        type="text"
+                        value={rejectionReasonByVerId[ver.id] ?? ''}
+                        onChange={(e) =>
+                          setRejectionReasonByVerId((prev) => ({
+                            ...prev,
+                            [ver.id]: e.target.value,
+                          }))
+                        }
+                        placeholder="سبب الرفض (مطلوب فقط عند الضغط على رفض التوثيق)..."
+                        className="h-9 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-3 text-xs text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
+                      />
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* Tab 4: Listing Violation Reports via `admin_review_listing_report` */}
+      {activeTab === 'reports' && (
+        <section className="mt-6 space-y-4">
+          <div className="flex flex-wrap gap-2">
+            {(
+              [
+                { id: 'all', label: 'الكل' },
+                { id: 'open', label: 'مفتوحة للمراجعة' },
+                { id: 'resolved', label: 'تمت المعالجة' },
+                { id: 'dismissed', label: 'مرفوضة / متجاهلة' },
+              ] as const
+            ).map((f) => (
+              <button
+                key={f.id}
+                type="button"
+                onClick={() => setReportFilter(f.id)}
+                className={`rounded-xl px-3.5 py-2 text-xs font-bold transition ${
+                  reportFilter === f.id
+                    ? 'bg-[#1E3A5F] text-white'
+                    : 'border border-stone-200/70 bg-white text-[#1F2937] hover:bg-slate-50'
+                }`}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+
+          {filteredReports.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-stone-300 bg-white p-10 text-center text-sm text-[#6B7280]">
+              لا توجد بلاغات في هذا القسم حالياً.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {filteredReports.map((report) => {
+                const resolvedTitle =
+                  report.chaletTitle || unitTitleById.get(report.chaletId) || report.chaletId;
+                return (
+                  <div
+                    key={report.id}
+                    className="flex flex-col justify-between gap-4 rounded-2xl border border-stone-200/70 bg-white p-4 shadow-xs sm:p-5"
+                  >
+                    <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-start">
+                      <div className="space-y-1.5">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span
+                            className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${
+                              report.status === 'open'
+                                ? 'bg-red-50 text-red-700'
+                                : report.status === 'resolved'
+                                ? 'bg-emerald-50 text-emerald-700'
+                                : 'bg-stone-100 text-[#6B7280]'
+                            }`}
+                          >
+                            {report.status === 'open'
+                              ? 'بلاغ مفتوح'
+                              : report.status === 'resolved'
+                              ? 'تمت المعالجة'
+                              : 'تم التجاهل'}
+                          </span>
+                          <span className="rounded-full bg-[#FAF9F6] px-2.5 py-0.5 text-[11px] font-bold text-[#1E3A5F]">
+                            {report.reason}
+                          </span>
+                        </div>
+
+                        <h3 className="text-base font-bold text-[#1F2937]">{resolvedTitle}</h3>
+                        <p className="text-xs text-[#6B7280]">
+                          معرّف الوحدة: <span dir="ltr">{report.chaletId}</span> • تاريخ البلاغ:{' '}
+                          {formatArabicDate(report.createdAt.slice(0, 10))}
+                        </p>
+                        {report.details && (
+                          <p className="rounded-xl bg-[#FAF9F6] px-3 py-2 text-xs leading-relaxed text-[#374151]">
+                            {report.details}
+                          </p>
+                        )}
+                        {report.adminNote && (
+                          <p className="text-[11px] font-semibold text-[#1E3A5F]">
+                            ملاحظة الإدارة: {report.adminNote}
+                          </p>
+                        )}
+                      </div>
+
+                      {report.status === 'open' && (
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            disabled={reviewingReportId === report.id}
+                            onClick={() => void handleReviewReport(report, 'hide_listing')}
+                            className="inline-flex min-h-[38px] items-center gap-1 rounded-xl bg-red-600 px-3.5 py-1.5 text-xs font-bold text-white hover:bg-red-700 disabled:opacity-60"
+                          >
+                            <EyeOff className="h-3.5 w-3.5" />
+                            <span>إخفاء الوحدة وإغلاق البلاغ</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            disabled={reviewingReportId === report.id}
+                            onClick={() => void handleReviewReport(report, 'resolve_keep')}
+                            className="inline-flex min-h-[38px] items-center gap-1 rounded-xl bg-emerald-600 px-3.5 py-1.5 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-60"
+                          >
+                            <CheckCircle2 className="h-3.5 w-3.5" />
+                            <span>تمت المراجعة (إبقاء الوحدة)</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            disabled={reviewingReportId === report.id}
+                            onClick={() => void handleReviewReport(report, 'dismiss')}
+                            className="inline-flex min-h-[38px] items-center gap-1 rounded-xl border border-stone-200/70 bg-white px-3 py-1.5 text-xs font-semibold text-[#6B7280] hover:bg-slate-50 disabled:opacity-60"
+                          >
+                            <XCircle className="h-3.5 w-3.5" />
+                            <span>تجاهل البلاغ</span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
+                    {report.status === 'open' && (
+                      <div className="border-t border-stone-100 pt-3">
+                        <input
+                          type="text"
+                          value={reportNotesById[report.id] ?? ''}
+                          onChange={(e) =>
+                            setReportNotesById((prev) => ({
+                              ...prev,
+                              [report.id]: e.target.value,
+                            }))
+                          }
+                          placeholder="ملاحظة إدارية اختيارية لحفظها مع سجل البلاغ..."
+                          className="h-9 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-3 text-xs text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
+                        />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* Tab 5: Legacy Owner Linking via `admin_link_legacy_owner` RPC */}
       {activeTab === 'legacy' && (
         <section className="mt-6 max-w-2xl rounded-2xl border border-stone-200/70 bg-white p-6 shadow-xs">
           <div className="flex items-start gap-3 border-b border-stone-100 pb-4">
