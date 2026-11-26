@@ -94,6 +94,7 @@ const QUICK_V2_SQL_HINT = `-- يرجى تنفيذ ملفات الترحيل ال
 -- 1) 006_secure_v2.sql
 -- 2) 007_maintenance_and_legacy_triggers_fix.sql
 -- 3) 008_verification_reports_and_stats.sql
+-- 4) 009_marketplace_enhancements.sql
 -- وتعيين role = 'admin' لحساب المدير في جدول profiles.`;
 
 export function AdminDashboard({ onNavigate, onDataChanged }: AdminDashboardProps) {

@@ -1,8 +1,10 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  Building2,
   CalendarCheck2,
   Home,
+  MapPin,
   MessageCircle,
   RefreshCw,
   ShieldCheck,
@@ -26,6 +28,7 @@ import {
 } from '@/services/agzstayRepository';
 import type {
   AdvertiserRoleLabel,
+  AmenityId,
   Chalet,
   FilterState,
   PropertyType,
@@ -67,6 +70,10 @@ const DEFAULT_FILTERS: FilterState = {
   propertyType: 'الكل',
   advertiserRole: 'الكل',
   maxPrice: null,
+  minBedrooms: null,
+  minGuests: null,
+  amenities: [],
+  verifiedOnly: false,
   checkInDate: '',
   checkOutDate: '',
   sortBy: 'featured',
@@ -216,6 +223,21 @@ export function App() {
       if (filters.maxPrice !== null && chalet.pricePerNight > filters.maxPrice) {
         return false;
       }
+      if (filters.minBedrooms !== null && chalet.bedrooms < filters.minBedrooms) {
+        return false;
+      }
+      if (filters.minGuests !== null && chalet.maxGuests < filters.minGuests) {
+        return false;
+      }
+      if (filters.verifiedOnly && !chalet.ownerVerified) {
+        return false;
+      }
+      if (
+        filters.amenities.length > 0 &&
+        !filters.amenities.every((a) => chalet.amenities.includes(a))
+      ) {
+        return false;
+      }
       if (query) {
         const haystack =
           `${chalet.title} ${chalet.governorate} ${chalet.city} ${chalet.areaOrVillage} ${chalet.propertyType} ${chalet.description} ${chalet.ownerName}`.toLowerCase();
@@ -226,6 +248,13 @@ export function App() {
 
     return [...list].sort((a, b) => {
       switch (filters.sortBy) {
+        case 'rating-desc': {
+          const avgDiff = (b.ratingAvg ?? 0) - (a.ratingAvg ?? 0);
+          if (avgDiff !== 0) return avgDiff;
+          const cntDiff = (b.ratingCount ?? 0) - (a.ratingCount ?? 0);
+          if (cntDiff !== 0) return cntDiff;
+          return Number(Boolean(b.isFeatured)) - Number(Boolean(a.isFeatured));
+        }
         case 'price-asc':
           return a.pricePerNight - b.pricePerNight;
         case 'price-desc':
@@ -236,6 +265,85 @@ export function App() {
       }
     });
   }, [allDisplayChalets, favorites, filters]);
+
+  const popularDestinations = useMemo(() => {
+    const activeUnits = allDisplayChalets.filter((c) => c.availabilityStatus === 'active');
+    return [
+      {
+        id: 'north-coast',
+        label: 'الساحل الشمالي',
+        subtitle: 'مراسي، هاسيندا، العلمين',
+        count: activeUnits.filter((c) => c.city.includes('الساحل الشمالي')).length,
+        isMonthly: false,
+        apply: () =>
+          setFilters({
+            ...DEFAULT_FILTERS,
+            rentalSegment: 'vacation',
+            governorate: 'مطروح',
+            city: 'الساحل الشمالي - العلمين وسيدي عبد الرحمن',
+          }),
+        isActive: filters.governorate === 'مطروح' && filters.city.includes('الساحل الشمالي'),
+      },
+      {
+        id: 'ain-sokhna',
+        label: 'العين السخنة',
+        subtitle: 'المونت جلالة، بورتو، ستيلا',
+        count: activeUnits.filter((c) => c.city === 'العين السخنة').length,
+        isMonthly: false,
+        apply: () =>
+          setFilters({
+            ...DEFAULT_FILTERS,
+            rentalSegment: 'vacation',
+            governorate: 'السويس',
+            city: 'العين السخنة',
+          }),
+        isActive: filters.governorate === 'السويس' && filters.city === 'العين السخنة',
+      },
+      {
+        id: 'marsa-matrouh',
+        label: 'مرسى مطروح',
+        subtitle: 'عجيبة، الأبيض، وسط المدينة',
+        count: activeUnits.filter((c) => c.city === 'مرسى مطروح').length,
+        isMonthly: false,
+        apply: () =>
+          setFilters({
+            ...DEFAULT_FILTERS,
+            rentalSegment: 'vacation',
+            governorate: 'مطروح',
+            city: 'مرسى مطروح',
+          }),
+        isActive: filters.governorate === 'مطروح' && filters.city === 'مرسى مطروح',
+      },
+      {
+        id: 'sharm',
+        label: 'شرم الشيخ',
+        subtitle: 'خليج نعمة، سوهو، نبق',
+        count: activeUnits.filter((c) => c.city === 'شرم الشيخ').length,
+        isMonthly: false,
+        apply: () =>
+          setFilters({
+            ...DEFAULT_FILTERS,
+            rentalSegment: 'vacation',
+            governorate: 'جنوب سيناء',
+            city: 'شرم الشيخ',
+          }),
+        isActive: filters.governorate === 'جنوب سيناء' && filters.city === 'شرم الشيخ',
+      },
+      {
+        id: 'monthly-apartments',
+        label: 'شقق إيجار شهري',
+        subtitle: 'سكن عائلي ومغتربين بدون عمولات',
+        count: activeUnits.filter((c) => c.propertyType === 'شقة فاضية').length,
+        isMonthly: true,
+        apply: () =>
+          setFilters({
+            ...DEFAULT_FILTERS,
+            rentalSegment: 'monthly',
+          }),
+        isActive: filters.rentalSegment === 'monthly' && filters.governorate === 'الكل',
+      },
+    ];
+  }, [allDisplayChalets, filters.city, filters.governorate, filters.rentalSegment]);
 
   const handleToggleFavorite = (id: string) => {
     setFavorites((prev) =>
@@ -289,9 +397,20 @@ export function App() {
         <Suspense fallback={<LazySectionLoader />}>
           <PropertyDetailPage
             chalet={selectedChalet}
+            allChalets={allDisplayChalets}
+            favorites={favorites}
             initialCheckIn={filters.checkInDate}
             initialCheckOut={filters.checkOutDate}
             onBack={closeChaletDetail}
+            onToggleFavorite={handleToggleFavorite}
+            onSelectChalet={(item) => {
+              openChaletDetail(item.id);
+              try {
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              } catch {
+                // ignore
+              }
+            }}
           />
         </Suspense>
       ) : activeSection === 'pricing' ? (
@@ -361,6 +480,17 @@ export function App() {
               setFilters((prev) => ({ ...prev, advertiserRole }))
             }
             onMaxPriceChange={(maxPrice) => setFilters((prev) => ({ ...prev, maxPrice }))}
+            onMinBedroomsChange={(minBedrooms) => setFilters((prev) => ({ ...prev, minBedrooms }))}
+            onMinGuestsChange={(minGuests) => setFilters((prev) => ({ ...prev, minGuests }))}
+            onToggleAmenity={(amenity: AmenityId) =>
+              setFilters((prev) => ({
+                ...prev,
+                amenities: prev.amenities.includes(amenity)
+                  ? prev.amenities.filter((a) => a !== amenity)
+                  : [...prev.amenities, amenity],
+              }))
+            }
+            onVerifiedOnlyChange={(verifiedOnly) => setFilters((prev) => ({ ...prev, verifiedOnly }))}
             onDateRangeChange={(checkInDate, checkOutDate) =>
               setFilters((prev) => ({ ...prev, checkInDate, checkOutDate }))
             }
@@ -451,8 +581,80 @@ export function App() {
               </div>
             )}
 
+            {/* Popular Egyptian Destinations Quick Cards */}
+            {!filters.favoritesOnly && (
+              <section aria-label="وجهات مصرية شائعة" className="mb-10">
+                <div className="mb-4 flex items-center justify-between gap-2">
+                  <div>
+                    <h2 className="text-base font-bold text-[#1E3A5F] sm:text-lg">
+                      استكشف الوجهات الأكثر طلباً في مصر
+                    </h2>
+                    <p className="text-xs text-[#6B7280]">
+                      اختر وجهتك المفضلة للوصول السريع إلى الوحدات المتاحة
+                    </p>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+                  {popularDestinations.map((dest) => (
+                    <button
+                      key={dest.id}
+                      type="button"
+                      onClick={() => {
+                        dest.apply();
+                        try {
+                          document
+                            .getElementById('listings-section')
+                            ?.scrollIntoView({ behavior: 'smooth' });
+                        } catch {
+                          // ignore
+                        }
+                      }}
+                      className={`group flex flex-col justify-between rounded-2xl border p-4 text-right shadow-xs transition hover:-translate-y-0.5 ${
+                        dest.isActive
+                          ? 'border-[#1E3A5F] bg-[#1E3A5F] text-white'
+                          : 'border-stone-200/70 bg-white text-[#1F2937] hover:border-[#C5A880]'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span
+                          className={`flex h-8 w-8 items-center justify-center rounded-xl ${
+                            dest.isActive ? 'bg-white/15 text-[#C5A880]' : 'bg-[#FAF9F6] text-[#1E3A5F]'
+                          }`}
+                        >
+                          {dest.isMonthly ? (
+                            <Building2 className="h-4 w-4" />
+                          ) : (
+                            <MapPin className="h-4 w-4 text-[#C5A880]" />
+                          )}
+                        </span>
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                            dest.isActive
+                              ? 'bg-white/15 text-white'
+                              : 'bg-[#FAF9F6] text-[#6B7280]'
+                          }`}
+                        >
+                          {dest.count.toLocaleString('ar-EG')} وحدة
+                        </span>
+                      </div>
+                      <div className="mt-3">
+                        <span className="block text-sm font-bold">{dest.label}</span>
+                        <span
+                          className={`mt-0.5 block line-clamp-1 text-[11px] ${
+                            dest.isActive ? 'text-slate-200' : 'text-[#6B7280]'
+                          }`}
+                        >
+                          {dest.subtitle}
+                        </span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            )}
+
             {/* Section Header */}
-            <div className="mb-7 flex flex-wrap items-center justify-between gap-3">
+            <div id="listings-section" className="mb-7 flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h2 className="text-xl font-bold text-[#1E3A5F] sm:text-2xl">
                   {filters.favoritesOnly

@@ -4,11 +4,13 @@ import { CHALET_PUBLIC_SELECT_COLUMNS } from '@/services/agzstayRepository';
 import migrationSql from '../../../supabase/migrations/006_secure_v2.sql?raw';
 import migration007Sql from '../../../supabase/migrations/007_maintenance_and_legacy_triggers_fix.sql?raw';
 import migration008Sql from '../../../supabase/migrations/008_verification_reports_and_stats.sql?raw';
+import migration009Sql from '../../../supabase/migrations/009_marketplace_enhancements.sql?raw';
 import pgTapSql from '../../../supabase/tests/006_secure_v2.test.sql?raw';
 import repoSource from '@/services/agzstayRepository.ts?raw';
 
 import adminDashboardSource from '@/components/AdminDashboard.tsx?raw';
 import heroSearchSource from '@/components/HeroSearch.tsx?raw';
+import navbarSource from '@/components/Navbar.tsx?raw';
 import ownerPortalSource from '@/components/OwnerPortal.tsx?raw';
 import pricingPageSource from '@/components/PricingPage.tsx?raw';
 import propertyDetailSource from '@/components/PropertyDetailPage.tsx?raw';
@@ -199,5 +201,39 @@ describe('006_secure_v2.sql security & concurrency invariants', () => {
     expect(adminDashboardSource).toContain('adminReviewListingReportRpc');
     expect(propertyDetailSource).toContain('submitListingReportRpc');
     expect(heroSearchSource).toContain('onRentalSegmentChange');
+  });
+
+  it('enforces flexible pricing, review rate limits, and notification RLS invariants in 009 and UI', () => {
+    const secDefHeaders =
+      migration009Sql.match(/create\s+or\s+replace\s+function\s+[\s\S]*?as\s+\$\$/gi) ?? [];
+    expect(secDefHeaders.length).toBeGreaterThanOrEqual(5);
+    for (const header of secDefHeaders) {
+      if (/security\s+definer/i.test(header)) {
+        expect(header).toMatch(/set\s+search_path\s*=\s*''/i);
+      }
+    }
+
+    const codeOnly = migration009Sql.replace(/--.*$/gm, '').toLowerCase();
+    expect(codeOnly).not.toContain('x-forwarded-for');
+    expect(codeOnly).not.toContain('request.headers');
+    expect(migration009Sql).toContain('pg_catalog.inet_client_addr()');
+    expect(migration009Sql).toContain('pg_catalog.pg_advisory_xact_lock');
+    expect(migration009Sql).toContain('grant select (id, chalet_id, reviewer_name, rating, comment, is_approved, created_at)');
+
+    const policyBlocks = migration009Sql.match(/create\s+policy\s+[\s\S]*?;/gi) ?? [];
+    expect(policyBlocks.length).toBeGreaterThanOrEqual(8);
+    for (const policy of policyBlocks) {
+      if (policy.toLowerCase().includes('auth.uid()')) {
+        expect(policy.toLowerCase()).toContain('(select auth.uid())');
+      }
+    }
+
+    expect(heroSearchSource).toContain('onVerifiedOnlyChange');
+    expect(heroSearchSource).toContain('rating-desc');
+    expect(propertyDetailSource).toContain('submitChaletReviewRpc');
+    expect(propertyDetailSource).toContain('similarChalets');
+    expect(ownerPortalSource).toContain('upsertChaletPricingRule');
+    expect(ownerPortalSource).toContain('buildOwnerMarketingCopy');
+    expect(navbarSource).toContain('fetchMyNotifications');
   });
 });

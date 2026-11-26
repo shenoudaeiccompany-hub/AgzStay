@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   ArrowRight,
@@ -19,6 +19,7 @@ import {
   ShieldAlert,
   ShieldCheck,
   Sparkles,
+  Star,
   Users,
   X,
 } from 'lucide-react';
@@ -29,6 +30,7 @@ import {
 import { ChaletGallery } from '@/components/ChaletGallery';
 import { ChaletShareActions } from '@/components/ChaletShareActions';
 import { ImageLightboxModal } from '@/components/ImageLightboxModal';
+import { PropertyCard } from '@/components/PropertyCard';
 import {
   formatEGP,
   getAmenityLabel,
@@ -36,8 +38,13 @@ import {
   getShortPriceUnitLabel,
   isMonthlyOnlyProperty,
 } from '@/data/chalets';
-import { revealListingContact, submitListingReportRpc } from '@/services/agzstayRepository';
-import type { Chalet } from '@/types/chalet';
+import {
+  fetchChaletReviews,
+  revealListingContact,
+  submitChaletReviewRpc,
+  submitListingReportRpc,
+} from '@/services/agzstayRepository';
+import type { Chalet, ChaletReviewRecord } from '@/types/chalet';
 import {
   addDaysIso,
   buildWhatsAppPhoneUrl,
@@ -51,9 +58,13 @@ import {
 
 interface PropertyDetailPageProps {
   chalet: Chalet;
+  allChalets?: Chalet[];
+  favorites?: string[];
   initialCheckIn?: string;
   initialCheckOut?: string;
   onBack: () => void;
+  onSelectChalet?: (chalet: Chalet) => void;
+  onToggleFavorite?: (id: string) => void;
 }
 
 const EXACT_RENTER_SECURITY_WARNING =
@@ -61,9 +72,13 @@ const EXACT_RENTER_SECURITY_WARNING =
 
 export function PropertyDetailPage({
   chalet,
+  allChalets = [],
+  favorites = [],
   initialCheckIn = '',
   initialCheckOut = '',
   onBack,
+  onSelectChalet,
+  onToggleFavorite,
 }: PropertyDetailPageProps) {
   const [activeImageIndex, setActiveImageIndex] = useState(0);
   const [imageError, setImageError] = useState(false);
@@ -80,6 +95,41 @@ export function PropertyDetailPage({
   const [submittingReport, setSubmittingReport] = useState(false);
   const [reportError, setReportError] = useState('');
   const [reportSuccess, setReportSuccess] = useState('');
+
+  const [reviews, setReviews] = useState<ChaletReviewRecord[]>([]);
+  const [loadingReviews, setLoadingReviews] = useState(false);
+  const [reviewerName, setReviewerName] = useState('');
+  const [reviewRating, setReviewRating] = useState(5);
+  const [reviewComment, setReviewComment] = useState('');
+  const [submittingReview, setSubmittingReview] = useState(false);
+  const [reviewError, setReviewError] = useState('');
+  const [reviewSuccess, setReviewSuccess] = useState('');
+
+  useEffect(() => {
+    setActiveImageIndex(0);
+    setImageError(false);
+    setReviewError('');
+    setReviewSuccess('');
+    setReportError('');
+    setReportSuccess('');
+    setContactError(null);
+
+    if (chalet.isDemo) {
+      setReviews([]);
+      return;
+    }
+
+    let active = true;
+    setLoadingReviews(true);
+    void fetchChaletReviews(chalet.id).then((res) => {
+      if (!active) return;
+      setReviews(res.data ?? []);
+      setLoadingReviews(false);
+    });
+    return () => {
+      active = false;
+    };
+  }, [chalet.id, chalet.isDemo]);
 
   const todayIso = useMemo(() => formatIsoDate(new Date()), []);
   const blockedSet = useMemo(() => getBlockedDatesSet(chalet), [chalet]);
@@ -119,9 +169,36 @@ export function PropertyDetailPage({
   const hasBlockedConflict = conflictingDates.length > 0;
 
   const quote = useMemo(
-    () => calculateInformationalQuote(chalet, nights),
-    [chalet, nights]
+    () => calculateInformationalQuote(chalet, nights, checkIn),
+    [chalet, nights, checkIn]
   );
+
+  const effectiveRatingCount =
+    reviews.length > 0 ? reviews.length : chalet.ratingCount ?? 0;
+  const effectiveRatingAvg =
+    reviews.length > 0
+      ? Number((reviews.reduce((sum, r) => sum + r.rating, 0) / reviews.length).toFixed(1))
+      : chalet.ratingAvg ?? 0;
+
+  const similarChalets = useMemo(() => {
+    if (!allChalets.length) return [];
+    const targetMonthly = isMonthlyOnlyProperty(chalet);
+    return allChalets
+      .filter((item) => item.id !== chalet.id && item.availabilityStatus === 'active')
+      .map((item) => {
+        let score = 0;
+        if (item.city === chalet.city) score += 5;
+        if (item.governorate === chalet.governorate) score += 3;
+        if (isMonthlyOnlyProperty(item) === targetMonthly) score += 4;
+        if (item.propertyType === chalet.propertyType) score += 2;
+        if (item.ownerVerified) score += 1;
+        const priceDiff = Math.abs(item.pricePerNight - chalet.pricePerNight);
+        return { item, score, priceDiff };
+      })
+      .sort((a, b) => b.score - a.score || a.priceDiff - b.priceDiff)
+      .slice(0, 3)
+      .map((entry) => entry.item);
+  }, [allChalets, chalet]);
 
   const locationDisplay = [chalet.governorate, chalet.city, chalet.areaOrVillage]
     .filter((v, idx, arr) => Boolean(v) && arr.indexOf(v) === idx)
@@ -276,6 +353,35 @@ export function PropertyDetailPage({
       setReportDetails('');
     } finally {
       setSubmittingReport(false);
+    }
+  };
+
+  const handleSubmitReview = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setReviewError('');
+    setReviewSuccess('');
+    if (chalet.isDemo) {
+      setReviewError('هذه وحدة تجريبية للمعاينة فقط — التقييمات متاحة على الوحدات المنشورة فعلياً.');
+      return;
+    }
+    if (reviewerName.trim().length < 2) {
+      setReviewError('يرجى كتابة اسمك (حرفين على الأقل) قبل إرسال التقييم.');
+      return;
+    }
+    setSubmittingReview(true);
+    try {
+      const res = await submitChaletReviewRpc(chalet.id, reviewerName, reviewRating, reviewComment);
+      if (res.error || !res.data) {
+        setReviewError(res.error ?? 'تعذر إضافة التقييم الآن.');
+        return;
+      }
+      setReviews((prev) => [res.data!, ...prev]);
+      setReviewerName('');
+      setReviewComment('');
+      setReviewRating(5);
+      setReviewSuccess('شكراً لك! تم إضافة تقييمك بنجاح.');
+    } finally {
+      setSubmittingReview(false);
     }
   };
 
@@ -457,6 +563,145 @@ export function PropertyDetailPage({
           </section>
 
           <ChaletShareActions chalet={chalet} />
+
+          {/* Guest Reviews & Ratings Section */}
+          <section
+            aria-label="تقييمات وآراء المستأجرين"
+            className="rounded-2xl border border-stone-200/70 bg-white p-6 shadow-xs sm:p-7"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-stone-100 pb-4">
+              <div>
+                <h2 className="text-base font-bold text-[#1E3A5F]">تقييمات وآراء الزوار</h2>
+                <p className="mt-0.5 text-xs text-[#6B7280]">
+                  تجارب حقيقية للمستأجرين مع المعلن والوحدة
+                </p>
+              </div>
+              {effectiveRatingCount > 0 && (
+                <div className="inline-flex items-center gap-1.5 rounded-xl bg-[#FAF6F0] px-3.5 py-2 text-xs font-bold text-[#1E3A5F]">
+                  <Star className="h-4 w-4 fill-[#C5A880] text-[#C5A880]" />
+                  <span>{effectiveRatingAvg.toFixed(1)} من ٥</span>
+                  <span className="font-medium text-[#6B7280]">
+                    ({effectiveRatingCount.toLocaleString('ar-EG')} تقييم)
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {loadingReviews ? (
+              <div className="py-6 text-center text-xs text-[#6B7280]">جاري تحميل التقييمات...</div>
+            ) : reviews.length === 0 ? (
+              <div className="mt-4 rounded-xl border border-dashed border-stone-200 bg-[#FAF9F6] px-4 py-5 text-center text-xs text-[#6B7280]">
+                لا توجد تقييمات مسجلة لهذه الوحدة بعد — كن أول من يشارك تجربته.
+              </div>
+            ) : (
+              <div className="mt-4 space-y-3">
+                {reviews.map((rev) => (
+                  <article
+                    key={rev.id}
+                    className="rounded-xl border border-stone-200/70 bg-[#FAF9F6] p-4"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-xs font-bold text-[#1E3A5F]">{rev.reviewerName}</span>
+                      <div className="flex items-center gap-1">
+                        {Array.from({ length: 5 }).map((_, i) => (
+                          <Star
+                            key={i}
+                            className={`h-3.5 w-3.5 ${
+                              i < rev.rating
+                                ? 'fill-[#C5A880] text-[#C5A880]'
+                                : 'text-stone-300'
+                            }`}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                    {rev.comment && (
+                      <p className="mt-2 text-xs leading-relaxed text-[#4B5563]">{rev.comment}</p>
+                    )}
+                    <span className="mt-2 block text-[10px] text-[#6B7280]">
+                      {formatArabicDate(rev.createdAt.slice(0, 10))}
+                    </span>
+                  </article>
+                ))}
+              </div>
+            )}
+
+            {/* Add Review Form */}
+            <form onSubmit={handleSubmitReview} className="mt-5 border-t border-stone-100 pt-5">
+              <h3 className="text-xs font-bold text-[#1E3A5F]">أضف تقييمك للوحدة</h3>
+              {chalet.isDemo ? (
+                <p className="mt-2 rounded-xl bg-[#FAF9F6] px-3 py-2 text-[11px] font-medium text-[#6B7280]">
+                  هذه وحدة تجريبية للمعاينة فقط — التقييمات متاحة على الوحدات المنشورة فعلياً.
+                </p>
+              ) : (
+                <div className="mt-3 space-y-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-semibold text-[#6B7280]">التقييم:</span>
+                    <div className="flex items-center gap-1" role="group" aria-label="اختيار التقييم">
+                      {[1, 2, 3, 4, 5].map((star) => (
+                        <button
+                          key={star}
+                          type="button"
+                          onClick={() => setReviewRating(star)}
+                          aria-label={`${star} نجوم`}
+                          className="p-1 transition hover:scale-110"
+                        >
+                          <Star
+                            className={`h-5 w-5 ${
+                              star <= reviewRating
+                                ? 'fill-[#C5A880] text-[#C5A880]'
+                                : 'text-stone-300'
+                            }`}
+                          />
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <input
+                      type="text"
+                      required
+                      minLength={2}
+                      maxLength={60}
+                      value={reviewerName}
+                      onChange={(e) => setReviewerName(e.target.value)}
+                      placeholder="اسمك (مثال: محمود حسن)"
+                      className="h-10 rounded-xl border border-stone-200/80 bg-[#FAF9F6] px-3 text-xs text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
+                    />
+                    <input
+                      type="text"
+                      maxLength={600}
+                      value={reviewComment}
+                      onChange={(e) => setReviewComment(e.target.value)}
+                      placeholder="تعليق مختصر عن تجربتك (اختياري)"
+                      className="h-10 rounded-xl border border-stone-200/80 bg-[#FAF9F6] px-3 text-xs text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
+                    />
+                  </div>
+
+                  {reviewError && (
+                    <p className="text-xs font-semibold text-red-700" role="alert">
+                      {reviewError}
+                    </p>
+                  )}
+                  {reviewSuccess && (
+                    <p className="text-xs font-semibold text-emerald-700" role="status">
+                      {reviewSuccess}
+                    </p>
+                  )}
+
+                  <button
+                    type="submit"
+                    disabled={submittingReview}
+                    className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl bg-[#1E3A5F] px-4 py-2 text-xs font-bold text-white transition hover:bg-[#172E4D] disabled:opacity-60"
+                  >
+                    {submittingReview && <RefreshCw className="h-3.5 w-3.5 animate-spin" />}
+                    <span>{submittingReview ? 'جاري النشر...' : 'نشر التقييم'}</span>
+                  </button>
+                </div>
+              )}
+            </form>
+          </section>
         </div>
 
         {/* Sticky Sidebar Booking & Direct Contact Card (5 cols) */}
@@ -539,15 +784,79 @@ export function PropertyDetailPage({
               )}
             </div>
 
-            {/* Clear Deposit & Pricing Summary (`deposit_type` + `deposit_value`) */}
-            <div className="mt-5 space-y-2.5 rounded-2xl border border-stone-200/70 bg-[#FAF9F6] p-4 text-xs">
-              {!isMonthlyOnly ? (
-                <div className="flex items-center justify-between text-[#6B7280]">
-                  <span>
-                    {formatEGP(quote.unitPrice)} × {quote.nights.toLocaleString('ar-EG')} ليالٍ
-                  </span>
-                  <strong className="text-sm text-[#1E3A5F]">{formatEGP(quote.subtotal)}</strong>
+            {/* Flexible Weekend & Seasonal Rate Info Strip */}
+            {!isMonthlyOnly &&
+              ((chalet.weekendPrice ?? 0) > 0 || (chalet.seasonalPrice ?? 0) > 0) && (
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {(chalet.weekendPrice ?? 0) > 0 && (
+                    <span className="inline-flex items-center gap-1 rounded-xl border border-[#C5A880]/60 bg-[#FAF6F0] px-2.5 py-1 text-[11px] font-bold text-[#1E3A5F]">
+                      الويك إند (خميس/جمعة): {formatEGP(chalet.weekendPrice!)}
+                    </span>
+                  )}
+                  {(chalet.seasonalPrice ?? 0) > 0 && (
+                    <span className="inline-flex items-center gap-1 rounded-xl border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-bold text-amber-900">
+                      {chalet.seasonalLabel || 'سعر الموسم'}: {formatEGP(chalet.seasonalPrice!)}
+                      {chalet.seasonalStart && chalet.seasonalEnd
+                        ? ` (${formatArabicDate(chalet.seasonalStart)} - ${formatArabicDate(chalet.seasonalEnd)})`
+                        : ''}
+                    </span>
+                  )}
                 </div>
+              )}
+
+            {/* Clear Deposit & Pricing Summary (`deposit_type` + `deposit_value`) */}
+            <div className="mt-5 space-y-2 rounded-2xl border border-stone-200/70 bg-[#FAF9F6] p-4 text-xs">
+              {!isMonthlyOnly ? (
+                quote.hasDynamicPricing ? (
+                  <>
+                    {quote.regularNightsCount > 0 && (
+                      <div className="flex items-center justify-between text-[#6B7280]">
+                        <span>
+                          {quote.regularNightsCount.toLocaleString('ar-EG')} ليالٍ عادية ×{' '}
+                          {formatEGP(quote.unitPrice)}
+                        </span>
+                        <span className="font-semibold text-[#1F2937]">
+                          {formatEGP(quote.regularNightsCount * quote.unitPrice)}
+                        </span>
+                      </div>
+                    )}
+                    {quote.weekendNightsCount > 0 && (chalet.weekendPrice ?? 0) > 0 && (
+                      <div className="flex items-center justify-between text-[#6B7280]">
+                        <span>
+                          {quote.weekendNightsCount.toLocaleString('ar-EG')} ليالٍ ويك إند ×{' '}
+                          {formatEGP(chalet.weekendPrice!)}
+                        </span>
+                        <span className="font-semibold text-[#1F2937]">
+                          {formatEGP(quote.weekendNightsCount * chalet.weekendPrice!)}
+                        </span>
+                      </div>
+                    )}
+                    {quote.seasonalNightsCount > 0 && (chalet.seasonalPrice ?? 0) > 0 && (
+                      <div className="flex items-center justify-between text-[#6B7280]">
+                        <span>
+                          {quote.seasonalNightsCount.toLocaleString('ar-EG')} ليالٍ ({chalet.seasonalLabel || 'موسم'}) ×{' '}
+                          {formatEGP(chalet.seasonalPrice!)}
+                        </span>
+                        <span className="font-semibold text-[#1F2937]">
+                          {formatEGP(quote.seasonalNightsCount * chalet.seasonalPrice!)}
+                        </span>
+                      </div>
+                    )}
+                    <div className="flex items-center justify-between border-t border-stone-200/70 pt-2 text-[#1E3A5F]">
+                      <span className="font-bold">
+                        الإجمالي لـ {quote.nights.toLocaleString('ar-EG')} ليالٍ
+                      </span>
+                      <strong className="text-sm">{formatEGP(quote.subtotal)}</strong>
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex items-center justify-between text-[#6B7280]">
+                    <span>
+                      {formatEGP(quote.unitPrice)} × {quote.nights.toLocaleString('ar-EG')} ليالٍ
+                    </span>
+                    <strong className="text-sm text-[#1E3A5F]">{formatEGP(quote.subtotal)}</strong>
+                  </div>
+                )
               ) : (
                 <div className="flex items-center justify-between text-[#6B7280]">
                   <span>قيمة الإيجار الشهري المعلنة</span>
@@ -692,6 +1001,33 @@ export function PropertyDetailPage({
           </div>
         </aside>
       </div>
+
+      {/* Similar Listings Section */}
+      {similarChalets.length > 0 && onSelectChalet && (
+        <section aria-label="وحدات مشابهة" className="mt-12 border-t border-stone-200/70 pt-8">
+          <div className="mb-5 flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-bold text-[#1E3A5F] sm:text-xl">
+                وحدات مشابهة في نفس المنطقة أو الفئة
+              </h2>
+              <p className="mt-0.5 text-xs text-[#6B7280]">
+                خيارات إضافية قد تناسب ميزانيتك وتواريخك
+              </p>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+            {similarChalets.map((item) => (
+              <PropertyCard
+                key={item.id}
+                property={item}
+                isFavorite={favorites.includes(item.id)}
+                onToggleFavorite={onToggleFavorite ?? (() => {})}
+                onSelect={onSelectChalet}
+              />
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* Comfortable Mobile Sticky Bottom Contact Bar */}
       {!hasBlockedConflict && (

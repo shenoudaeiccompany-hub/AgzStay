@@ -1,5 +1,8 @@
+import { useState } from 'react';
 import {
   ArrowUpDown,
+  BadgeCheck,
+  BedDouble,
   Briefcase,
   Building2,
   LayoutGrid,
@@ -8,10 +11,12 @@ import {
   Navigation,
   RotateCcw,
   Search,
+  SlidersHorizontal,
   Umbrella,
+  Users,
 } from 'lucide-react';
 import { ArabicDateRangeField } from '@/components/ArabicCalendarPicker';
-import { ADVERTISER_ROLES, PROPERTY_TYPES, formatEGP } from '@/data/chalets';
+import { ADVERTISER_ROLES, AMENITIES, PROPERTY_TYPES, formatEGP } from '@/data/chalets';
 import {
   ALL_GOVERNORATE_NAMES,
   getAreasForCity,
@@ -19,6 +24,7 @@ import {
 } from '@/data/egyptLocations';
 import type {
   AdvertiserRoleLabel,
+  AmenityId,
   FilterState,
   PropertyType,
   RentalSegment,
@@ -39,6 +45,10 @@ interface HeroSearchProps {
   onPropertyTypeChange: (type: PropertyType | 'الكل') => void;
   onAdvertiserRoleChange: (role: AdvertiserRoleLabel | 'الكل') => void;
   onMaxPriceChange: (maxPrice: number | null) => void;
+  onMinBedroomsChange: (minBedrooms: number | null) => void;
+  onMinGuestsChange: (minGuests: number | null) => void;
+  onToggleAmenity: (amenity: AmenityId) => void;
+  onVerifiedOnlyChange: (verifiedOnly: boolean) => void;
   onDateRangeChange: (checkIn: string, checkOut: string) => void;
   onSortChange: (sort: SortOption) => void;
   onViewModeChange: (mode: ViewMode) => void;
@@ -60,11 +70,16 @@ export function HeroSearch({
   onPropertyTypeChange,
   onAdvertiserRoleChange,
   onMaxPriceChange,
+  onMinBedroomsChange,
+  onMinGuestsChange,
+  onToggleAmenity,
+  onVerifiedOnlyChange,
   onDateRangeChange,
   onSortChange,
   onViewModeChange,
   onReset,
 }: HeroSearchProps) {
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const cities = getCitiesForGovernorate(filters.governorate);
   const areas = getAreasForCity(filters.governorate, filters.city);
 
@@ -75,6 +90,12 @@ export function HeroSearch({
       ? (['الكل', 'شقة فاضية'] as const)
       : PROPERTY_TYPES;
 
+  const advancedFiltersCount =
+    (filters.minBedrooms !== null ? 1 : 0) +
+    (filters.minGuests !== null ? 1 : 0) +
+    (filters.verifiedOnly ? 1 : 0) +
+    filters.amenities.length;
+
   const hasAnyFilter =
     filters.rentalSegment !== 'all' ||
     filters.searchQuery.trim() !== '' ||
@@ -84,6 +105,7 @@ export function HeroSearch({
     filters.propertyType !== 'الكل' ||
     filters.advertiserRole !== 'الكل' ||
     filters.maxPrice !== null ||
+    advancedFiltersCount > 0 ||
     filters.checkInDate !== '' ||
     filters.checkOutDate !== '' ||
     filters.favoritesOnly;
@@ -394,6 +416,25 @@ export function HeroSearch({
             </div>
 
             <div className="flex flex-wrap items-center justify-between gap-2.5 lg:justify-end">
+              <button
+                type="button"
+                onClick={() => setShowAdvanced((prev) => !prev)}
+                aria-expanded={showAdvanced}
+                className={`inline-flex h-10 items-center gap-1.5 rounded-xl border px-3.5 text-xs font-semibold transition ${
+                  showAdvanced || advancedFiltersCount > 0
+                    ? 'border-[#1E3A5F] bg-[#1E3A5F]/5 text-[#1E3A5F]'
+                    : 'border-stone-200/70 bg-[#FAF9F6] text-[#1F2937] hover:border-[#C5A880]'
+                }`}
+              >
+                <SlidersHorizontal className="h-3.5 w-3.5 text-[#C5A880]" />
+                <span>فلاتر متقدمة</span>
+                {advancedFiltersCount > 0 && (
+                  <span className="rounded-full bg-[#1E3A5F] px-1.5 py-0.5 text-[10px] font-bold text-white">
+                    {advancedFiltersCount}
+                  </span>
+                )}
+              </button>
+
               <span className="inline-flex h-10 items-center rounded-xl bg-[#FAF9F6] px-3.5 text-xs font-semibold text-[#6B7280]">
                 النتائج:{' '}
                 <strong className="mx-1 text-[#1E3A5F]">
@@ -411,6 +452,7 @@ export function HeroSearch({
                   className="bg-transparent text-xs font-semibold text-[#1F2937] focus:outline-none"
                 >
                   <option value="featured">المميزة أولاً</option>
+                  <option value="rating-desc">الأعلى تقييماً</option>
                   <option value="price-asc">الأقل سعراً</option>
                   <option value="price-desc">الأعلى سعراً</option>
                 </select>
@@ -459,6 +501,107 @@ export function HeroSearch({
               </div>
             </div>
           </div>
+
+          {/* Expandable Advanced Filters Panel */}
+          {showAdvanced && (
+            <div className="mt-4 space-y-4 border-t border-stone-100 pt-4">
+              <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-3">
+                <div>
+                  <label
+                    htmlFor="filter-min-bedrooms"
+                    className="mb-1.5 block text-xs font-semibold text-[#6B7280]"
+                  >
+                    الحد الأدنى لغرف النوم
+                  </label>
+                  <div className="relative">
+                    <BedDouble className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#C5A880]" />
+                    <select
+                      id="filter-min-bedrooms"
+                      value={filters.minBedrooms ?? ''}
+                      onChange={(e) =>
+                        onMinBedroomsChange(e.target.value ? Number(e.target.value) : null)
+                      }
+                      className="h-11 w-full appearance-none rounded-xl border border-stone-200/80 bg-[#FAF9F6] pl-3 pr-9 text-xs font-semibold text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none sm:text-sm"
+                    >
+                      <option value="">أي عدد غرف</option>
+                      <option value="1">١ غرفة فأكثر</option>
+                      <option value="2">٢ غرف فأكثر</option>
+                      <option value="3">٣ غرف فأكثر</option>
+                      <option value="4">٤ غرف فأكثر</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="filter-min-guests"
+                    className="mb-1.5 block text-xs font-semibold text-[#6B7280]"
+                  >
+                    سعة الأفراد المطلوبة
+                  </label>
+                  <div className="relative">
+                    <Users className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#C5A880]" />
+                    <select
+                      id="filter-min-guests"
+                      value={filters.minGuests ?? ''}
+                      onChange={(e) =>
+                        onMinGuestsChange(e.target.value ? Number(e.target.value) : null)
+                      }
+                      className="h-11 w-full appearance-none rounded-xl border border-stone-200/80 bg-[#FAF9F6] pl-3 pr-9 text-xs font-semibold text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none sm:text-sm"
+                    >
+                      <option value="">أي عدد أفراد</option>
+                      <option value="2">٢ أفراد فأكثر</option>
+                      <option value="4">٤ أفراد فأكثر</option>
+                      <option value="6">٦ أفراد فأكثر</option>
+                      <option value="8">٨ أفراد فأكثر</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="flex items-end">
+                  <button
+                    type="button"
+                    onClick={() => onVerifiedOnlyChange(!filters.verifiedOnly)}
+                    aria-pressed={filters.verifiedOnly}
+                    className={`flex h-11 w-full items-center justify-center gap-2 rounded-xl border px-4 text-xs font-bold transition sm:text-sm ${
+                      filters.verifiedOnly
+                        ? 'border-emerald-600 bg-emerald-600 text-white shadow-xs'
+                        : 'border-stone-200/80 bg-[#FAF9F6] text-[#1E3A5F] hover:border-emerald-500'
+                    }`}
+                  >
+                    <BadgeCheck className="h-4 w-4" />
+                    <span>الملاك الموثقون فقط</span>
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <span className="mb-2 block text-xs font-semibold text-[#6B7280]">
+                  المرافق والمميزات المطلوبة
+                </span>
+                <div className="flex flex-wrap gap-2">
+                  {AMENITIES.map((amenity) => {
+                    const active = filters.amenities.includes(amenity.id);
+                    return (
+                      <button
+                        key={amenity.id}
+                        type="button"
+                        onClick={() => onToggleAmenity(amenity.id)}
+                        aria-pressed={active}
+                        className={`min-h-[36px] rounded-xl border px-3 py-1.5 text-xs font-semibold transition ${
+                          active
+                            ? 'border-[#1E3A5F] bg-[#1E3A5F] text-white shadow-xs'
+                            : 'border-stone-200/70 bg-[#FAF9F6] text-[#1F2937] hover:border-[#C5A880]'
+                        }`}
+                      >
+                        {amenity.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </section>

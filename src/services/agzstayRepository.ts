@@ -11,22 +11,27 @@ import type {
   AmenityId,
   AuthUserSummary,
   Chalet,
+  ChaletPricingRuleInput,
   ChaletRevealStat,
+  ChaletReviewRecord,
   DepositType,
   ListingAvailabilityStatus,
   ListingReportRecord,
   ListingReportStatus,
   MySubscriptionSummary,
+  NotificationType,
   OwnerRevealStats,
   OwnerVerificationRecord,
   OwnerVerificationStatus,
   PendingSubscriptionInfo,
   ProfileRole,
   PropertyType,
+  RouteSection,
   SubscriptionPlan,
   SubscriptionPlanId,
   SubscriptionRecord,
   SubscriptionStatus,
+  UserNotificationRecord,
   UserProfile,
   VerificationDocumentType,
 } from '@/types/chalet';
@@ -853,6 +858,100 @@ export async function resolveReceiptPreviewUrl(
 export const CHALET_PUBLIC_SELECT_COLUMNS =
   'id, owner_id, title, description, governorate, city, area_or_village, property_type, advertiser_role, owner_name, is_featured, owner_verified, deposit_type, deposit_value, price_per_night, weekly_price, monthly_price, bedrooms, bathrooms, area_sqm, max_guests, beach_distance_meters, coordinates, images, amenities, blocked_dates, rules, availability_status, created_at, updated_at' as const;
 
+interface PricingRuleRow {
+  weekendPrice?: number;
+  seasonalPrice?: number;
+  seasonalLabel?: string;
+  seasonalStart?: string;
+  seasonalEnd?: string;
+}
+
+interface RatingSummaryRow {
+  ratingAvg: number;
+  ratingCount: number;
+}
+
+async function fetchPricingRulesMap(): Promise<Record<string, PricingRuleRow>> {
+  if (!isSupabaseConfigured || !supabase) return {};
+  try {
+    const { data, error } = await supabase
+      .from('chalet_pricing_rules')
+      .select('chalet_id, weekend_price, seasonal_price, seasonal_label, seasonal_start, seasonal_end');
+    if (error || !Array.isArray(data)) return {};
+    const out: Record<string, PricingRuleRow> = {};
+    for (const row of data as Record<string, unknown>[]) {
+      if (!row.chalet_id) continue;
+      out[String(row.chalet_id)] = {
+        weekendPrice:
+          row.weekend_price !== null && row.weekend_price !== undefined
+            ? Number(row.weekend_price)
+            : undefined,
+        seasonalPrice:
+          row.seasonal_price !== null && row.seasonal_price !== undefined
+            ? Number(row.seasonal_price)
+            : undefined,
+        seasonalLabel: row.seasonal_label ? String(row.seasonal_label) : undefined,
+        seasonalStart: row.seasonal_start ? String(row.seasonal_start) : undefined,
+        seasonalEnd: row.seasonal_end ? String(row.seasonal_end) : undefined,
+      };
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+async function fetchRatingSummariesMap(): Promise<Record<string, RatingSummaryRow>> {
+  if (!isSupabaseConfigured || !supabase) return {};
+  try {
+    const { data, error } = await supabase
+      .from('chalet_reviews')
+      .select('chalet_id, rating')
+      .eq('is_approved', true);
+    if (error || !Array.isArray(data)) return {};
+    const acc = new Map<string, { sum: number; count: number }>();
+    for (const row of data as Record<string, unknown>[]) {
+      const cid = row.chalet_id ? String(row.chalet_id) : '';
+      const rating = Number(row.rating ?? 0);
+      if (!cid || rating < 1 || rating > 5) continue;
+      const cur = acc.get(cid) ?? { sum: 0, count: 0 };
+      cur.sum += rating;
+      cur.count += 1;
+      acc.set(cid, cur);
+    }
+    const out: Record<string, RatingSummaryRow> = {};
+    for (const [cid, v] of acc.entries()) {
+      out[cid] = {
+        ratingAvg: Math.round((v.sum / v.count) * 10) / 10,
+        ratingCount: v.count,
+      };
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function enrichChalet(
+  chalet: Chalet,
+  pricingMap: Record<string, PricingRuleRow>,
+  ratingsMap: Record<string, RatingSummaryRow>
+): Chalet {
+  const pricing = pricingMap[chalet.id];
+  const rating = ratingsMap[chalet.id];
+  if (!pricing && !rating) return chalet;
+  return {
+    ...chalet,
+    weekendPrice: pricing?.weekendPrice,
+    seasonalPrice: pricing?.seasonalPrice,
+    seasonalLabel: pricing?.seasonalLabel,
+    seasonalStart: pricing?.seasonalStart,
+    seasonalEnd: pricing?.seasonalEnd,
+    ratingAvg: rating?.ratingAvg,
+    ratingCount: rating?.ratingCount,
+  };
+}
+
 export async function fetchAllChaletsFromDb(includeHidden = false): Promise<RepoResult<Chalet[]>> {
   if (!isSupabaseConfigured || !supabase) {
     return { data: [], error: null };
@@ -862,19 +961,23 @@ export async function fetchAllChaletsFromDb(includeHidden = false): Promise<Repo
     if (!includeHidden) {
       query = query.eq('availability_status', 'active');
     }
-    const { data, error } = await query
-      .order('is_featured', { ascending: false })
-      .order('created_at', { ascending: false });
+    const [chaletsRes, pricingMap, ratingsMap] = await Promise.all([
+      query.order('is_featured', { ascending: false }).order('created_at', { ascending: false }),
+      fetchPricingRulesMap(),
+      fetchRatingSummariesMap(),
+    ]);
 
-    if (error) {
+    if (chaletsRes.error) {
       return {
         data: null,
-        error: formatSupabaseError(error, 'تعذر تحميل قائمة الوحدات من قاعدة البيانات.'),
+        error: formatSupabaseError(chaletsRes.error, 'تعذر تحميل قائمة الوحدات من قاعدة البيانات.'),
       };
     }
 
     return {
-      data: (data ?? []).map((row) => mapChaletFromRow(row as Record<string, unknown>)),
+      data: (chaletsRes.data ?? []).map((row) =>
+        enrichChalet(mapChaletFromRow(row as Record<string, unknown>), pricingMap, ratingsMap)
+      ),
       error: null,
     };
   } catch (err) {
@@ -895,13 +998,15 @@ export async function fetchOwnerChalets(): Promise<RepoResult<Chalet[]>> {
   }
 
   try {
-    const [chaletsRes, contactsRes] = await Promise.all([
+    const [chaletsRes, contactsRes, pricingMap, ratingsMap] = await Promise.all([
       supabase
         .from('chalets')
         .select(CHALET_PUBLIC_SELECT_COLUMNS)
         .eq('owner_id', user.id)
         .order('created_at', { ascending: false }),
       supabase.from('chalet_contacts').select('chalet_id, owner_phone').eq('owner_id', user.id),
+      fetchPricingRulesMap(),
+      fetchRatingSummariesMap(),
     ]);
 
     if (chaletsRes.error) {
@@ -922,7 +1027,7 @@ export async function fetchOwnerChalets(): Promise<RepoResult<Chalet[]>> {
 
     const mapped = (chaletsRes.data ?? []).map((row) => {
       const r = row as Record<string, unknown>;
-      return mapChaletFromRow(r, phoneMap.get(String(r.id)));
+      return enrichChalet(mapChaletFromRow(r, phoneMap.get(String(r.id))), pricingMap, ratingsMap);
     });
 
     return { data: mapped, error: null };
@@ -2007,6 +2112,222 @@ export async function adminReviewListingReportRpc(
       error: formatSupabaseError(err, 'تعذر مراجعة البلاغ.'),
       errorCode: extractErrorCodeKey(err) ?? undefined,
     };
+  }
+}
+
+// ---------- Marketplace Enhancements (`009_marketplace_enhancements.sql`) ----------
+
+export async function upsertChaletPricingRule(
+  chaletId: string,
+  input: ChaletPricingRuleInput
+): Promise<RepoResult<boolean>> {
+  const hasAnyRule =
+    (input.weekendPrice !== undefined && input.weekendPrice !== null && input.weekendPrice > 0) ||
+    (input.seasonalPrice !== undefined && input.seasonalPrice !== null && input.seasonalPrice > 0);
+
+  if (!isSupabaseConfigured || !supabase) {
+    return { data: true, error: null };
+  }
+  const user = await getCurrentAuthUser();
+  if (!user) {
+    return { data: null, error: MESSAGES.not_authenticated, errorCode: 'not_authenticated' };
+  }
+
+  try {
+    if (!hasAnyRule) {
+      const { error } = await supabase
+        .from('chalet_pricing_rules')
+        .delete()
+        .eq('chalet_id', chaletId);
+      if (error) {
+        // Ignore missing table if user didn't configure dynamic pricing
+        return { data: true, error: null };
+      }
+      return { data: true, error: null };
+    }
+
+    const { error } = await supabase.from('chalet_pricing_rules').upsert(
+      {
+        chalet_id: chaletId,
+        owner_id: user.id,
+        weekend_price:
+          input.weekendPrice && input.weekendPrice > 0 ? Math.round(input.weekendPrice) : null,
+        seasonal_price:
+          input.seasonalPrice && input.seasonalPrice > 0 ? Math.round(input.seasonalPrice) : null,
+        seasonal_label: input.seasonalLabel?.trim() || '',
+        seasonal_start: input.seasonalStart || null,
+        seasonal_end: input.seasonalEnd || null,
+      },
+      { onConflict: 'chalet_id' }
+    );
+
+    if (error) {
+      return {
+        data: null,
+        error: formatSupabaseError(error, 'تعذر حفظ قواعد التسعير المرن (تأكد من تشغيل ترحيل 009).'),
+      };
+    }
+
+    return { data: true, error: null };
+  } catch (err) {
+    return {
+      data: null,
+      error: formatSupabaseError(err, 'تعذر حفظ التسعير المرن.'),
+    };
+  }
+}
+
+function mapReviewFromRow(row: Record<string, unknown>): ChaletReviewRecord {
+  return {
+    id: String(row.id),
+    chaletId: String(row.chalet_id ?? ''),
+    reviewerName: String(row.reviewer_name ?? 'زائر'),
+    rating: Math.min(5, Math.max(1, Number(row.rating ?? 5))),
+    comment: String(row.comment ?? ''),
+    isApproved: row.is_approved !== false,
+    createdAt: String(row.created_at ?? new Date().toISOString()),
+  };
+}
+
+export async function fetchChaletReviews(
+  chaletId: string
+): Promise<RepoResult<ChaletReviewRecord[]>> {
+  if (!isSupabaseConfigured || !supabase) {
+    return { data: [], error: null };
+  }
+  try {
+    const { data, error } = await supabase
+      .from('chalet_reviews')
+      .select('id, chalet_id, reviewer_name, rating, comment, is_approved, created_at')
+      .eq('chalet_id', chaletId)
+      .eq('is_approved', true)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      return { data: [], error: null };
+    }
+
+    return {
+      data: (data ?? []).map((r) => mapReviewFromRow(r as Record<string, unknown>)),
+      error: null,
+    };
+  } catch {
+    return { data: [], error: null };
+  }
+}
+
+export async function submitChaletReviewRpc(
+  chaletId: string,
+  reviewerName: string,
+  rating: number,
+  comment = ''
+): Promise<RepoResult<ChaletReviewRecord>> {
+  if (!isSupabaseConfigured || !supabase) {
+    return { data: null, error: 'الاتصال بـ Supabase غير مهيأ.' };
+  }
+  try {
+    const { data, error } = await supabase.rpc('submit_chalet_review', {
+      p_chalet_id: chaletId,
+      p_reviewer_name: reviewerName.trim(),
+      p_rating: rating,
+      p_comment: comment.trim(),
+    });
+
+    if (error || !data || typeof data !== 'object') {
+      return {
+        data: null,
+        error: formatSupabaseError(error, 'تعذر إرسال التقييم الآن.'),
+        errorCode: extractErrorCodeKey(error) ?? undefined,
+      };
+    }
+
+    return { data: mapReviewFromRow(data as Record<string, unknown>), error: null };
+  } catch (err) {
+    return {
+      data: null,
+      error: formatSupabaseError(err, 'تعذر إرسال التقييم الآن.'),
+    };
+  }
+}
+
+function mapNotificationFromRow(row: Record<string, unknown>): UserNotificationRecord {
+  const rawType = String(row.type ?? 'system');
+  const type: NotificationType =
+    rawType === 'verification' || rawType === 'subscription' || rawType === 'report'
+      ? rawType
+      : 'system';
+  const rawLink = row.link_section ? String(row.link_section) : '';
+  const linkSection: RouteSection | undefined =
+    rawLink === 'home' || rawLink === 'pricing' || rawLink === 'owner' || rawLink === 'admin'
+      ? rawLink
+      : undefined;
+
+  return {
+    id: String(row.id),
+    userId: String(row.user_id ?? ''),
+    type,
+    title: String(row.title ?? ''),
+    body: String(row.body ?? ''),
+    linkSection,
+    isRead: Boolean(row.is_read),
+    createdAt: String(row.created_at ?? new Date().toISOString()),
+  };
+}
+
+export async function fetchMyNotifications(): Promise<RepoResult<UserNotificationRecord[]>> {
+  if (!isSupabaseConfigured || !supabase) {
+    return { data: [], error: null };
+  }
+  const user = await getCurrentAuthUser();
+  if (!user) {
+    return { data: [], error: null };
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('user_notifications')
+      .select('id, user_id, type, title, body, link_section, is_read, created_at')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false })
+      .limit(20);
+
+    if (error) {
+      return { data: [], error: null };
+    }
+
+    return {
+      data: (data ?? []).map((r) => mapNotificationFromRow(r as Record<string, unknown>)),
+      error: null,
+    };
+  } catch {
+    return { data: [], error: null };
+  }
+}
+
+export async function markNotificationRead(notificationId: string): Promise<void> {
+  if (!isSupabaseConfigured || !supabase) return;
+  try {
+    await supabase
+      .from('user_notifications')
+      .update({ is_read: true })
+      .eq('id', notificationId);
+  } catch {
+    // non-fatal
+  }
+}
+
+export async function markAllNotificationsRead(): Promise<void> {
+  if (!isSupabaseConfigured || !supabase) return;
+  const user = await getCurrentAuthUser();
+  if (!user) return;
+  try {
+    await supabase
+      .from('user_notifications')
+      .update({ is_read: true })
+      .eq('user_id', user.id)
+      .eq('is_read', false);
+  } catch {
+    // non-fatal
   }
 }
 

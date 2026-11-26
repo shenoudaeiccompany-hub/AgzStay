@@ -90,15 +90,32 @@ export interface InformationalPriceSummary {
   isMonthlyOnly: boolean;
   nights: number;
   unitPrice: number;
+  averageNightlyPrice: number;
   subtotal: number;
+  hasDynamicPricing: boolean;
+  regularNightsCount: number;
+  weekendNightsCount: number;
+  seasonalNightsCount: number;
   hasInformationalDeposit: boolean;
   depositAmount: number;
   depositDisplayText: string;
 }
 
 export function calculateInformationalQuote(
-  chalet: Pick<Chalet, 'propertyType' | 'pricePerNight' | 'monthlyPrice' | 'depositType' | 'depositValue'>,
-  nights: number
+  chalet: Pick<
+    Chalet,
+    | 'propertyType'
+    | 'pricePerNight'
+    | 'monthlyPrice'
+    | 'weekendPrice'
+    | 'seasonalPrice'
+    | 'seasonalStart'
+    | 'seasonalEnd'
+    | 'depositType'
+    | 'depositValue'
+  >,
+  nights: number,
+  checkInIso?: string
 ): InformationalPriceSummary {
   const isMonthlyOnly = chalet.propertyType === 'شقة فاضية';
   const unitPrice = isMonthlyOnly
@@ -106,7 +123,48 @@ export function calculateInformationalQuote(
     : chalet.pricePerNight;
 
   const safeNights = Math.max(1, nights);
-  const subtotal = isMonthlyOnly ? unitPrice : unitPrice * safeNights;
+  let subtotal = isMonthlyOnly ? unitPrice : unitPrice * safeNights;
+  let regularNightsCount = isMonthlyOnly ? 0 : safeNights;
+  let weekendNightsCount = 0;
+  let seasonalNightsCount = 0;
+
+  const weekendPrice =
+    chalet.weekendPrice && chalet.weekendPrice > 0 ? Number(chalet.weekendPrice) : 0;
+  const seasonalPrice =
+    chalet.seasonalPrice && chalet.seasonalPrice > 0 ? Number(chalet.seasonalPrice) : 0;
+  const seasonalStart = chalet.seasonalStart || '';
+  const seasonalEnd = chalet.seasonalEnd || '';
+
+  if (!isMonthlyOnly && checkInIso && (weekendPrice > 0 || seasonalPrice > 0)) {
+    const stayDates = expandStayDates(checkInIso, safeNights);
+    subtotal = 0;
+    regularNightsCount = 0;
+    for (const iso of stayDates) {
+      if (
+        seasonalPrice > 0 &&
+        seasonalStart &&
+        seasonalEnd &&
+        iso >= seasonalStart &&
+        iso <= seasonalEnd
+      ) {
+        subtotal += seasonalPrice;
+        seasonalNightsCount += 1;
+      } else {
+        const day = parseIsoDate(iso).getDay();
+        // Egypt weekend: Thursday (4) & Friday (5)
+        if (weekendPrice > 0 && (day === 4 || day === 5)) {
+          subtotal += weekendPrice;
+          weekendNightsCount += 1;
+        } else {
+          subtotal += unitPrice;
+          regularNightsCount += 1;
+        }
+      }
+    }
+  }
+
+  const hasDynamicPricing = weekendNightsCount > 0 || seasonalNightsCount > 0;
+  const averageNightlyPrice = isMonthlyOnly ? unitPrice : Math.round(subtotal / safeNights);
 
   const rawDeposit = Number(chalet.depositValue || 0);
   const hasInformationalDeposit = Number.isFinite(rawDeposit) && rawDeposit > 0;
@@ -128,7 +186,12 @@ export function calculateInformationalQuote(
     isMonthlyOnly,
     nights: safeNights,
     unitPrice,
+    averageNightlyPrice,
     subtotal,
+    hasDynamicPricing,
+    regularNightsCount,
+    weekendNightsCount,
+    seasonalNightsCount,
     hasInformationalDeposit,
     depositAmount,
     depositDisplayText,
@@ -146,4 +209,33 @@ export function buildWhatsAppPhoneUrl(rawPhone: string, message: string): string
     international = `2${digits}`;
   }
   return `https://wa.me/${international}?text=${encodeURIComponent(message)}`;
+}
+
+export function buildOwnerMarketingCopy(chalet: Chalet, shareUrl: string): string {
+  const location = [chalet.governorate, chalet.city, chalet.areaOrVillage]
+    .filter(Boolean)
+    .join(' - ');
+  const isMonthly = chalet.propertyType === 'شقة فاضية';
+  const lines = [
+    `✨ ${chalet.title}`,
+    `📍 الموقع: ${location}`,
+    `🏠 النوع: ${chalet.propertyType} (${chalet.bedrooms} غرف • ${chalet.bathrooms} حمام • حتى ${chalet.maxGuests} أفراد)`,
+    `💰 السعر: ${Math.round(chalet.pricePerNight).toLocaleString('ar-EG')} ج.م / ${isMonthly ? 'شهرياً' : 'لليلة'}`,
+  ];
+
+  if (!isMonthly && chalet.weekendPrice && chalet.weekendPrice > 0) {
+    lines.push(
+      `📅 سعر الويك إند (الخميس والجمعة): ${Math.round(chalet.weekendPrice).toLocaleString('ar-EG')} ج.م / ليلة`
+    );
+  }
+  if (!isMonthly && chalet.seasonalPrice && chalet.seasonalPrice > 0) {
+    lines.push(
+      `☀️ سعر ${chalet.seasonalLabel || 'الموسم'}: ${Math.round(chalet.seasonalPrice).toLocaleString('ar-EG')} ج.م / ليلة`
+    );
+  }
+  if (chalet.ownerVerified) {
+    lines.push('✅ معلن موثق عبر AgzStay');
+  }
+  lines.push(`🔗 تفاصيل الوحدة والصور والتواصل المباشر:\n${shareUrl}`);
+  return lines.join('\n');
 }

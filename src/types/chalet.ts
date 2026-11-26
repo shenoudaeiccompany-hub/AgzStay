@@ -27,7 +27,7 @@ export type AmenityId =
 
 export type ListingAvailabilityStatus = 'active' | 'hidden' | 'rented';
 
-export type SortOption = 'featured' | 'price-asc' | 'price-desc';
+export type SortOption = 'featured' | 'price-asc' | 'price-desc' | 'rating-desc';
 
 export type ViewMode = 'grid' | 'map';
 
@@ -61,7 +61,14 @@ export interface Chalet {
   depositType: DepositType;
   depositValue: number;
   pricePerNight: number;
+  weekendPrice?: number;
+  seasonalPrice?: number;
+  seasonalLabel?: string;
+  seasonalStart?: string;
+  seasonalEnd?: string;
   monthlyPrice?: number;
+  ratingAvg?: number;
+  ratingCount?: number;
   bedrooms: number;
   bathrooms: number;
   areaSqm?: number;
@@ -153,6 +160,10 @@ export interface FilterState {
   propertyType: PropertyType | 'الكل';
   advertiserRole: AdvertiserRoleLabel | 'الكل';
   maxPrice: number | null;
+  minBedrooms: number | null;
+  minGuests: number | null;
+  amenities: AmenityId[];
+  verifiedOnly: boolean;
   checkInDate: string;
   checkOutDate: string;
   sortBy: SortOption;
@@ -218,4 +229,35 @@ export interface ListingReportRecord {
   adminNote?: string;
   createdAt: string;
   reviewedAt?: string;
+}
+
+export interface ChaletPricingRuleInput {
+  weekendPrice?: number | null;
+  seasonalPrice?: number | null;
+  seasonalLabel?: string;
+  seasonalStart?: string;
+  seasonalEnd?: string;
+}
+
+export interface ChaletReviewRecord {
+  id: string;
+  chaletId: string;
+  reviewerName: string;
+  rating: number;
+  comment: string;
+  isApproved: boolean;
+  createdAt: string;
+}
+
+export type NotificationType = 'verification' | 'subscription' | 'report' | 'system';
+
+export interface UserNotificationRecord {
+  id: string;
+  userId: string;
+  type: NotificationType;
+  title: string;
+  body: string;
+  linkSection?: RouteSection;
+  isRead: boolean;
+  createdAt: string;
 }

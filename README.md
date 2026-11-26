@@ -37,11 +37,12 @@ npm run dev
 
 ## إعداد Supabase والأمان
 
-1. افتح **SQL Editor** في لوحة Supabase ونفّذ الترحيلات بالترتيب من `001` حتى `008`:
+1. افتح **SQL Editor** في لوحة Supabase ونفّذ الترحيلات بالترتيب من `001` حتى `009`:
    - `001`–`005`: الجداول الأساسية، الباقات، نظام الحجز، الإعلانات، والتخزين.
    - `supabase/migrations/006_secure_v2.sql`: إغلاق الثغرات الأمنية (`SECURITY INVOKER` + `set search_path = ''`، عزل `owner_phone` في `chalet_contacts`، كشف الرقم المحدود بـ `reveal_listing_contact()`، حصر الاشتراكات عبر `request_subscription` و`admin_review_subscription`، قفل باكت `receipts`، وحماية صلاحية `admin`).
    - `supabase/migrations/007_maintenance_and_legacy_triggers_fix.sql`: إصلاح تريجرات `002`/`003` القديمة، وإضافة دوال الصيانة المجدولة (`expire_subscriptions()`، `purge_contact_reveals()`) ودالة ربط الإعلانات القديمة (`admin_link_legacy_owner(p_user_id, p_phone)`).
    - `supabase/migrations/008_verification_reports_and_stats.sql`: تفعيل نظام توثيق الملاك وشارة «معلن موثق» (`verifications` + `submit_owner_verification` + `admin_review_owner_verification`)، وإحصائيات كشف الرقم المجمّعة للمعلن (`get_owner_contact_reveal_stats`)، ونظام البلاغات عن الوحدات المخالفة (`submit_listing_report` + `admin_review_listing_report`).
+   - `supabase/migrations/009_marketplace_enhancements.sql`: إضافة التسعير المرن للويك إند والمواسم (`chalet_pricing_rules`)، ونظام تقييمات الزوار المحمي بمعدل التقييد (`chalet_reviews` + `submit_chalet_review`)، ومركز الإشعارات التلقائي داخل التطبيق (`user_notifications` + تريجرات التوثيق والاشتراكات والبلاغات).
 2. لتعيين حساب مدير من **SQL Editor** (مرتبط بالمشروع الصحيح):
    ```sql
    update public.profiles

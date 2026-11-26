@@ -5,7 +5,9 @@ import {
   BarChart3,
   Building2,
   Calendar,
+  Check,
   CheckCircle2,
+  Copy,
   Crown,
   Edit3,
   Eye,
@@ -63,6 +65,7 @@ import {
   updateMyProfile,
   uploadPropertyImages,
   uploadVerificationDocumentFile,
+  upsertChaletPricingRule,
 } from '@/services/agzstayRepository';
 import type {
   AdvertiserRoleLabel,
@@ -79,7 +82,12 @@ import type {
   UserProfile,
   VerificationDocumentType,
 } from '@/types/chalet';
-import { addDaysIso, formatArabicDate, formatIsoDate } from '@/utils/bookingPricing';
+import {
+  addDaysIso,
+  buildOwnerMarketingCopy,
+  formatArabicDate,
+  formatIsoDate,
+} from '@/utils/bookingPricing';
 
 interface OwnerPortalProps {
   onNavigate: (section: RouteSection) => void;
@@ -100,6 +108,11 @@ interface UnitFormState {
   advertiserRole: AdvertiserRoleLabel;
   ownerPhone: string;
   priceText: string;
+  weekendPriceText: string;
+  seasonalPriceText: string;
+  seasonalLabel: string;
+  seasonalStart: string;
+  seasonalEnd: string;
   depositType: DepositType;
   depositValueText: string;
   bedrooms: string;
@@ -128,6 +141,11 @@ function createEmptyUnitForm(defaultPhone = '', defaultAdvType: AdvertiserTypeCo
     advertiserRole: defaultAdvType === 'broker' ? 'مكتب / وسيط' : 'مالك مباشر',
     ownerPhone: defaultPhone,
     priceText: '',
+    weekendPriceText: '',
+    seasonalPriceText: '',
+    seasonalLabel: '',
+    seasonalStart: '',
+    seasonalEnd: '',
     depositType: 'percent',
     depositValueText: '',
     bedrooms: '2',
@@ -159,6 +177,12 @@ function unitToFormState(unit: Chalet, fallbackPhone = ''): UnitFormState {
     advertiserRole: unit.advertiserRole,
     ownerPhone: unit.ownerPhone || fallbackPhone,
     priceText: unit.pricePerNight > 0 ? String(unit.pricePerNight) : '',
+    weekendPriceText: unit.weekendPrice && unit.weekendPrice > 0 ? String(unit.weekendPrice) : '',
+    seasonalPriceText:
+      unit.seasonalPrice && unit.seasonalPrice > 0 ? String(unit.seasonalPrice) : '',
+    seasonalLabel: unit.seasonalLabel ?? '',
+    seasonalStart: unit.seasonalStart ?? '',
+    seasonalEnd: unit.seasonalEnd ?? '',
     depositType: unit.depositType,
     depositValueText: unit.depositValue > 0 ? String(unit.depositValue) : '',
     bedrooms: String(unit.bedrooms || 1),
@@ -237,6 +261,7 @@ export function OwnerPortal({
   const [blockStartDate, setBlockStartDate] = useState(() => formatIsoDate(new Date()));
   const [blockEndDate, setBlockEndDate] = useState(() => formatIsoDate(new Date()));
   const [savingCalendar, setSavingCalendar] = useState(false);
+  const [copiedMarketingUnitId, setCopiedMarketingUnitId] = useState<string | null>(null);
 
   const loadOwnerData = useCallback(async (user: AuthUserSummary | null) => {
     if (!user) return;
@@ -709,6 +734,28 @@ export function OwnerPortal({
       availabilityStatus: existingUnit?.availabilityStatus ?? ('active' as const),
     };
 
+    if (
+      form.propertyType !== 'شقة فاضية' &&
+      form.seasonalStart &&
+      form.seasonalEnd &&
+      form.seasonalEnd < form.seasonalStart
+    ) {
+      setFeedback({
+        type: 'error',
+        text: 'تاريخ نهاية الموسم يجب أن يكون بعد أو مساوياً لتاريخ البداية.',
+      });
+      return;
+    }
+
+    const parsedWeekendPrice =
+      form.propertyType !== 'شقة فاضية' && form.weekendPriceText.trim()
+        ? Number(form.weekendPriceText)
+        : 0;
+    const parsedSeasonalPrice =
+      form.propertyType !== 'شقة فاضية' && form.seasonalPriceText.trim()
+        ? Number(form.seasonalPriceText)
+        : 0;
+
     setSavingUnit(true);
     setFeedback(null);
     try {
@@ -725,9 +772,23 @@ export function OwnerPortal({
         return;
       }
 
+      let pricingRuleError: string | null = null;
+      const pricingRes = await upsertChaletPricingRule(res.data.id, {
+        weekendPrice: parsedWeekendPrice > 0 ? parsedWeekendPrice : null,
+        seasonalPrice: parsedSeasonalPrice > 0 ? parsedSeasonalPrice : null,
+        seasonalLabel: form.seasonalLabel.trim(),
+        seasonalStart: form.seasonalStart || undefined,
+        seasonalEnd: form.seasonalEnd || undefined,
+      });
+      if (pricingRes.error && (parsedWeekendPrice > 0 || parsedSeasonalPrice > 0)) {
+        pricingRuleError = pricingRes.error;
+      }
+
       setFeedback({
         type: 'success',
-        text: editingUnitId
+        text: pricingRuleError
+          ? `تم حفظ الوحدة بنجاح، لكن تعذر حفظ التسعير المرن (${pricingRuleError}).`
+          : editingUnitId
           ? 'تم تحديث بيانات الوحدة ورقم التواصل بنجاح.'
           : 'تم نشر وحدتك بنجاح وحفظ رقم التواصل بأمان.',
       });
@@ -737,6 +798,35 @@ export function OwnerPortal({
       onDataChanged?.();
     } finally {
       setSavingUnit(false);
+    }
+  };
+
+  const handleCopyMarketingCopy = async (unit: Chalet) => {
+    const encodedId = encodeURIComponent(unit.id);
+    let shareUrl = `https://agzstay.com/chalet/${encodedId}`;
+    try {
+      shareUrl = `${window.location.origin}/chalet/${encodedId}`;
+    } catch {
+      // fallback
+    }
+    const text = buildOwnerMarketingCopy(unit, shareUrl);
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+      }
+      setCopiedMarketingUnitId(unit.id);
+      window.setTimeout(() => {
+        setCopiedMarketingUnitId((prev) => (prev === unit.id ? null : prev));
+      }, 2400);
+    } catch {
+      setCopiedMarketingUnitId(unit.id);
     }
   };
 
@@ -1367,6 +1457,34 @@ export function OwnerPortal({
             </div>
           </div>
 
+          {(() => {
+            if (subSummary.status !== 'active' || !subSummary.expiresAt) return null;
+            const expiresMs = Date.parse(subSummary.expiresAt);
+            if (!Number.isFinite(expiresMs)) return null;
+            const daysRemaining = Math.ceil((expiresMs - Date.now()) / 86400000);
+            if (daysRemaining > 7) return null;
+            return (
+              <div
+                className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-xs font-semibold text-amber-950"
+                role="status"
+              >
+                <span className="inline-flex items-center gap-2">
+                  <AlertTriangle className="h-4 w-4 shrink-0 text-amber-700" />
+                  {daysRemaining <= 0
+                    ? 'انتهت صلاحية باقة اشتراكك أو قاربت على الانتهاء اليوم — جدد الاشتراك لاستمرار تمييز وحداتك.'
+                    : `تنبيه: باقة اشتراكك الحالية تنتهي خلال ${daysRemaining.toLocaleString('ar-EG')} ${daysRemaining === 1 ? 'يوم' : 'أيام'} (${formatArabicDate(subSummary.expiresAt.slice(0, 10))}).`}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => onNavigate('pricing')}
+                  className="rounded-lg bg-[#1E3A5F] px-3.5 py-1.5 text-xs font-bold text-white hover:bg-[#172E4D]"
+                >
+                  تجديد الاشتراك الآن
+                </button>
+              </div>
+            );
+          })()}
+
           {!canAddAnotherUnit && (
             <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-semibold text-amber-950">
               <span>
@@ -1929,6 +2047,93 @@ export function OwnerPortal({
               </div>
             </div>
 
+            {/* Optional Flexible Weekend & Seasonal Pricing */}
+            {!isMonthlySelected && (
+              <div className="rounded-2xl border border-stone-200/70 bg-[#FAF9F6] p-4">
+                <div className="mb-3">
+                  <span className="block text-xs font-bold text-[#1E3A5F]">
+                    التسعير المرن للويك إند والمواسم (اختياري)
+                  </span>
+                  <span className="text-[11px] text-[#6B7280]">
+                    تُطبّق تلقائياً على ليالي الخميس والجمعة أو خلال فترة الموسم المحددة.
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                  <div>
+                    <label className="mb-1 block text-[11px] font-semibold text-[#6B7280]">
+                      سعر ليلة الويك إند (ج.م)
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      value={form.weekendPriceText}
+                      onChange={(e) =>
+                        setForm((p) => ({ ...p, weekendPriceText: e.target.value }))
+                      }
+                      placeholder="مثال: 3200"
+                      className="h-10 w-full rounded-xl border border-stone-200/70 bg-white px-3 text-xs font-semibold text-[#1F2937] focus:border-[#1E3A5F] focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-semibold text-[#6B7280]">
+                      سعر ليلة الموسم (ج.م)
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      value={form.seasonalPriceText}
+                      onChange={(e) =>
+                        setForm((p) => ({ ...p, seasonalPriceText: e.target.value }))
+                      }
+                      placeholder="مثال: 4000"
+                      className="h-10 w-full rounded-xl border border-stone-200/70 bg-white px-3 text-xs font-semibold text-[#1F2937] focus:border-[#1E3A5F] focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-semibold text-[#6B7280]">
+                      اسم الموسم / العيد
+                    </label>
+                    <input
+                      type="text"
+                      maxLength={80}
+                      value={form.seasonalLabel}
+                      onChange={(e) =>
+                        setForm((p) => ({ ...p, seasonalLabel: e.target.value }))
+                      }
+                      placeholder="مثال: عيد الأضحى"
+                      className="h-10 w-full rounded-xl border border-stone-200/70 bg-white px-3 text-xs font-semibold text-[#1F2937] focus:border-[#1E3A5F] focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-semibold text-[#6B7280]">
+                      بداية الموسم
+                    </label>
+                    <input
+                      type="date"
+                      value={form.seasonalStart}
+                      onChange={(e) =>
+                        setForm((p) => ({ ...p, seasonalStart: e.target.value }))
+                      }
+                      className="h-10 w-full rounded-xl border border-stone-200/70 bg-white px-3 text-xs font-semibold text-[#1F2937] focus:border-[#1E3A5F] focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-semibold text-[#6B7280]">
+                      نهاية الموسم
+                    </label>
+                    <input
+                      type="date"
+                      value={form.seasonalEnd}
+                      onChange={(e) =>
+                        setForm((p) => ({ ...p, seasonalEnd: e.target.value }))
+                      }
+                      className="h-10 w-full rounded-xl border border-stone-200/70 bg-white px-3 text-xs font-semibold text-[#1F2937] focus:border-[#1E3A5F] focus:outline-none"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Specs */}
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
               <div>
@@ -2237,6 +2442,25 @@ export function OwnerPortal({
                     </div>
 
                     <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void handleCopyMarketingCopy(unit)}
+                        className={`inline-flex min-h-[38px] items-center gap-1 rounded-xl border px-3 py-1.5 text-xs font-semibold transition ${
+                          copiedMarketingUnitId === unit.id
+                            ? 'border-emerald-300 bg-emerald-50 text-emerald-700'
+                            : 'border-[#C5A880]/70 bg-[#FAF6F0] text-[#1E3A5F] hover:bg-[#C5A880]/15'
+                        }`}
+                      >
+                        {copiedMarketingUnitId === unit.id ? (
+                          <Check className="h-3.5 w-3.5 text-emerald-600" />
+                        ) : (
+                          <Copy className="h-3.5 w-3.5 text-[#C5A880]" />
+                        )}
+                        <span>
+                          {copiedMarketingUnitId === unit.id ? 'تم نسخ الإعلان' : 'نسخ إعلان واتساب'}
+                        </span>
+                      </button>
+
                       <button
                         type="button"
                         onClick={() =>

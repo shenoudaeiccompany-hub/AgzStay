@@ -7,6 +7,7 @@ import {
 import { resolveOwnerQuota } from '@/data/subscriptions';
 import type { Chalet, SubscriptionRecord } from '@/types/chalet';
 import {
+  buildOwnerMarketingCopy,
   buildWhatsAppPhoneUrl,
   calculateInformationalQuote,
   calculateNightsBetween,
@@ -75,6 +76,41 @@ describe('V2 AgzStay bookingPricing, locations, and quota utilities', () => {
     expect(monthlyQuote.isMonthlyOnly).toBe(true);
     expect(monthlyQuote.subtotal).toBe(15000);
     expect(monthlyQuote.depositAmount).toBe(15000);
+  });
+
+  it('applies weekend (Thursday/Friday) and seasonal pricing rules day-by-day when check-in is supplied', () => {
+    // 2026-07-01 is Wednesday, 2026-07-02 is Thursday (weekend), 2026-07-03 is Friday (weekend)
+    // 2026-07-04 is Saturday (seasonal range)
+    const dynamicChalet = makeMockChalet({
+      pricePerNight: 2000,
+      weekendPrice: 3000,
+      seasonalPrice: 4500,
+      seasonalLabel: 'ذروة الصيف',
+      seasonalStart: '2026-07-04',
+      seasonalEnd: '2026-07-05',
+      depositType: 'percent',
+      depositValue: 10,
+    });
+
+    const quote = calculateInformationalQuote(dynamicChalet, 4, '2026-07-01');
+    expect(quote.hasDynamicPricing).toBe(true);
+    expect(quote.regularNightsCount).toBe(1); // Wed
+    expect(quote.weekendNightsCount).toBe(2); // Thu + Fri
+    expect(quote.seasonalNightsCount).toBe(1); // Sat (seasonal overrides regular/weekend)
+    expect(quote.subtotal).toBe(2000 + 3000 * 2 + 4500);
+    expect(quote.depositAmount).toBe(1250);
+  });
+
+  it('builds formatted WhatsApp marketing copy for owners', () => {
+    const chalet = makeMockChalet({
+      weekendPrice: 2800,
+      ownerVerified: true,
+    });
+    const copy = buildOwnerMarketingCopy(chalet, 'https://agzstay.com/chalet/chalet-test-1');
+    expect(copy).toContain(chalet.title);
+    expect(copy).toContain('معلن موثق');
+    expect(copy).toContain('الويك إند');
+    expect(copy).toContain('https://agzstay.com/chalet/chalet-test-1');
   });
 
   it('detects blockedDates conflicts accurately', () => {

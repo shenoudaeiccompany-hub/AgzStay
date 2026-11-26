@@ -9,9 +9,10 @@ import {
   MapPin,
   ShieldCheck,
   Sparkles,
+  Star,
   Users,
 } from 'lucide-react';
-import { formatEGP, getShortPriceUnitLabel } from '@/data/chalets';
+import { formatEGP, getShortPriceUnitLabel, isMonthlyOnlyProperty } from '@/data/chalets';
 import type { Chalet } from '@/types/chalet';
 import { buildResponsiveImageAttributes } from '@/utils/imageOptimization';
 
@@ -125,9 +126,18 @@ export function PropertyCard({
 
       {/* Balanced Whitespace Card Body */}
       <div className="flex flex-1 flex-col p-5">
-        <h3 className="line-clamp-2 text-base font-bold leading-snug text-[#1F2937] transition group-hover:text-[#1E3A5F]">
-          {property.title}
-        </h3>
+        <div className="flex items-start justify-between gap-2">
+          <h3 className="line-clamp-2 text-base font-bold leading-snug text-[#1F2937] transition group-hover:text-[#1E3A5F]">
+            {property.title}
+          </h3>
+          {(property.ratingCount ?? 0) > 0 && property.ratingAvg && (
+            <span className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-[#FAF6F0] px-2 py-0.5 text-[11px] font-bold text-[#1E3A5F]">
+              <Star className="h-3 w-3 fill-[#C5A880] text-[#C5A880]" />
+              <span>{property.ratingAvg.toFixed(1)}</span>
+              <span className="font-normal text-[#6B7280]">({property.ratingCount})</span>
+            </span>
+          )}
+        </div>
 
         <div className="mt-2 flex items-center gap-1.5 text-xs text-[#6B7280]">
           <MapPin className="h-3.5 w-3.5 shrink-0 text-[#C5A880]" />
@@ -159,6 +169,11 @@ export function PropertyCard({
               </span>
               <span className="text-xs font-semibold text-[#6B7280]">/ {periodWord}</span>
             </div>
+            {!isMonthlyOnlyProperty(property) && (property.weekendPrice ?? 0) > 0 && (
+              <span className="mt-0.5 block text-[11px] font-semibold text-[#9A7B4F]">
+                الويك إند: {formatEGP(property.weekendPrice!)}
+              </span>
+            )}
           </div>
 
           <button

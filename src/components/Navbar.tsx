@@ -1,6 +1,13 @@
-import { useState } from 'react';
-import { Heart, Home, Menu, X } from 'lucide-react';
-import type { RouteSection } from '@/types/chalet';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Bell, CheckCheck, Heart, Home, Menu, X } from 'lucide-react';
+import {
+  fetchMyNotifications,
+  getCurrentAuthUser,
+  markAllNotificationsRead,
+  markNotificationRead,
+  onAuthStateChange,
+} from '@/services/agzstayRepository';
+import type { AuthUserSummary, RouteSection, UserNotificationRecord } from '@/types/chalet';
 
 interface NavbarProps {
   activeSection: RouteSection;
@@ -27,14 +34,88 @@ export function Navbar({
   onResetHome,
 }: NavbarProps) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [authUser, setAuthUser] = useState<AuthUserSummary | null>(null);
+  const [notifications, setNotifications] = useState<UserNotificationRecord[]>([]);
+  const [notifOpen, setNotifOpen] = useState(false);
+  const notifContainerRef = useRef<HTMLDivElement | null>(null);
+
+  const loadNotifications = useCallback(async () => {
+    const res = await fetchMyNotifications();
+    if (!res.error && res.data) {
+      setNotifications(res.data);
+    }
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    const init = async () => {
+      const user = await getCurrentAuthUser();
+      if (!active) return;
+      setAuthUser(user);
+      if (user) {
+        await loadNotifications();
+      }
+    };
+    void init();
+
+    const unsubscribe = onAuthStateChange((user) => {
+      setAuthUser(user);
+      if (user) {
+        void loadNotifications();
+      } else {
+        setNotifications([]);
+        setNotifOpen(false);
+      }
+    });
+
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [loadNotifications]);
+
+  useEffect(() => {
+    if (!notifOpen) return;
+    const handleOutside = (event: MouseEvent) => {
+      if (
+        notifContainerRef.current &&
+        !notifContainerRef.current.contains(event.target as Node)
+      ) {
+        setNotifOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutside);
+    return () => document.removeEventListener('mousedown', handleOutside);
+  }, [notifOpen]);
+
+  const unreadCount = notifications.filter((n) => !n.isRead).length;
 
   const handleNavClick = (section: RouteSection) => {
     setMobileMenuOpen(false);
+    setNotifOpen(false);
     if (section === 'home') {
       onResetHome();
     } else {
       onNavigate(section);
     }
+  };
+
+  const handleNotificationClick = async (item: UserNotificationRecord) => {
+    if (!item.isRead) {
+      setNotifications((prev) =>
+        prev.map((n) => (n.id === item.id ? { ...n, isRead: true } : n))
+      );
+      await markNotificationRead(item.id);
+    }
+    setNotifOpen(false);
+    if (item.linkSection) {
+      onNavigate(item.linkSection);
+    }
+  };
+
+  const handleMarkAllRead = async () => {
+    setNotifications((prev) => prev.map((n) => ({ ...n, isRead: true })));
+    await markAllNotificationsRead();
   };
 
   return (
@@ -86,8 +167,91 @@ export function Navbar({
           })}
         </nav>
 
-        {/* Favorites & Mobile Trigger */}
+        {/* Notifications, Favorites & Mobile Trigger */}
         <div className="flex items-center gap-2">
+          {authUser && (
+            <div ref={notifContainerRef} className="relative">
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !notifOpen;
+                  setNotifOpen(next);
+                  if (next) void loadNotifications();
+                }}
+                aria-label="الإشعارات"
+                aria-expanded={notifOpen}
+                className={`relative flex h-10 w-10 items-center justify-center rounded-xl border transition ${
+                  notifOpen
+                    ? 'border-[#C5A880] bg-[#C5A880]/15 text-[#1E3A5F]'
+                    : 'border-stone-200/70 bg-white text-[#1E3A5F] shadow-xs hover:border-stone-300'
+                }`}
+              >
+                <Bell className="h-4 w-4" />
+                {unreadCount > 0 && (
+                  <span className="absolute -left-1 -top-1 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-bold text-white">
+                    {unreadCount > 9 ? '9+' : unreadCount}
+                  </span>
+                )}
+              </button>
+
+              {notifOpen && (
+                <div
+                  className="absolute left-0 mt-2 w-80 max-w-[90vw] overflow-hidden rounded-2xl border border-stone-200/80 bg-white shadow-xl"
+                  role="region"
+                  aria-label="قائمة الإشعارات"
+                >
+                  <div className="flex items-center justify-between border-b border-stone-100 px-4 py-3">
+                    <span className="text-xs font-bold text-[#1E3A5F]">
+                      الإشعارات ({unreadCount.toLocaleString('ar-EG')} غير مقروء)
+                    </span>
+                    {unreadCount > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => void handleMarkAllRead()}
+                        className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 hover:underline"
+                      >
+                        <CheckCheck className="h-3.5 w-3.5" />
+                        <span>تحديد الكل كمقروء</span>
+                      </button>
+                    )}
+                  </div>
+
+                  {notifications.length === 0 ? (
+                    <div className="px-4 py-8 text-center text-xs text-[#6B7280]">
+                      لا توجد إشعارات جديدة لحسابك حالياً.
+                    </div>
+                  ) : (
+                    <ul className="max-h-80 divide-y divide-stone-100 overflow-y-auto">
+                      {notifications.map((item) => (
+                        <li key={item.id}>
+                          <button
+                            type="button"
+                            onClick={() => void handleNotificationClick(item)}
+                            className={`w-full px-4 py-3 text-right transition hover:bg-[#FAF9F6] ${
+                              item.isRead ? 'bg-white' : 'bg-[#FAF6F0]/70'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-xs font-bold text-[#1E3A5F]">
+                                {item.title}
+                              </span>
+                              {!item.isRead && (
+                                <span className="h-2 w-2 shrink-0 rounded-full bg-[#C5A880]" />
+                              )}
+                            </div>
+                            <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-[#6B7280]">
+                              {item.body}
+                            </p>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
           <button
             type="button"
             onClick={() => {
