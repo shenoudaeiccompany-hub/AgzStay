@@ -23,6 +23,7 @@ import {
   fetchPlansFromDb,
   getCurrentAuthUser,
   onAuthStateChange,
+  sendPasswordResetEmail,
   signInWithEmailPassword,
   signUpOwnerAccount,
   submitSubscriptionRequestRpc,
@@ -53,7 +54,7 @@ export function PricingPage({ onNavigate, onSubscriptionSubmitted }: PricingPage
   const [profile, setProfile] = useState<UserProfile | null>(null);
 
   // Inline Supabase Auth state when user wants to subscribe while logged out
-  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
+  const [authMode, setAuthMode] = useState<'login' | 'signup' | 'forgot'>('login');
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authName, setAuthName] = useState('');
@@ -138,6 +139,19 @@ export function PricingPage({ onNavigate, onSubscriptionSubmitted }: PricingPage
     setAuthMessage('');
     setAuthLoading(true);
     try {
+      if (authMode === 'forgot') {
+        const res = await sendPasswordResetEmail(authEmail, '/pricing');
+        if (res.error) {
+          setErrorMsg(res.error);
+          return;
+        }
+        setAuthMessage(
+          'تم إرسال رابط استعادة كلمة المرور إلى بريدك الإلكتروني. افتح الرابط لإعادة تعيين كلمة المرور ثم سجّل الدخول.'
+        );
+        setAuthMode('login');
+        return;
+      }
+
       if (authMode === 'login') {
         const res = await signInWithEmailPassword(authEmail, authPassword);
         if (res.error || !res.data) {
@@ -448,7 +462,9 @@ export function PricingPage({ onNavigate, onSubscriptionSubmitted }: PricingPage
             <div className="mt-6 rounded-2xl border border-stone-200/70 bg-[#FAF9F6] p-5">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <h3 className="text-sm font-bold text-[#1E3A5F]">
-                  سجّل دخولك أولاً لإتمام طلب الاشتراك
+                  {authMode === 'forgot'
+                    ? 'استعادة كلمة المرور'
+                    : 'سجّل دخولك أولاً لإتمام طلب الاشتراك'}
                 </h3>
                 <div className="flex rounded-xl border border-stone-200/70 bg-white p-1 text-xs font-bold">
                   <button
@@ -456,6 +472,7 @@ export function PricingPage({ onNavigate, onSubscriptionSubmitted }: PricingPage
                     onClick={() => {
                       setAuthMode('login');
                       setErrorMsg('');
+                      setAuthMessage('');
                     }}
                     className={`rounded-lg px-3 py-1 transition ${
                       authMode === 'login' ? 'bg-[#1E3A5F] text-white' : 'text-[#6B7280]'
@@ -468,6 +485,7 @@ export function PricingPage({ onNavigate, onSubscriptionSubmitted }: PricingPage
                     onClick={() => {
                       setAuthMode('signup');
                       setErrorMsg('');
+                      setAuthMessage('');
                     }}
                     className={`rounded-lg px-3 py-1 transition ${
                       authMode === 'signup' ? 'bg-[#1E3A5F] text-white' : 'text-[#6B7280]'
@@ -536,7 +554,7 @@ export function PricingPage({ onNavigate, onSubscriptionSubmitted }: PricingPage
                   </div>
                 )}
 
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className={`grid grid-cols-1 gap-3 ${authMode === 'forgot' ? '' : 'sm:grid-cols-2'}`}>
                   <div>
                     <label className="mb-1 block text-xs font-semibold text-[#6B7280]">
                       البريد الإلكتروني
@@ -554,24 +572,41 @@ export function PricingPage({ onNavigate, onSubscriptionSubmitted }: PricingPage
                       />
                     </div>
                   </div>
-                  <div>
-                    <label className="mb-1 block text-xs font-semibold text-[#6B7280]">
-                      كلمة المرور
-                    </label>
-                    <div className="relative">
-                      <Lock className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                      <input
-                        type="password"
-                        required
-                        minLength={6}
-                        dir="ltr"
-                        value={authPassword}
-                        onChange={(e) => setAuthPassword(e.target.value)}
-                        placeholder="••••••"
-                        className="h-10 w-full rounded-xl border border-stone-200/70 bg-white pl-3 pr-9 text-left text-xs text-[#1F2937]"
-                      />
+                  {authMode !== 'forgot' && (
+                    <div>
+                      <div className="mb-1 flex items-center justify-between gap-2">
+                        <label className="block text-xs font-semibold text-[#6B7280]">
+                          كلمة المرور
+                        </label>
+                        {authMode === 'login' && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setAuthMode('forgot');
+                              setErrorMsg('');
+                              setAuthMessage('');
+                            }}
+                            className="text-[11px] font-semibold text-[#1E3A5F] hover:underline"
+                          >
+                            نسيت كلمة المرور؟
+                          </button>
+                        )}
+                      </div>
+                      <div className="relative">
+                        <Lock className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                        <input
+                          type="password"
+                          required
+                          minLength={6}
+                          dir="ltr"
+                          value={authPassword}
+                          onChange={(e) => setAuthPassword(e.target.value)}
+                          placeholder="••••••"
+                          className="h-10 w-full rounded-xl border border-stone-200/70 bg-white pl-3 pr-9 text-left text-xs text-[#1F2937]"
+                        />
+                      </div>
                     </div>
-                  </div>
+                  )}
                 </div>
 
                 {errorMsg && (
@@ -583,14 +618,34 @@ export function PricingPage({ onNavigate, onSubscriptionSubmitted }: PricingPage
                   </div>
                 )}
 
-                <button
-                  type="submit"
-                  disabled={authLoading}
-                  className="inline-flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl bg-[#1E3A5F] px-5 py-2.5 text-xs font-bold text-white hover:bg-[#172E4D] disabled:opacity-60"
-                >
-                  {authLoading && <RefreshCw className="h-4 w-4 animate-spin" />}
-                  <span>{authMode === 'login' ? 'دخول لرفع الإيصال' : 'إنشاء الحساب والمتابعة'}</span>
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="submit"
+                    disabled={authLoading}
+                    className="inline-flex min-h-[44px] flex-1 items-center justify-center gap-2 rounded-xl bg-[#1E3A5F] px-5 py-2.5 text-xs font-bold text-white hover:bg-[#172E4D] disabled:opacity-60"
+                  >
+                    {authLoading && <RefreshCw className="h-4 w-4 animate-spin" />}
+                    <span>
+                      {authMode === 'forgot'
+                        ? 'إرسال رابط الاستعادة'
+                        : authMode === 'login'
+                        ? 'دخول لرفع الإيصال'
+                        : 'إنشاء الحساب والمتابعة'}
+                    </span>
+                  </button>
+                  {authMode === 'forgot' && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthMode('login');
+                        setErrorMsg('');
+                      }}
+                      className="min-h-[44px] rounded-xl border border-stone-200/70 bg-white px-4 py-2.5 text-xs font-semibold text-[#1E3A5F] hover:bg-stone-50"
+                    >
+                      العودة للدخول
+                    </button>
+                  )}
+                </div>
               </form>
             </div>
           ) : (

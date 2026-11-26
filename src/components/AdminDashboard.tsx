@@ -11,6 +11,7 @@ import {
   ExternalLink,
   Eye,
   EyeOff,
+  Link2,
   Lock,
   LogOut,
   Mail,
@@ -49,6 +50,8 @@ import {
   fetchAllChaletsFromDb,
   fetchAllSubscriptionsAdmin,
   insertChaletWithContact,
+  isValidEgyptianMobile,
+  linkLegacyOwner,
   onAuthStateChange,
   resolveReceiptPreviewUrl,
   signInWithEmailPassword,
@@ -70,7 +73,9 @@ interface AdminDashboardProps {
   onDataChanged?: () => void;
 }
 
-const QUICK_V2_SQL_HINT = `-- يرجى تنفيذ ملف الترحيل الأمني 006_secure_v2.sql في Supabase SQL Editor
+const QUICK_V2_SQL_HINT = `-- يرجى تنفيذ ملفي الترحيل الأمني بالترتيب في Supabase SQL Editor:
+-- 1) 006_secure_v2.sql
+-- 2) 007_maintenance_and_legacy_triggers_fix.sql
 -- وتعيين role = 'admin' لحساب المدير في جدول profiles.`;
 
 export function AdminDashboard({ onNavigate, onDataChanged }: AdminDashboardProps) {
@@ -87,8 +92,11 @@ export function AdminDashboard({ onNavigate, onDataChanged }: AdminDashboardProp
   const [loginLoading, setLoginLoading] = useState(false);
   const [loginError, setLoginError] = useState('');
 
-  const [activeTab, setActiveTab] = useState<'units' | 'subscriptions'>('units');
+  const [activeTab, setActiveTab] = useState<'units' | 'subscriptions' | 'legacy'>('units');
   const [units, setUnits] = useState<Chalet[]>([]);
+  const [legacyUserId, setLegacyUserId] = useState('');
+  const [legacyPhone, setLegacyPhone] = useState('');
+  const [linkingLegacy, setLinkingLegacy] = useState(false);
   const [unitContactsMap, setUnitContactsMap] = useState<Record<string, string>>({});
   const [subscriptions, setSubscriptions] = useState<SubscriptionRecord[]>([]);
   const [adminNotesBySubId, setAdminNotesBySubId] = useState<Record<string, string>>({});
@@ -414,6 +422,47 @@ export function AdminDashboard({ onNavigate, onDataChanged }: AdminDashboardProp
       onDataChanged?.();
     } finally {
       setReviewingSubId(null);
+    }
+  };
+
+  const handleLinkLegacyOwner = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmedId = legacyUserId.trim();
+    const uuidPattern =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    if (!uuidPattern.test(trimmedId)) {
+      setFeedback({
+        type: 'error',
+        text: 'يرجى إدخال معرّف UUID صحيح لحساب المستخدم في Supabase Auth.',
+      });
+      return;
+    }
+    if (!isValidEgyptianMobile(legacyPhone)) {
+      setFeedback({
+        type: 'error',
+        text: 'يرجى إدخال رقم هاتف مصري صحيح يبدأ بـ 010 أو 011 أو 012 أو 015.',
+      });
+      return;
+    }
+
+    setLinkingLegacy(true);
+    setFeedback(null);
+    try {
+      const res = await linkLegacyOwner(trimmedId, legacyPhone);
+      if (res.error || !res.data) {
+        setFeedback({ type: 'error', text: res.error ?? 'تعذر ربط الحساب بالوحدات القديمة.' });
+        return;
+      }
+      setFeedback({
+        type: 'success',
+        text: `تم ربط الحساب بنجاح: ${res.data.linkedChalets} وحدة و ${res.data.linkedSubscriptions} اشتراك.`,
+      });
+      setLegacyUserId('');
+      setLegacyPhone('');
+      await loadAdminData();
+      onDataChanged?.();
+    } finally {
+      setLinkingLegacy(false);
     }
   };
 
@@ -752,6 +801,19 @@ export function AdminDashboard({ onNavigate, onDataChanged }: AdminDashboardProp
             </span>
           )}
         </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('legacy')}
+          className={`inline-flex min-h-[42px] items-center gap-2 rounded-xl px-5 py-2 text-sm font-bold transition ${
+            activeTab === 'legacy'
+              ? 'bg-[#1E3A5F] text-white shadow-xs'
+              : 'bg-white text-[#1F2937] hover:bg-slate-100'
+          }`}
+        >
+          <Link2 className="h-4 w-4 text-[#C5A880]" />
+          <span>ربط الملاك القدامى</span>
+        </button>
       </div>
 
       {/* Tab 1: Units Management */}
@@ -971,6 +1033,20 @@ export function AdminDashboard({ onNavigate, onDataChanged }: AdminDashboardProp
                         </button>
                       )}
 
+                      {!sub.userId && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setLegacyPhone(sub.ownerPhone || '');
+                            setActiveTab('legacy');
+                          }}
+                          className="inline-flex min-h-[38px] items-center gap-1 rounded-xl border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-bold text-amber-900 hover:bg-amber-100"
+                        >
+                          <Link2 className="h-3.5 w-3.5" />
+                          <span>غير مربوط — اربط الحساب</span>
+                        </button>
+                      )}
+
                       {sub.status !== 'active' && (
                         <button
                           type="button"
@@ -1017,6 +1093,80 @@ export function AdminDashboard({ onNavigate, onDataChanged }: AdminDashboardProp
               ))}
             </div>
           )}
+        </section>
+      )}
+
+      {/* Tab 3: Legacy Owner Linking via `admin_link_legacy_owner` RPC */}
+      {activeTab === 'legacy' && (
+        <section className="mt-6 max-w-2xl rounded-2xl border border-stone-200/70 bg-white p-6 shadow-xs">
+          <div className="flex items-start gap-3 border-b border-stone-100 pb-4">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#FAF9F6] text-[#1E3A5F]">
+              <Link2 className="h-5 w-5 text-[#C5A880]" />
+            </div>
+            <div>
+              <h2 className="text-base font-bold text-[#1E3A5F]">
+                ربط حساب مستخدم بالوحدات والاشتراكات القديمة
+              </h2>
+              <p className="mt-1 text-xs leading-relaxed text-[#6B7280]">
+                يُستخدم هذا الإجراء لربط أي وحدات أو اشتراكات قديمة غير مرتبطة بـ{' '}
+                <code className="font-mono text-[#1E3A5F]">user_id</code> عبر مطابقة رقم هاتف
+                المعلن مع حسابه الجديد في Supabase Auth.
+              </p>
+            </div>
+          </div>
+
+          <form onSubmit={handleLinkLegacyOwner} className="mt-5 space-y-4">
+            <div>
+              <label
+                htmlFor="legacy-user-id"
+                className="mb-1.5 block text-xs font-semibold text-slate-700"
+              >
+                معرّف المستخدم (UUID في Supabase Auth / جدول profiles)
+              </label>
+              <input
+                id="legacy-user-id"
+                type="text"
+                required
+                dir="ltr"
+                value={legacyUserId}
+                onChange={(e) => setLegacyUserId(e.target.value)}
+                placeholder="16d5068c-0f96-452a-bbcf-2c3e7dce53c0"
+                className="h-11 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-3 font-mono text-left text-xs text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
+              />
+            </div>
+
+            <div>
+              <label
+                htmlFor="legacy-phone"
+                className="mb-1.5 block text-xs font-semibold text-slate-700"
+              >
+                رقم هاتف المعلن المسجل على الوحدات القديمة
+              </label>
+              <input
+                id="legacy-phone"
+                type="tel"
+                required
+                dir="ltr"
+                value={legacyPhone}
+                onChange={(e) => setLegacyPhone(e.target.value)}
+                placeholder="01012345678"
+                className="h-11 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-3 text-right text-sm text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={linkingLegacy}
+              className="inline-flex min-h-[44px] items-center gap-2 rounded-xl bg-[#1E3A5F] px-5 py-2.5 text-xs font-bold text-white hover:bg-[#172E4D] disabled:opacity-60"
+            >
+              {linkingLegacy ? (
+                <RefreshCw className="h-4 w-4 animate-spin" />
+              ) : (
+                <Link2 className="h-4 w-4 text-[#C5A880]" />
+              )}
+              <span>{linkingLegacy ? 'جاري الربط...' : 'ربط الوحدات والاشتراكات بالحساب'}</span>
+            </button>
+          </form>
         </section>
       )}
 

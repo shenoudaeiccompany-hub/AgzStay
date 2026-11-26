@@ -21,6 +21,7 @@ import {
   agzstayStorageKeys,
   fetchAllChaletsFromDb,
   loadLocalJson,
+  onAuthStateChange,
   saveLocalJson,
 } from '@/services/agzstayRepository';
 import type {
@@ -100,6 +101,16 @@ export function App() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [hideFallbackDemos, setHideFallbackDemos] = useState(false);
   const [isSupportOpen, setIsSupportOpen] = useState(false);
+  const [isPasswordRecovery, setIsPasswordRecovery] = useState(() => {
+    try {
+      return (
+        window.location.hash.includes('type=recovery') ||
+        window.location.search.includes('type=recovery')
+      );
+    } catch {
+      return false;
+    }
+  });
 
   const [favorites, setFavorites] = useState<string[]>(() =>
     loadLocalJson<string[]>(agzstayStorageKeys.favorites, [])
@@ -130,6 +141,21 @@ export function App() {
   useEffect(() => {
     void loadChalets(true);
   }, [loadChalets]);
+
+  useEffect(() => {
+    if (isPasswordRecovery && activeSection !== 'owner') {
+      navigateToSection('owner');
+    }
+  }, [isPasswordRecovery, activeSection, navigateToSection]);
+
+  useEffect(() => {
+    return onAuthStateChange((_user, event) => {
+      if (event === 'PASSWORD_RECOVERY') {
+        setIsPasswordRecovery(true);
+        navigateToSection('owner');
+      }
+    });
+  }, [navigateToSection]);
 
   const allowDemoFallback = import.meta.env.VITE_SHOW_DEMO !== 'false';
   const isUsingFallbackDemos =
@@ -272,6 +298,8 @@ export function App() {
           <OwnerPortal
             onNavigate={navigateToSection}
             onDataChanged={() => void loadChalets(false)}
+            isPasswordRecovery={isPasswordRecovery}
+            onPasswordRecoveryComplete={() => setIsPasswordRecovery(false)}
           />
         </Suspense>
       ) : activeSection === 'admin' ? (

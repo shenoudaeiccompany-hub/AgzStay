@@ -47,10 +47,12 @@ import {
   insertChaletWithContact,
   isValidEgyptianMobile,
   onAuthStateChange,
+  sendPasswordResetEmail,
   signInWithEmailPassword,
   signOutAuth,
   signUpOwnerAccount,
   updateChaletWithContact,
+  updateMyPassword,
   updateMyProfile,
   uploadPropertyImages,
 } from '@/services/agzstayRepository';
@@ -71,6 +73,8 @@ import { addDaysIso, formatArabicDate, formatIsoDate } from '@/utils/bookingPric
 interface OwnerPortalProps {
   onNavigate: (section: RouteSection) => void;
   onDataChanged?: () => void;
+  isPasswordRecovery?: boolean;
+  onPasswordRecoveryComplete?: () => void;
 }
 
 interface UnitFormState {
@@ -157,13 +161,18 @@ function unitToFormState(unit: Chalet, fallbackPhone = ''): UnitFormState {
   };
 }
 
-export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
+export function OwnerPortal({
+  onNavigate,
+  onDataChanged,
+  isPasswordRecovery = false,
+  onPasswordRecoveryComplete,
+}: OwnerPortalProps) {
   const [authChecking, setAuthChecking] = useState(true);
   const [authUser, setAuthUser] = useState<AuthUserSummary | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
 
   // Supabase Auth form states
-  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
+  const [authMode, setAuthMode] = useState<'login' | 'signup' | 'forgot'>('login');
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [signupName, setSignupName] = useState('');
@@ -172,6 +181,13 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
   const [authSubmitting, setAuthSubmitting] = useState(false);
   const [authError, setAuthError] = useState('');
   const [authSuccessNotice, setAuthSuccessNotice] = useState('');
+
+  // Password recovery update state
+  const [localRecoveryActive, setLocalRecoveryActive] = useState(false);
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmNewPassword, setConfirmNewPassword] = useState('');
+  const [savingNewPassword, setSavingNewPassword] = useState(false);
+  const [recoveryError, setRecoveryError] = useState('');
 
   // Profile editor toggle
   const [isProfileEditOpen, setIsProfileEditOpen] = useState(false);
@@ -254,7 +270,10 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
     };
     void init();
 
-    const unsubscribe = onAuthStateChange((user) => {
+    const unsubscribe = onAuthStateChange((user, event) => {
+      if (event === 'PASSWORD_RECOVERY') {
+        setLocalRecoveryActive(true);
+      }
       setAuthUser(user);
       if (user) {
         void loadOwnerData(user);
@@ -292,6 +311,19 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
     setAuthSubmitting(true);
 
     try {
+      if (authMode === 'forgot') {
+        const res = await sendPasswordResetEmail(authEmail, '/owner');
+        if (res.error) {
+          setAuthError(res.error);
+          return;
+        }
+        setAuthSuccessNotice(
+          'تم إرسال رابط استعادة كلمة المرور إلى بريدك الإلكتروني. افتح الرابط لإعادة تعيين كلمة المرور.'
+        );
+        setAuthMode('login');
+        return;
+      }
+
       if (authMode === 'login') {
         const res = await signInWithEmailPassword(authEmail, authPassword);
         if (res.error || !res.data) {
@@ -332,6 +364,43 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
       }
     } finally {
       setAuthSubmitting(false);
+    }
+  };
+
+  const showRecoveryCard = isPasswordRecovery || localRecoveryActive;
+
+  const handleSaveNewPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setRecoveryError('');
+    if (newPassword.length < 6) {
+      setRecoveryError('كلمة المرور الجديدة يجب أن تتكون من ٦ أحرف على الأقل.');
+      return;
+    }
+    if (newPassword !== confirmNewPassword) {
+      setRecoveryError('كلمتا المرور غير متطابقتين.');
+      return;
+    }
+    setSavingNewPassword(true);
+    try {
+      const res = await updateMyPassword(newPassword);
+      if (res.error) {
+        setRecoveryError(res.error);
+        return;
+      }
+      setNewPassword('');
+      setConfirmNewPassword('');
+      setLocalRecoveryActive(false);
+      onPasswordRecoveryComplete?.();
+      try {
+        if (window.location.hash.includes('type=recovery')) {
+          window.history.replaceState(null, '', window.location.pathname);
+        }
+      } catch {
+        // ignore
+      }
+      setFeedback({ type: 'success', text: 'تم تعيين كلمة المرور الجديدة بنجاح.' });
+    } finally {
+      setSavingNewPassword(false);
     }
   };
 
@@ -666,6 +735,7 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
                 onClick={() => {
                   setAuthMode('login');
                   setAuthError('');
+                  setAuthSuccessNotice('');
                 }}
                 className={`rounded-lg px-3.5 py-1.5 transition ${
                   authMode === 'login' ? 'bg-[#1E3A5F] text-white shadow-xs' : 'text-[#6B7280]'
@@ -678,6 +748,7 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
                 onClick={() => {
                   setAuthMode('signup');
                   setAuthError('');
+                  setAuthSuccessNotice('');
                 }}
                 className={`rounded-lg px-3.5 py-1.5 transition ${
                   authMode === 'signup' ? 'bg-[#1E3A5F] text-white shadow-xs' : 'text-[#6B7280]'
@@ -689,10 +760,16 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
           </div>
 
           <h1 className="mt-4 text-2xl font-bold text-[#1E3A5F]">
-            {authMode === 'login' ? 'تسجيل دخول المعلن' : 'إنشاء حساب معلن في AgzStay'}
+            {authMode === 'forgot'
+              ? 'استعادة كلمة المرور'
+              : authMode === 'login'
+              ? 'تسجيل دخول المعلن'
+              : 'إنشاء حساب معلن في AgzStay'}
           </h1>
           <p className="mt-2 text-sm leading-relaxed text-[#6B7280]">
-            {authMode === 'login'
+            {authMode === 'forgot'
+              ? 'أدخل بريدك الإلكتروني المسجل وسنرسل لك رابطاً لإعادة تعيين كلمة المرور.'
+              : authMode === 'login'
               ? 'ادخل بحسابك الموثق لإدارة وحداتك، متابعة باقة الاشتراك، وضبط التواريخ المتاحة بأمان.'
               : 'أنشئ حساباً جديداً كمُؤجّر أو مكتب عقاري لنشر وحداتك واستقبال التواصل المحمي عبر واتساب.'}
           </p>
@@ -799,28 +876,45 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
               </div>
             </div>
 
-            <div>
-              <label
-                htmlFor="owner-auth-password"
-                className="mb-1.5 block text-xs font-semibold text-slate-700"
-              >
-                كلمة المرور
-              </label>
-              <div className="relative">
-                <Lock className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                <input
-                  id="owner-auth-password"
-                  type="password"
-                  required
-                  minLength={6}
-                  dir="ltr"
-                  value={authPassword}
-                  onChange={(e) => setAuthPassword(e.target.value)}
-                  placeholder="••••••"
-                  className="h-11 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] pl-3 pr-10 text-left text-sm text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
-                />
+            {authMode !== 'forgot' && (
+              <div>
+                <div className="mb-1.5 flex items-center justify-between gap-2">
+                  <label
+                    htmlFor="owner-auth-password"
+                    className="block text-xs font-semibold text-slate-700"
+                  >
+                    كلمة المرور
+                  </label>
+                  {authMode === 'login' && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthMode('forgot');
+                        setAuthError('');
+                        setAuthSuccessNotice('');
+                      }}
+                      className="text-xs font-semibold text-[#1E3A5F] hover:underline"
+                    >
+                      نسيت كلمة المرور؟
+                    </button>
+                  )}
+                </div>
+                <div className="relative">
+                  <Lock className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                  <input
+                    id="owner-auth-password"
+                    type="password"
+                    required
+                    minLength={6}
+                    dir="ltr"
+                    value={authPassword}
+                    onChange={(e) => setAuthPassword(e.target.value)}
+                    placeholder="••••••"
+                    className="h-11 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] pl-3 pr-10 text-left text-sm text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
+                  />
+                </div>
               </div>
-            </div>
+            )}
 
             {authError && (
               <div
@@ -831,20 +925,37 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
               </div>
             )}
 
-            <button
-              type="submit"
-              disabled={authSubmitting}
-              className="inline-flex min-h-[48px] w-full items-center justify-center gap-2 rounded-xl bg-[#1E3A5F] px-5 py-3 text-sm font-bold text-white shadow-xs transition hover:bg-[#172E4D] disabled:opacity-60"
-            >
-              {authSubmitting && <RefreshCw className="h-4 w-4 animate-spin" />}
-              <span>
-                {authSubmitting
-                  ? 'جاري المعالجة...'
-                  : authMode === 'login'
-                  ? 'دخول إلى بوابة المعلن'
-                  : 'إنشاء حساب المعلن'}
-              </span>
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="submit"
+                disabled={authSubmitting}
+                className="inline-flex min-h-[48px] flex-1 items-center justify-center gap-2 rounded-xl bg-[#1E3A5F] px-5 py-3 text-sm font-bold text-white shadow-xs transition hover:bg-[#172E4D] disabled:opacity-60"
+              >
+                {authSubmitting && <RefreshCw className="h-4 w-4 animate-spin" />}
+                <span>
+                  {authSubmitting
+                    ? 'جاري المعالجة...'
+                    : authMode === 'forgot'
+                    ? 'إرسال رابط الاستعادة'
+                    : authMode === 'login'
+                    ? 'دخول إلى بوابة المعلن'
+                    : 'إنشاء حساب المعلن'}
+                </span>
+              </button>
+
+              {authMode === 'forgot' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMode('login');
+                    setAuthError('');
+                  }}
+                  className="min-h-[48px] rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-4 py-3 text-xs font-bold text-[#1E3A5F] hover:bg-stone-100"
+                >
+                  العودة للدخول
+                </button>
+              )}
+            </div>
           </form>
         </div>
       </main>
@@ -915,6 +1026,79 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
           </button>
         </div>
       </div>
+
+      {/* Password Recovery Completion Form */}
+      {showRecoveryCard && (
+        <form
+          onSubmit={handleSaveNewPassword}
+          className="mt-4 rounded-2xl border border-[#C5A880] bg-white p-5 shadow-xs"
+        >
+          <div className="flex items-center justify-between border-b border-stone-100 pb-3">
+            <div className="flex items-center gap-2">
+              <Lock className="h-4 w-4 text-[#C5A880]" />
+              <h2 className="text-sm font-bold text-[#1E3A5F]">تعيين كلمة مرور جديدة لحسابك</h2>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setLocalRecoveryActive(false);
+                onPasswordRecoveryComplete?.();
+              }}
+              className="rounded-lg p-1 text-[#6B7280] hover:bg-stone-100"
+              aria-label="إغلاق"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+          <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-[#6B7280]">
+                كلمة المرور الجديدة
+              </label>
+              <input
+                type="password"
+                required
+                minLength={6}
+                dir="ltr"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                placeholder="٦ أحرف على الأقل"
+                className="h-10 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-3 text-left text-xs text-[#1F2937]"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-[#6B7280]">
+                تأكيد كلمة المرور الجديدة
+              </label>
+              <input
+                type="password"
+                required
+                minLength={6}
+                dir="ltr"
+                value={confirmNewPassword}
+                onChange={(e) => setConfirmNewPassword(e.target.value)}
+                placeholder="أعد كتابة كلمة المرور"
+                className="h-10 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-3 text-left text-xs text-[#1F2937]"
+              />
+            </div>
+          </div>
+          {recoveryError && (
+            <p className="mt-3 text-xs font-semibold text-red-700" role="alert">
+              {recoveryError}
+            </p>
+          )}
+          <div className="mt-4 flex justify-end">
+            <button
+              type="submit"
+              disabled={savingNewPassword}
+              className="inline-flex min-h-[40px] items-center gap-2 rounded-xl bg-[#1E3A5F] px-5 py-2 text-xs font-bold text-white hover:bg-[#172E4D] disabled:opacity-60"
+            >
+              {savingNewPassword && <RefreshCw className="h-3.5 w-3.5 animate-spin" />}
+              <span>{savingNewPassword ? 'جاري التحديث...' : 'حفظ كلمة المرور الجديدة'}</span>
+            </button>
+          </div>
+        </form>
+      )}
 
       {/* Inline Profile Editor (`name`, `phone`, `advertiser_type` only) */}
       {isProfileEditOpen && (

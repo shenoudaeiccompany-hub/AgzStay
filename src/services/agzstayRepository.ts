@@ -321,13 +321,15 @@ export async function getCurrentAuthUser(): Promise<AuthUserSummary | null> {
   }
 }
 
-export function onAuthStateChange(callback: (user: AuthUserSummary | null) => void): () => void {
+export function onAuthStateChange(
+  callback: (user: AuthUserSummary | null, event?: string) => void
+): () => void {
   if (!isSupabaseConfigured || !supabase) {
     return () => {};
   }
-  const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+  const { data } = supabase.auth.onAuthStateChange((event, session) => {
     const u = session?.user;
-    callback(u ? { id: u.id, email: u.email ?? '' } : null);
+    callback(u ? { id: u.id, email: u.email ?? '' } : null, event);
   });
   return () => data.subscription.unsubscribe();
 }
@@ -423,6 +425,72 @@ export async function signUpOwnerAccount(payload: {
     return {
       data: null,
       error: formatSupabaseError(err, 'تعذر إنشاء الحساب.'),
+    };
+  }
+}
+
+export async function sendPasswordResetEmail(
+  email: string,
+  redirectPath = '/owner'
+): Promise<RepoResult<boolean>> {
+  if (!isSupabaseConfigured || !supabase) {
+    return { data: null, error: 'الاتصال بـ Supabase غير مهيأ في هذه البيئة.' };
+  }
+  const trimmedEmail = email.trim();
+  if (!trimmedEmail || !trimmedEmail.includes('@')) {
+    return { data: null, error: 'يرجى إدخال بريد إلكتروني صحيح.' };
+  }
+
+  try {
+    let redirectTo: string | undefined;
+    if (
+      typeof window !== 'undefined' &&
+      window.location.origin.startsWith('http') &&
+      !window.location.origin.includes('appassets.androidplatform.net')
+    ) {
+      const cleanPath = redirectPath.startsWith('/') ? redirectPath : `/${redirectPath}`;
+      redirectTo = `${window.location.origin}${cleanPath}`;
+    }
+
+    const { error } = await supabase.auth.resetPasswordForEmail(
+      trimmedEmail,
+      redirectTo ? { redirectTo } : undefined
+    );
+    if (error) {
+      return {
+        data: null,
+        error: formatSupabaseError(error, 'تعذر إرسال رابط استعادة كلمة المرور.'),
+      };
+    }
+    return { data: true, error: null };
+  } catch (err) {
+    return {
+      data: null,
+      error: formatSupabaseError(err, 'تعذر إرسال رابط استعادة كلمة المرور.'),
+    };
+  }
+}
+
+export async function updateMyPassword(newPassword: string): Promise<RepoResult<boolean>> {
+  if (!isSupabaseConfigured || !supabase) {
+    return { data: null, error: 'الاتصال بـ Supabase غير مهيأ في هذه البيئة.' };
+  }
+  if (newPassword.length < 6) {
+    return { data: null, error: 'كلمة المرور يجب أن تتكون من ٦ أحرف على الأقل.' };
+  }
+  try {
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    if (error) {
+      return {
+        data: null,
+        error: formatSupabaseError(error, 'تعذر تحديث كلمة المرور الآن.'),
+      };
+    }
+    return { data: true, error: null };
+  } catch (err) {
+    return {
+      data: null,
+      error: formatSupabaseError(err, 'تعذر تحديث كلمة المرور الآن.'),
     };
   }
 }

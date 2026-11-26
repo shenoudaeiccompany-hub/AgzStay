@@ -4,19 +4,47 @@ import android.annotation.SuppressLint
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.graphics.Color
+import android.net.Uri
 import android.os.Bundle
+import android.webkit.ValueCallback
+import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.webkit.WebViewAssetLoader
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
+    private var filePathCallback: ValueCallback<Array<Uri>>? = null
+
+    private val fileChooserLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val callback = filePathCallback
+        filePathCallback = null
+        if (callback == null) return@registerForActivityResult
+
+        val data = result.data
+        val uris: Array<Uri>? = if (result.resultCode == RESULT_OK && data != null) {
+            val clip = data.clipData
+            when {
+                clip != null && clip.itemCount > 0 -> {
+                    Array(clip.itemCount) { index -> clip.getItemAt(index).uri }
+                }
+                data.data != null -> arrayOf(data.data!!)
+                else -> WebChromeClient.FileChooserParams.parseResult(result.resultCode, data)
+            }
+        } else {
+            null
+        }
+        callback.onReceiveValue(uris)
+    }
 
     private companion object {
         val ALLOWED_EXTERNAL_SCHEMES = setOf("http", "https", "tel", "mailto", "whatsapp")
@@ -71,6 +99,48 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             }
+
+            webChromeClient = object : WebChromeClient() {
+                override fun onShowFileChooser(
+                    webView: WebView?,
+                    filePathCallback: ValueCallback<Array<Uri>>?,
+                    fileChooserParams: FileChooserParams?
+                ): Boolean {
+                    this@MainActivity.filePathCallback?.onReceiveValue(null)
+                    this@MainActivity.filePathCallback = filePathCallback
+
+                    val allowMultiple =
+                        fileChooserParams?.mode == FileChooserParams.MODE_OPEN_MULTIPLE
+                    val acceptTypes = fileChooserParams?.acceptTypes
+                        ?.map { it.trim() }
+                        ?.filter { it.isNotEmpty() && it.contains("/") }
+                        ?.distinct()
+                        .orEmpty()
+
+                    val intent = (fileChooserParams?.createIntent()
+                        ?: Intent(Intent.ACTION_GET_CONTENT).apply {
+                            addCategory(Intent.CATEGORY_OPENABLE)
+                            type = "image/*"
+                        }).apply {
+                        if (allowMultiple) {
+                            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                        }
+                        if (acceptTypes.size > 1) {
+                            type = "*/*"
+                            putExtra(Intent.EXTRA_MIME_TYPES, acceptTypes.toTypedArray())
+                        }
+                    }
+
+                    return try {
+                        fileChooserLauncher.launch(intent)
+                        true
+                    } catch (_: ActivityNotFoundException) {
+                        this@MainActivity.filePathCallback?.onReceiveValue(null)
+                        this@MainActivity.filePathCallback = null
+                        false
+                    }
+                }
+            }
         }
 
         setContentView(webView)
@@ -102,7 +172,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        filePathCallback?.onReceiveValue(null)
+        filePathCallback = null
         webView.destroy()
         super.onDestroy()
     }
 }
+

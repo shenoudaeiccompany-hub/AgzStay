@@ -7,6 +7,10 @@ import pgTapSql from '../../../supabase/tests/006_secure_v2.test.sql?raw';
 import repoSource from '@/services/agzstayRepository.ts?raw';
 
 import adminDashboardSource from '@/components/AdminDashboard.tsx?raw';
+import ownerPortalSource from '@/components/OwnerPortal.tsx?raw';
+import pricingPageSource from '@/components/PricingPage.tsx?raw';
+import chaletMetaSource from '../../../api/chalet-meta.ts?raw';
+import mainActivitySource from '../../../app/src/main/java/com/masayef/app/MainActivity.kt?raw';
 
 describe('006_secure_v2.sql security & concurrency invariants', () => {
   it('explicitly binds chalets_protect trigger, locks owner profile FOR UPDATE, and merges verification gate', () => {
@@ -145,5 +149,16 @@ describe('006_secure_v2.sql security & concurrency invariants', () => {
         expect(header).toMatch(/set\s+search_path\s*=\s*''/i);
       }
     }
+  });
+
+  it('hardens chalet-meta JSON-LD, Android WebView file picker, password reset, and admin legacy linking', () => {
+    expect(chaletMetaSource).toContain('safeJsonLd(jsonLd)');
+    expect(chaletMetaSource).toContain("replace(/</g, '\\\\u003c')");
+    expect(mainActivitySource).toContain('onShowFileChooser');
+    expect(mainActivitySource).toContain('ActivityResultContracts.StartActivityForResult');
+    expect(adminDashboardSource).toContain('linkLegacyOwner');
+    expect(ownerPortalSource).toContain('sendPasswordResetEmail');
+    expect(ownerPortalSource).toContain('updateMyPassword');
+    expect(pricingPageSource).toContain('sendPasswordResetEmail');
   });
 });

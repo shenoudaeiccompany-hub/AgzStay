@@ -123,6 +123,9 @@ export function formatSupabaseError(err: unknown, fallback?: string): string {
   if (lowerMsg.includes('password should be at least')) {
     return 'كلمة المرور يجب أن تتكون من ٦ أحرف على الأقل.';
   }
+  if (lowerMsg.includes('different from the old password') || lowerMsg.includes('same_password')) {
+    return 'يجب أن تكون كلمة المرور الجديدة مختلفة عن كلمة المرور الحالية.';
+  }
   if (lowerMsg.includes('rate limit') || lowerMsg.includes('email rate limit exceeded')) {
     return 'تم إرسال طلبات كثيرة في وقت قصير، يرجى الانتظار قليلاً ثم المحاولة مرة أخرى.';
   }

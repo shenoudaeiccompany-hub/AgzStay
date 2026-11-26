@@ -50,6 +50,9 @@ describe('arabicErrors utilities', () => {
     expect(toArabicError({ message: 'invalid_receipt_path' })).toContain('الإيصال');
     expect(toArabicError({ message: 'plan_is_free' })).toContain('المجانية');
     expect(toArabicError({ message: 'owner_missing' })).toContain('غير مربوط');
+    expect(
+      formatSupabaseError({ message: 'New password should be different from the old password.' })
+    ).toContain('مختلفة');
   });
 });
 

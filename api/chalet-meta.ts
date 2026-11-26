@@ -33,6 +33,13 @@ function escapeHtml(value: string): string {
     .replace(/'/g, '&#39;');
 }
 
+function safeJsonLd(data: unknown): string {
+  return JSON.stringify(data)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026');
+}
+
 function getQueryId(req: VercelRequest): string {
   const fromQuery = req.query?.id;
   if (typeof fromQuery === 'string' && fromQuery.trim()) {
@@ -164,7 +171,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     <meta name="twitter:title" content="${escapeHtml(title)}" />
     <meta name="twitter:description" content="${escapeHtml(description)}" />
     <meta name="twitter:image" content="${escapeHtml(imageUrl)}" />
-    <script type="application/ld+json">${JSON.stringify(jsonLd)}</script>
+    <script type="application/ld+json">${safeJsonLd(jsonLd)}</script>
   </head>
   <body>
     <h1>${escapeHtml(title)}</h1>
