@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Building2,
@@ -54,12 +54,21 @@ const OwnerPortal = lazy(() =>
 const AdminDashboard = lazy(() =>
   import('@/components/AdminDashboard').then((m) => ({ default: m.AdminDashboard }))
 );
+const MyBookingsPage = lazy(() =>
+  import('@/components/MyBookingsPage').then((m) => ({ default: m.MyBookingsPage }))
+);
+const SupportCenterPage = lazy(() =>
+  import('@/components/SupportCenterPage').then((m) => ({ default: m.SupportCenterPage }))
+);
 const ChaletsMapView = lazy(() =>
   import('@/components/ChaletsMapView').then((m) => ({ default: m.ChaletsMapView }))
 );
 const SupportContactModal = lazy(() =>
   import('@/components/SupportContactModal').then((m) => ({ default: m.SupportContactModal }))
 );
+
+const CHALETS_PAGE_SIZE = 9;
+const CHALETS_CACHE_TTL_MS = 45_000;
 
 const DEFAULT_FILTERS: FilterState = {
   rentalSegment: 'all',
@@ -110,6 +119,12 @@ export function App() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [hideFallbackDemos, setHideFallbackDemos] = useState(false);
   const [isSupportOpen, setIsSupportOpen] = useState(false);
+  const [supportInitialBookingId, setSupportInitialBookingId] = useState<string>('');
+  const [visibleCount, setVisibleCount] = useState(CHALETS_PAGE_SIZE);
+  const lastFetchAtRef = useRef<number>(0);
+  const inFlightFetchRef = useRef<Promise<void> | null>(null);
+  const dbChaletsRef = useRef<Chalet[]>([]);
+
   const [isPasswordRecovery, setIsPasswordRecovery] = useState(() => {
     try {
       return (
@@ -129,27 +144,64 @@ export function App() {
 
   useEffect(() => saveLocalJson(agzstayStorageKeys.favorites, favorites), [favorites]);
 
-  const loadChalets = useCallback(async (initial = false) => {
-    if (initial) setIsInitialLoading(true);
-    else setIsRefreshing(true);
-    setLoadError(null);
-
-    try {
-      const res = await fetchAllChaletsFromDb(false);
-      if (res.error) {
-        setLoadError(res.error);
-      } else {
-        setDbChalets(res.data ?? []);
-      }
-    } finally {
-      setIsInitialLoading(false);
-      setIsRefreshing(false);
-    }
-  }, []);
+  useEffect(() => {
+    dbChaletsRef.current = dbChalets;
+  }, [dbChalets]);
 
   useEffect(() => {
-    void loadChalets(true);
+    setVisibleCount(CHALETS_PAGE_SIZE);
+  }, [filters]);
+
+  const loadChalets = useCallback(
+    async (initial = false, options?: { force?: boolean }) => {
+      const force = options?.force ?? false;
+      const now = Date.now();
+      if (
+        !force &&
+        dbChaletsRef.current.length > 0 &&
+        now - lastFetchAtRef.current < CHALETS_CACHE_TTL_MS
+      ) {
+        return;
+      }
+
+      if (inFlightFetchRef.current) {
+        return inFlightFetchRef.current;
+      }
+
+      if (initial) setIsInitialLoading(true);
+      else setIsRefreshing(true);
+      setLoadError(null);
+
+      const task = (async () => {
+        try {
+          const res = await fetchAllChaletsFromDb(false);
+          if (res.error) {
+            setLoadError(res.error);
+          } else {
+            setDbChalets(res.data ?? []);
+            lastFetchAtRef.current = Date.now();
+          }
+        } finally {
+          setIsInitialLoading(false);
+          setIsRefreshing(false);
+          inFlightFetchRef.current = null;
+        }
+      })();
+
+      inFlightFetchRef.current = task;
+      return task;
+    },
+    []
+  );
+
+  useEffect(() => {
+    void loadChalets(true, { force: true });
   }, [loadChalets]);
+
+  const openSupportModal = useCallback((bookingId?: string) => {
+    setSupportInitialBookingId(bookingId ?? '');
+    setIsSupportOpen(true);
+  }, []);
 
   useEffect(() => {
     if (isPasswordRecovery && activeSection !== 'owner') {
@@ -265,6 +317,11 @@ export function App() {
       }
     });
   }, [allDisplayChalets, favorites, filters]);
+
+  const visibleChalets = useMemo(
+    () => filteredChalets.slice(0, visibleCount),
+    [filteredChalets, visibleCount]
+  );
 
   const popularDestinations = useMemo(() => {
     const activeUnits = allDisplayChalets.filter((c) => c.availabilityStatus === 'active');
@@ -403,6 +460,8 @@ export function App() {
             initialCheckOut={filters.checkOutDate}
             onBack={closeChaletDetail}
             onToggleFavorite={handleToggleFavorite}
+            onNavigate={navigateToSection}
+            onOpenSupport={openSupportModal}
             onSelectChalet={(item) => {
               openChaletDetail(item.id);
               try {
@@ -413,18 +472,33 @@ export function App() {
             }}
           />
         </Suspense>
+      ) : activeSection === 'bookings' ? (
+        <Suspense fallback={<LazySectionLoader />}>
+          <MyBookingsPage
+            onNavigate={navigateToSection}
+            onOpenSupport={openSupportModal}
+            onSelectChaletId={(id) => openChaletDetail(id)}
+          />
+        </Suspense>
+      ) : activeSection === 'support' ? (
+        <Suspense fallback={<LazySectionLoader />}>
+          <SupportCenterPage
+            initialBookingId={supportInitialBookingId}
+            onNavigate={navigateToSection}
+          />
+        </Suspense>
       ) : activeSection === 'pricing' ? (
         <Suspense fallback={<LazySectionLoader />}>
           <PricingPage
             onNavigate={navigateToSection}
-            onSubscriptionSubmitted={() => void loadChalets(false)}
+            onSubscriptionSubmitted={() => void loadChalets(false, { force: true })}
           />
         </Suspense>
       ) : activeSection === 'owner' ? (
         <Suspense fallback={<LazySectionLoader />}>
           <OwnerPortal
             onNavigate={navigateToSection}
-            onDataChanged={() => void loadChalets(false)}
+            onDataChanged={() => void loadChalets(false, { force: true })}
             isPasswordRecovery={isPasswordRecovery}
             onPasswordRecoveryComplete={() => setIsPasswordRecovery(false)}
           />
@@ -433,7 +507,7 @@ export function App() {
         <Suspense fallback={<LazySectionLoader />}>
           <AdminDashboard
             onNavigate={navigateToSection}
-            onDataChanged={() => void loadChalets(false)}
+            onDataChanged={() => void loadChalets(false, { force: true })}
           />
         </Suspense>
       ) : (
@@ -513,7 +587,7 @@ export function App() {
                   <button
                     type="button"
                     disabled={isRefreshing}
-                    onClick={() => void loadChalets(false)}
+                    onClick={() => void loadChalets(false, { force: true })}
                     className="inline-flex min-h-[38px] items-center gap-1.5 rounded-xl bg-white px-3.5 py-1.5 text-xs font-bold text-red-700 shadow-xs hover:bg-red-100 disabled:opacity-60"
                   >
                     <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
@@ -521,7 +595,7 @@ export function App() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => setIsSupportOpen(true)}
+                    onClick={() => openSupportModal()}
                     className="inline-flex min-h-[38px] items-center gap-1.5 rounded-xl border border-red-200 bg-white px-3.5 py-1.5 text-xs font-bold text-[#1E3A5F] shadow-xs hover:bg-stone-50"
                   >
                     <MessageCircle className="h-3.5 w-3.5" />
@@ -549,7 +623,7 @@ export function App() {
                   <button
                     type="button"
                     disabled={isRefreshing}
-                    onClick={() => void loadChalets(false)}
+                    onClick={() => void loadChalets(false, { force: true })}
                     className="inline-flex min-h-[38px] items-center gap-1 rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-3 py-1.5 font-semibold text-[#1E3A5F] hover:bg-stone-100"
                   >
                     <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
@@ -557,7 +631,7 @@ export function App() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => setIsSupportOpen(true)}
+                    onClick={() => openSupportModal()}
                     className="inline-flex min-h-[38px] items-center gap-1 rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-3 py-1.5 font-semibold text-[#1E3A5F] hover:bg-stone-100"
                   >
                     <MessageCircle className="h-3.5 w-3.5" />
@@ -755,7 +829,7 @@ export function App() {
                   <button
                     type="button"
                     disabled={isRefreshing}
-                    onClick={() => void loadChalets(false)}
+                    onClick={() => void loadChalets(false, { force: true })}
                     className="inline-flex min-h-[44px] items-center gap-1.5 rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-4 py-2 text-sm font-bold text-[#1E3A5F] hover:bg-stone-100 disabled:opacity-60"
                   >
                     <RefreshCw className={`h-4 w-4 ${isRefreshing ? 'animate-spin' : ''}`} />
@@ -764,7 +838,7 @@ export function App() {
 
                   <button
                     type="button"
-                    onClick={() => setIsSupportOpen(true)}
+                    onClick={() => openSupportModal()}
                     className="inline-flex min-h-[44px] items-center gap-1.5 rounded-xl border border-stone-200/70 bg-white px-4 py-2 text-sm font-bold text-[#1E3A5F] hover:bg-[#FAF9F6]"
                   >
                     <MessageCircle className="h-4 w-4 text-[#C5A880]" />
@@ -792,17 +866,34 @@ export function App() {
                 />
               </Suspense>
             ) : (
-              <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
-                {filteredChalets.map((property) => (
-                  <PropertyCard
-                    key={property.id}
-                    property={property}
-                    isFavorite={favorites.includes(property.id)}
-                    onToggleFavorite={handleToggleFavorite}
-                    onSelect={(item) => openChaletDetail(item.id)}
-                  />
-                ))}
-              </div>
+              <>
+                <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+                  {visibleChalets.map((property) => (
+                    <PropertyCard
+                      key={property.id}
+                      property={property}
+                      isFavorite={favorites.includes(property.id)}
+                      onToggleFavorite={handleToggleFavorite}
+                      onSelect={(item) => openChaletDetail(item.id)}
+                    />
+                  ))}
+                </div>
+
+                {visibleChalets.length < filteredChalets.length && (
+                  <div className="mt-8 text-center">
+                    <button
+                      type="button"
+                      onClick={() => setVisibleCount((prev) => prev + CHALETS_PAGE_SIZE)}
+                      className="inline-flex min-h-[48px] items-center gap-2 rounded-xl border border-stone-200/80 bg-white px-6 py-3 text-sm font-bold text-[#1E3A5F] shadow-xs transition hover:border-[#C5A880] hover:bg-[#FAF9F6]"
+                    >
+                      <span>
+                        عرض المزيد من الوحدات (متبقي{' '}
+                        {(filteredChalets.length - visibleChalets.length).toLocaleString('ar-EG')} وحدة)
+                      </span>
+                    </button>
+                  </div>
+                )}
+              </>
             )}
 
             {/* Minimalist Owner CTA Banner */}
@@ -849,32 +940,46 @@ export function App() {
           <div className="font-semibold text-[#1E3A5F]">
             AgzStay — إجازة ستاي © {new Date().getFullYear()} • دليل الإيجار المباشر في مصر
           </div>
-          <div className="flex flex-wrap items-center gap-5 font-semibold">
+          <div className="flex flex-wrap items-center justify-center gap-5 font-semibold">
+            <button
+              type="button"
+              onClick={() => navigateToSection('bookings')}
+              className="min-h-[36px] transition hover:text-[#1E3A5F]"
+            >
+              حجوزاتي
+            </button>
+            <button
+              type="button"
+              onClick={() => navigateToSection('support')}
+              className="min-h-[36px] transition hover:text-[#1E3A5F]"
+            >
+              المساعدة والدعم
+            </button>
             <button
               type="button"
               onClick={() => navigateToSection('pricing')}
-              className="transition hover:text-[#1E3A5F]"
+              className="min-h-[36px] transition hover:text-[#1E3A5F]"
             >
               الباقات
             </button>
             <button
               type="button"
               onClick={() => navigateToSection('owner')}
-              className="transition hover:text-[#1E3A5F]"
+              className="min-h-[36px] transition hover:text-[#1E3A5F]"
             >
               بوابة المعلن
             </button>
             <button
               type="button"
               onClick={() => navigateToSection('admin')}
-              className="transition hover:text-[#1E3A5F]"
+              className="min-h-[36px] transition hover:text-[#1E3A5F]"
             >
               الإدارة
             </button>
             <button
               type="button"
-              onClick={() => setIsSupportOpen(true)}
-              className="transition hover:text-[#1E3A5F]"
+              onClick={() => openSupportModal()}
+              className="min-h-[36px] transition hover:text-[#1E3A5F]"
             >
               تواصل معنا
             </button>
@@ -885,8 +990,13 @@ export function App() {
       {isSupportOpen && (
         <Suspense fallback={null}>
           <SupportContactModal
-            onClose={() => setIsSupportOpen(false)}
+            initialBookingId={supportInitialBookingId}
+            onClose={() => {
+              setIsSupportOpen(false);
+              setSupportInitialBookingId('');
+            }}
             onOpenAddProperty={() => navigateToSection('owner')}
+            onNavigate={navigateToSection}
           />
         </Suspense>
       )}

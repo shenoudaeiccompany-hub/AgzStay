@@ -13,12 +13,15 @@ import {
   Eye,
   EyeOff,
   Flag,
+  Headphones,
+  History,
   Link2,
   Lock,
   LogOut,
   Mail,
   RefreshCw,
   Search,
+  Send,
   ShieldAlert,
   Sparkles,
   Trash2,
@@ -47,10 +50,13 @@ import {
   adminReviewListingReportRpc,
   adminReviewOwnerVerificationRpc,
   adminReviewSubscriptionRpc,
+  adminUpdateSupportTicketRpc,
   checkIsAdmin,
   deleteChaletRecord,
   fetchAdminAccessDiagnostic,
+  fetchAdminAuditLogsPage,
   fetchAdminChaletContactsMap,
+  fetchAdminSupportTicketsPage,
   fetchAllChaletsFromDb,
   fetchAllListingReportsAdmin,
   fetchAllOwnerVerificationsAdmin,
@@ -68,12 +74,15 @@ import {
 } from '@/services/agzstayRepository';
 import type {
   AdvertiserRoleLabel,
+  AuditLogRecord,
   Chalet,
   ListingReportRecord,
   OwnerVerificationRecord,
   PropertyType,
   RouteSection,
   SubscriptionRecord,
+  SupportTicketRecord,
+  SupportTicketStatus,
   VerificationDocumentType,
 } from '@/types/chalet';
 import { formatArabicDate } from '@/utils/bookingPricing';
@@ -95,6 +104,7 @@ const QUICK_V2_SQL_HINT = `-- يرجى تنفيذ ملفات الترحيل ال
 -- 2) 007_maintenance_and_legacy_triggers_fix.sql
 -- 3) 008_verification_reports_and_stats.sql
 -- 4) 009_marketplace_enhancements.sql
+-- 5) 010_ux_support_audit_and_booking_hardening.sql
 -- وتعيين role = 'admin' لحساب المدير في جدول profiles.`;
 
 export function AdminDashboard({ onNavigate, onDataChanged }: AdminDashboardProps) {
@@ -112,14 +122,16 @@ export function AdminDashboard({ onNavigate, onDataChanged }: AdminDashboardProp
   const [loginError, setLoginError] = useState('');
 
   const [activeTab, setActiveTab] = useState<
-    'units' | 'subscriptions' | 'verifications' | 'reports' | 'legacy'
+    'units' | 'subscriptions' | 'verifications' | 'reports' | 'tickets' | 'audit' | 'legacy'
   >('units');
   const [units, setUnits] = useState<Chalet[]>([]);
+  const [visibleUnitsCount, setVisibleUnitsCount] = useState(20);
   const [legacyUserId, setLegacyUserId] = useState('');
   const [legacyPhone, setLegacyPhone] = useState('');
   const [linkingLegacy, setLinkingLegacy] = useState(false);
   const [unitContactsMap, setUnitContactsMap] = useState<Record<string, string>>({});
   const [subscriptions, setSubscriptions] = useState<SubscriptionRecord[]>([]);
+  const [visibleSubsCount, setVisibleSubsCount] = useState(20);
   const [adminNotesBySubId, setAdminNotesBySubId] = useState<Record<string, string>>({});
   const [reviewingSubId, setReviewingSubId] = useState<string | null>(null);
   const [verifications, setVerifications] = useState<OwnerVerificationRecord[]>([]);
@@ -130,6 +142,25 @@ export function AdminDashboard({ onNavigate, onDataChanged }: AdminDashboardProp
   const [reportFilter, setReportFilter] = useState<'all' | 'open' | 'resolved' | 'dismissed'>('all');
   const [reportNotesById, setReportNotesById] = useState<Record<string, string>>({});
   const [reviewingReportId, setReviewingReportId] = useState<string | null>(null);
+
+  // Support tickets & Audit logs state
+  const [supportTickets, setSupportTickets] = useState<SupportTicketRecord[]>([]);
+  const [ticketsPage, setTicketsPage] = useState(0);
+  const [hasMoreTickets, setHasMoreTickets] = useState(false);
+  const [loadingMoreTickets, setLoadingMoreTickets] = useState(false);
+  const [ticketFilter, setTicketFilter] = useState<'all' | SupportTicketStatus>('all');
+  const [ticketReplyById, setTicketReplyById] = useState<Record<string, string>>({});
+  const [updatingTicketId, setUpdatingTicketId] = useState<string | null>(null);
+
+  const [auditLogs, setAuditLogs] = useState<AuditLogRecord[]>([]);
+  const [auditPage, setAuditPage] = useState(0);
+  const [hasMoreAudit, setHasMoreAudit] = useState(false);
+  const [loadingMoreAudit, setLoadingMoreAudit] = useState(false);
+  const [auditEntityFilter, setAuditEntityFilter] = useState<
+    'all' | 'booking' | 'support_ticket' | 'subscription' | 'profile'
+  >('all');
+  const [v010MissingWarning, setV010MissingWarning] = useState(false);
+
   const [v008MissingWarning, setV008MissingWarning] = useState(false);
   const [loading, setLoading] = useState(false);
   const [unitSearch, setUnitSearch] = useState('');
@@ -164,14 +195,18 @@ export function AdminDashboard({ onNavigate, onDataChanged }: AdminDashboardProp
   const loadAdminData = useCallback(async () => {
     setLoading(true);
     setV008MissingWarning(false);
+    setV010MissingWarning(false);
     try {
-      const [unitsRes, subsRes, contactsMap, verRes, reportsRes] = await Promise.all([
-        fetchAllChaletsFromDb(true),
-        fetchAllSubscriptionsAdmin(),
-        fetchAdminChaletContactsMap(),
-        fetchAllOwnerVerificationsAdmin(),
-        fetchAllListingReportsAdmin(),
-      ]);
+      const [unitsRes, subsRes, contactsMap, verRes, reportsRes, ticketsRes, auditRes] =
+        await Promise.all([
+          fetchAllChaletsFromDb(true),
+          fetchAllSubscriptionsAdmin(),
+          fetchAdminChaletContactsMap(),
+          fetchAllOwnerVerificationsAdmin(),
+          fetchAllListingReportsAdmin(),
+          fetchAdminSupportTicketsPage(0, 20),
+          fetchAdminAuditLogsPage(0, 25),
+        ]);
       if (unitsRes.error) {
         setFeedback({ type: 'error', text: unitsRes.error });
       } else {
@@ -192,6 +227,20 @@ export function AdminDashboard({ onNavigate, onDataChanged }: AdminDashboardProp
       }
       if (verRes.error || reportsRes.error) {
         setV008MissingWarning(true);
+      }
+
+      if (!ticketsRes.error && ticketsRes.data) {
+        setSupportTickets(ticketsRes.data.items);
+        setHasMoreTickets(ticketsRes.data.hasMore);
+        setTicketsPage(0);
+      }
+      if (!auditRes.error && auditRes.data) {
+        setAuditLogs(auditRes.data.items);
+        setHasMoreAudit(auditRes.data.hasMore);
+        setAuditPage(0);
+      }
+      if (ticketsRes.error || auditRes.error) {
+        setV010MissingWarning(true);
       }
     } finally {
       setLoading(false);
@@ -583,6 +632,67 @@ export function AdminDashboard({ onNavigate, onDataChanged }: AdminDashboardProp
     }
   };
 
+  const handleLoadMoreTickets = async () => {
+    setLoadingMoreTickets(true);
+    try {
+      const nextPage = ticketsPage + 1;
+      const res = await fetchAdminSupportTicketsPage(nextPage, 20);
+      if (!res.error && res.data) {
+        setSupportTickets((prev) => [...prev, ...res.data!.items]);
+        setHasMoreTickets(res.data.hasMore);
+        setTicketsPage(nextPage);
+      }
+    } finally {
+      setLoadingMoreTickets(false);
+    }
+  };
+
+  const handleUpdateTicketStatus = async (
+    ticket: SupportTicketRecord,
+    nextStatus: SupportTicketStatus
+  ) => {
+    const replyText = (ticketReplyById[ticket.id] ?? ticket.adminReply ?? '').trim();
+    if (nextStatus === 'replied' && !replyText) {
+      setFeedback({
+        type: 'error',
+        text: 'يرجى كتابة نص الرد أولاً قبل إرسال الرد للمستخدم.',
+      });
+      return;
+    }
+
+    setUpdatingTicketId(ticket.id);
+    setFeedback(null);
+    try {
+      const res = await adminUpdateSupportTicketRpc(ticket.id, nextStatus, replyText);
+      if (res.error || !res.data) {
+        setFeedback({ type: 'error', text: res.error ?? 'تعذر تحديث تذكرة الدعم.' });
+        return;
+      }
+      setSupportTickets((prev) => prev.map((t) => (t.id === res.data!.id ? res.data! : t)));
+      setFeedback({
+        type: 'success',
+        text: `تم تحديث حالة التذكرة ${ticket.ticketCode || ''} بنجاح.`,
+      });
+    } finally {
+      setUpdatingTicketId(null);
+    }
+  };
+
+  const handleLoadMoreAuditLogs = async () => {
+    setLoadingMoreAudit(true);
+    try {
+      const nextPage = auditPage + 1;
+      const res = await fetchAdminAuditLogsPage(nextPage, 25);
+      if (!res.error && res.data) {
+        setAuditLogs((prev) => [...prev, ...res.data!.items]);
+        setHasMoreAudit(res.data.hasMore);
+        setAuditPage(nextPage);
+      }
+    } finally {
+      setLoadingMoreAudit(false);
+    }
+  };
+
   const unitTitleById = useMemo(() => {
     const map = new Map<string, string>();
     for (const u of units) {
@@ -617,9 +727,20 @@ export function AdminDashboard({ onNavigate, onDataChanged }: AdminDashboardProp
     return reports.filter((r) => r.status === reportFilter);
   }, [reportFilter, reports]);
 
+  const filteredTickets = useMemo(() => {
+    if (ticketFilter === 'all') return supportTickets;
+    return supportTickets.filter((t) => t.status === ticketFilter);
+  }, [supportTickets, ticketFilter]);
+
+  const filteredAuditLogs = useMemo(() => {
+    if (auditEntityFilter === 'all') return auditLogs;
+    return auditLogs.filter((l) => l.entityType === auditEntityFilter);
+  }, [auditEntityFilter, auditLogs]);
+
   const pendingSubsCount = subscriptions.filter((s) => s.status === 'pending').length;
   const pendingVerificationsCount = verifications.filter((v) => v.status === 'pending').length;
   const openReportsCount = reports.filter((r) => r.status === 'open').length;
+  const openTicketsCount = supportTickets.filter((t) => t.status === 'open').length;
 
   if (authChecking) {
     return (
@@ -891,6 +1012,13 @@ export function AdminDashboard({ onNavigate, onDataChanged }: AdminDashboardProp
         </div>
       )}
 
+      {v010MissingWarning && (
+        <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-semibold text-amber-950">
+          تنبيه: جداول ودوال تذاكر الدعم وسجل التدقيق والحجز المحدث تتطلب تشغيل ملف الترحيل{' '}
+          <code className="font-mono">010_ux_support_audit_and_booking_hardening.sql</code> في Supabase SQL Editor.
+        </div>
+      )}
+
       {feedback && (
         <div
           className={`mt-4 flex items-center justify-between gap-2 rounded-2xl border px-4 py-3 text-xs font-bold ${
@@ -984,6 +1112,37 @@ export function AdminDashboard({ onNavigate, onDataChanged }: AdminDashboardProp
 
         <button
           type="button"
+          onClick={() => setActiveTab('tickets')}
+          className={`inline-flex min-h-[42px] items-center gap-2 rounded-xl px-4 py-2 text-sm font-bold transition ${
+            activeTab === 'tickets'
+              ? 'bg-[#1E3A5F] text-white shadow-xs'
+              : 'bg-white text-[#1F2937] hover:bg-slate-100'
+          }`}
+        >
+          <Headphones className="h-4 w-4 text-[#C5A880]" />
+          <span>تذاكر الدعم ({supportTickets.length})</span>
+          {openTicketsCount > 0 && (
+            <span className="rounded-full bg-amber-500 px-2 py-0.5 text-[11px] font-bold text-white">
+              {openTicketsCount} بانتظار الرد
+            </span>
+          )}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('audit')}
+          className={`inline-flex min-h-[42px] items-center gap-2 rounded-xl px-4 py-2 text-sm font-bold transition ${
+            activeTab === 'audit'
+              ? 'bg-[#1E3A5F] text-white shadow-xs'
+              : 'bg-white text-[#1F2937] hover:bg-slate-100'
+          }`}
+        >
+          <History className="h-4 w-4 text-[#C5A880]" />
+          <span>سجل التدقيق ({auditLogs.length})</span>
+        </button>
+
+        <button
+          type="button"
           onClick={() => setActiveTab('legacy')}
           className={`inline-flex min-h-[42px] items-center gap-2 rounded-xl px-4 py-2 text-sm font-bold transition ${
             activeTab === 'legacy'
@@ -1004,19 +1163,31 @@ export function AdminDashboard({ onNavigate, onDataChanged }: AdminDashboardProp
             <input
               type="text"
               value={unitSearch}
-              onChange={(e) => setUnitSearch(e.target.value)}
+              onChange={(e) => {
+                setUnitSearch(e.target.value);
+                setVisibleUnitsCount(20);
+              }}
               placeholder="ابحث بالعنوان، المحافظة، اسم المعلن أو الهاتف..."
               className="h-11 w-full rounded-xl border border-stone-200/70 bg-white pl-3 pr-10 text-xs text-[#1F2937] focus:border-[#1E3A5F] focus:outline-none sm:text-sm"
             />
           </div>
 
-          {filteredUnits.length === 0 ? (
+          {loading && units.length === 0 ? (
+            <div className="space-y-3" aria-busy="true">
+              {Array.from({ length: 4 }).map((_, idx) => (
+                <div
+                  key={idx}
+                  className="h-24 animate-pulse rounded-2xl border border-stone-200/70 bg-white p-4"
+                />
+              ))}
+            </div>
+          ) : filteredUnits.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center text-sm text-[#6B7280]">
               لا توجد وحدات مطابقة في جدول chalets حالياً.
             </div>
           ) : (
             <div className="space-y-3">
-              {filteredUnits.map((unit) => {
+              {filteredUnits.slice(0, visibleUnitsCount).map((unit) => {
                 const isHidden = unit.availabilityStatus !== 'active';
                 const contactPhone = unitContactsMap[unit.id];
                 return (
@@ -1113,6 +1284,18 @@ export function AdminDashboard({ onNavigate, onDataChanged }: AdminDashboardProp
                   </div>
                 );
               })}
+
+              {visibleUnitsCount < filteredUnits.length && (
+                <div className="pt-2 text-center">
+                  <button
+                    type="button"
+                    onClick={() => setVisibleUnitsCount((prev) => prev + 20)}
+                    className="inline-flex min-h-[44px] items-center rounded-xl border border-stone-200/70 bg-white px-5 py-2 text-xs font-bold text-[#1E3A5F] hover:bg-stone-50"
+                  >
+                    عرض المزيد من الوحدات ({filteredUnits.length - visibleUnitsCount} متبقية)
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </section>
@@ -1151,7 +1334,7 @@ export function AdminDashboard({ onNavigate, onDataChanged }: AdminDashboardProp
             </div>
           ) : (
             <div className="space-y-3">
-              {filteredSubscriptions.map((sub) => (
+              {filteredSubscriptions.slice(0, visibleSubsCount).map((sub) => (
                 <div
                   key={sub.id}
                   className="flex flex-col justify-between gap-4 rounded-2xl border border-stone-200/70 bg-white p-4 shadow-xs sm:p-5"
@@ -1271,6 +1454,18 @@ export function AdminDashboard({ onNavigate, onDataChanged }: AdminDashboardProp
                   )}
                 </div>
               ))}
+
+              {visibleSubsCount < filteredSubscriptions.length && (
+                <div className="pt-2 text-center">
+                  <button
+                    type="button"
+                    onClick={() => setVisibleSubsCount((prev) => prev + 20)}
+                    className="inline-flex min-h-[44px] items-center rounded-xl border border-stone-200/70 bg-white px-5 py-2 text-xs font-bold text-[#1E3A5F] hover:bg-stone-50"
+                  >
+                    عرض المزيد من الاشتراكات ({filteredSubscriptions.length - visibleSubsCount} متبقي)
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </section>
@@ -1558,7 +1753,261 @@ export function AdminDashboard({ onNavigate, onDataChanged }: AdminDashboardProp
         </section>
       )}
 
-      {/* Tab 5: Legacy Owner Linking via `admin_link_legacy_owner` RPC */}
+      {/* Tab 5: Customer Support Tickets via `admin_update_support_ticket` RPC */}
+      {activeTab === 'tickets' && (
+        <section className="mt-6 space-y-4">
+          <div className="flex flex-wrap gap-2">
+            {(
+              [
+                { id: 'all', label: 'الكل' },
+                { id: 'open', label: 'قيد المراجعة' },
+                { id: 'replied', label: 'تم الرد' },
+                { id: 'closed', label: 'مغلقة' },
+              ] as const
+            ).map((f) => (
+              <button
+                key={f.id}
+                type="button"
+                onClick={() => setTicketFilter(f.id)}
+                className={`min-h-[40px] rounded-xl px-3.5 py-2 text-xs font-bold transition ${
+                  ticketFilter === f.id
+                    ? 'bg-[#1E3A5F] text-white'
+                    : 'border border-stone-200/70 bg-white text-[#1F2937] hover:bg-slate-50'
+                }`}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+
+          {loading && supportTickets.length === 0 ? (
+            <div className="space-y-3" aria-busy="true">
+              <div className="h-32 animate-pulse rounded-2xl border border-stone-200/70 bg-white" />
+              <div className="h-32 animate-pulse rounded-2xl border border-stone-200/70 bg-white" />
+            </div>
+          ) : filteredTickets.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-stone-300 bg-white p-10 text-center text-sm text-[#6B7280]">
+              لا توجد تذاكر دعم في هذا القسم حالياً.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {filteredTickets.map((ticket) => (
+                <div
+                  key={ticket.id}
+                  className="space-y-3 rounded-2xl border border-stone-200/70 bg-white p-4 shadow-xs sm:p-5"
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span
+                          className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${
+                            ticket.status === 'replied'
+                              ? 'bg-emerald-50 text-emerald-700'
+                              : ticket.status === 'closed'
+                              ? 'bg-stone-100 text-stone-600'
+                              : 'bg-amber-50 text-amber-800'
+                          }`}
+                        >
+                          {ticket.status === 'replied'
+                            ? 'تم الرد'
+                            : ticket.status === 'closed'
+                            ? 'مغلق'
+                            : 'قيد المراجعة'}
+                        </span>
+                        <span className="rounded-full bg-[#FAF9F6] px-2.5 py-0.5 text-[11px] font-bold text-[#1E3A5F]">
+                          {ticket.category === 'booking_modify'
+                            ? 'تعديل حجز'
+                            : ticket.category === 'booking_cancel'
+                            ? 'إلغاء حجز'
+                            : ticket.category === 'complaint'
+                            ? 'شكوى'
+                            : ticket.category === 'technical'
+                            ? 'مشكلة تقنية'
+                            : 'استفسار'}
+                        </span>
+                        {ticket.ticketCode && (
+                          <span dir="ltr" className="font-mono text-[11px] font-bold text-[#6B7280]">
+                            {ticket.ticketCode}
+                          </span>
+                        )}
+                        {ticket.bookingId && (
+                          <span className="rounded-full bg-sky-50 px-2.5 py-0.5 text-[11px] font-semibold text-sky-800">
+                            حجز: #{ticket.bookingId.slice(0, 8).toUpperCase()}
+                          </span>
+                        )}
+                      </div>
+
+                      <h3 className="text-base font-bold text-[#1F2937]">{ticket.subject}</h3>
+                      <p className="text-xs text-[#6B7280]">
+                        المرسل: <strong>{ticket.contactName}</strong>
+                        {ticket.contactPhone && ` • هاتف: ${ticket.contactPhone}`}
+                        {ticket.contactEmail && ` • ${ticket.contactEmail}`}
+                      </p>
+                      <p className="mt-1 rounded-xl bg-[#FAF9F6] px-3 py-2 text-xs leading-relaxed text-[#374151]">
+                        {ticket.message}
+                      </p>
+                    </div>
+
+                    <span className="text-[11px] text-[#6B7280]">
+                      {formatArabicDate(ticket.createdAt.slice(0, 10))}
+                    </span>
+                  </div>
+
+                  <div className="space-y-2 border-t border-stone-100 pt-3">
+                    <textarea
+                      rows={2}
+                      value={ticketReplyById[ticket.id] ?? ticket.adminReply ?? ''}
+                      onChange={(e) =>
+                        setTicketReplyById((prev) => ({
+                          ...prev,
+                          [ticket.id]: e.target.value,
+                        }))
+                      }
+                      placeholder="اكتب رد خدمة العملاء ليصل للمستخدم في صفحة الطلبات والإشعارات..."
+                      className="w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] p-2.5 text-xs text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
+                    />
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={updatingTicketId === ticket.id}
+                        onClick={() => void handleUpdateTicketStatus(ticket, 'replied')}
+                        className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl bg-[#1E3A5F] px-4 py-2 text-xs font-bold text-white hover:bg-[#172E4D] disabled:opacity-60"
+                      >
+                        <Send className="h-3.5 w-3.5" />
+                        <span>إرسال الرد (تم الرد)</span>
+                      </button>
+
+                      {ticket.status !== 'closed' ? (
+                        <button
+                          type="button"
+                          disabled={updatingTicketId === ticket.id}
+                          onClick={() => void handleUpdateTicketStatus(ticket, 'closed')}
+                          className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-4 py-2 text-xs font-bold text-[#6B7280] hover:bg-stone-100 disabled:opacity-60"
+                        >
+                          <XCircle className="h-3.5 w-3.5" />
+                          <span>إغلاق التذكرة</span>
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled={updatingTicketId === ticket.id}
+                          onClick={() => void handleUpdateTicketStatus(ticket, 'open')}
+                          className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2 text-xs font-bold text-amber-800 hover:bg-amber-100 disabled:opacity-60"
+                        >
+                          <span>إعادة فتح</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+
+              {hasMoreTickets && (
+                <div className="pt-2 text-center">
+                  <button
+                    type="button"
+                    disabled={loadingMoreTickets}
+                    onClick={() => void handleLoadMoreTickets()}
+                    className="inline-flex min-h-[44px] items-center gap-2 rounded-xl border border-stone-200/70 bg-white px-5 py-2 text-xs font-bold text-[#1E3A5F] hover:bg-stone-50"
+                  >
+                    {loadingMoreTickets && <RefreshCw className="h-3.5 w-3.5 animate-spin" />}
+                    <span>عرض تذاكر أقدم</span>
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* Tab 6: Security & Operations Audit Logs */}
+      {activeTab === 'audit' && (
+        <section className="mt-6 space-y-4">
+          <div className="flex flex-wrap gap-2">
+            {(
+              [
+                { id: 'all', label: 'جميع العمليات' },
+                { id: 'booking', label: 'الحجوزات' },
+                { id: 'support_ticket', label: 'تذاكر الدعم' },
+                { id: 'subscription', label: 'الاشتراكات' },
+                { id: 'profile', label: 'الصلاحيات والتوثيق' },
+              ] as const
+            ).map((f) => (
+              <button
+                key={f.id}
+                type="button"
+                onClick={() => setAuditEntityFilter(f.id)}
+                className={`min-h-[40px] rounded-xl px-3.5 py-2 text-xs font-bold transition ${
+                  auditEntityFilter === f.id
+                    ? 'bg-[#1E3A5F] text-white'
+                    : 'border border-stone-200/70 bg-white text-[#1F2937] hover:bg-slate-50'
+                }`}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+
+          {loading && auditLogs.length === 0 ? (
+            <div className="space-y-2.5" aria-busy="true">
+              <div className="h-20 animate-pulse rounded-2xl border border-stone-200/70 bg-white" />
+              <div className="h-20 animate-pulse rounded-2xl border border-stone-200/70 bg-white" />
+            </div>
+          ) : filteredAuditLogs.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-stone-300 bg-white p-10 text-center text-sm text-[#6B7280]">
+              لا توجد سجلات تدقيق مسجلة في هذا التصنيف حتى الآن.
+            </div>
+          ) : (
+            <div className="space-y-2.5">
+              {filteredAuditLogs.map((log) => (
+                <div
+                  key={log.id}
+                  className="rounded-2xl border border-stone-200/70 bg-white p-4 shadow-xs"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="rounded-full bg-[#1E3A5F] px-2.5 py-0.5 font-mono text-[10px] font-bold text-white" dir="ltr">
+                        {log.action}
+                      </span>
+                      <span className="rounded-full bg-[#FAF9F6] px-2.5 py-0.5 text-[11px] font-bold text-[#1E3A5F]">
+                        {log.entityType}
+                      </span>
+                      <span className="rounded-full border border-stone-200/70 px-2 py-0.5 text-[10px] font-semibold text-[#6B7280]">
+                        بواسطة: {log.actorRole}
+                      </span>
+                    </div>
+                    <span className="text-[11px] text-[#6B7280]">
+                      {new Date(log.createdAt).toLocaleString('ar-EG')}
+                    </span>
+                  </div>
+
+                  <p className="mt-2 text-xs font-bold text-[#1F2937]">{log.summaryAr}</p>
+                  <p className="mt-1 font-mono text-[10px] text-[#6B7280]" dir="ltr">
+                    entity_id: {log.entityId}
+                    {log.actorId ? ` • actor_id: ${log.actorId}` : ''}
+                  </p>
+                </div>
+              ))}
+
+              {hasMoreAudit && (
+                <div className="pt-2 text-center">
+                  <button
+                    type="button"
+                    disabled={loadingMoreAudit}
+                    onClick={() => void handleLoadMoreAuditLogs()}
+                    className="inline-flex min-h-[44px] items-center gap-2 rounded-xl border border-stone-200/70 bg-white px-5 py-2 text-xs font-bold text-[#1E3A5F] hover:bg-stone-50"
+                  >
+                    {loadingMoreAudit && <RefreshCw className="h-3.5 w-3.5 animate-spin" />}
+                    <span>عرض سجلات أقدم</span>
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* Tab 7: Legacy Owner Linking via `admin_link_legacy_owner` RPC */}
       {activeTab === 'legacy' && (
         <section className="mt-6 max-w-2xl rounded-2xl border border-stone-200/70 bg-white p-6 shadow-xs">
           <div className="flex items-start gap-3 border-b border-stone-100 pb-4">

@@ -1,4 +1,4 @@
-export type RouteSection = 'home' | 'pricing' | 'owner' | 'admin';
+export type RouteSection = 'home' | 'bookings' | 'support' | 'pricing' | 'owner' | 'admin';
 
 export type PropertyType =
   | 'شقة مفروشة'
@@ -261,3 +261,113 @@ export interface UserNotificationRecord {
   isRead: boolean;
   createdAt: string;
 }
+
+export type BookingStatus =
+  | 'pending'
+  | 'approved'
+  | 'payment_submitted'
+  | 'confirmed'
+  | 'modified'
+  | 'completed'
+  | 'cancelled'
+  | 'rejected'
+  | 'expired'
+  | 'pending_verification';
+
+export interface ServerBookingQuote {
+  nights: number;
+  regularNights: number;
+  weekendNights: number;
+  seasonalNights: number;
+  unitPrice: number;
+  totalPrice: number;
+  depositAmount: number;
+  remainingAmount: number;
+  isAvailable: boolean;
+  checkinTime: string;
+  checkoutTime: string;
+  cancellationPolicy: string;
+}
+
+export interface BookingRecord {
+  id: string;
+  chaletId: string;
+  renterId: string;
+  chaletTitle: string;
+  resort: string;
+  destinationLabel: string;
+  ownerName: string;
+  guestName: string;
+  guestPhone: string;
+  checkIn: string;
+  checkOut: string;
+  nights: number;
+  rentalDuration: RentalDuration;
+  guests: number;
+  totalPrice: number;
+  depositAmount: number;
+  remainingAmount: number;
+  policyAccepted: boolean;
+  notes: string;
+  status: BookingStatus;
+  cancellationPolicy?: string;
+  cancellationReason?: string;
+  rejectionReason?: string;
+  modificationNote?: string;
+  approvedAt?: string;
+  confirmedAt?: string;
+  modifiedAt?: string;
+  cancelledAt?: string;
+  completedAt?: string;
+  expiresAt?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface BookingAuditEvent {
+  id: string;
+  action: string;
+  summaryAr: string;
+  createdAt: string;
+}
+
+export type SupportTicketCategory =
+  | 'booking_modify'
+  | 'booking_cancel'
+  | 'complaint'
+  | 'inquiry'
+  | 'technical';
+
+export type SupportTicketStatus = 'open' | 'replied' | 'closed';
+
+export interface SupportTicketRecord {
+  id: string;
+  ticketCode: string;
+  userId?: string;
+  bookingId?: string;
+  contactName: string;
+  contactEmail: string;
+  contactPhone: string;
+  category: SupportTicketCategory;
+  subject: string;
+  message: string;
+  status: SupportTicketStatus;
+  adminReply?: string;
+  respondedAt?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface AuditLogRecord {
+  id: string;
+  actorId?: string;
+  actorRole: string;
+  action: string;
+  entityType: string;
+  entityId: string;
+  summaryAr: string;
+  oldData?: Record<string, unknown> | null;
+  newData?: Record<string, unknown> | null;
+  createdAt: string;
+}
+

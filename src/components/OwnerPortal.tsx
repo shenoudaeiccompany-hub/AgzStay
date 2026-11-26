@@ -88,6 +88,7 @@ import {
   formatArabicDate,
   formatIsoDate,
 } from '@/utils/bookingPricing';
+import { buildResponsiveImageAttributes } from '@/utils/imageOptimization';
 
 interface OwnerPortalProps {
   onNavigate: (section: RouteSection) => void;
@@ -2282,7 +2283,13 @@ export function OwnerPortal({
                       key={`${url}-${idx}`}
                       className="group relative aspect-square overflow-hidden rounded-xl border border-stone-200/70 bg-white"
                     >
-                      <img src={url} alt="" className="h-full w-full object-cover" />
+                      <img
+                        {...buildResponsiveImageAttributes(url, '160px')}
+                        alt={`صورة الوحدة ${idx + 1}`}
+                        loading="lazy"
+                        decoding="async"
+                        className="h-full w-full object-cover"
+                      />
                       <button
                         type="button"
                         onClick={() =>
@@ -2338,8 +2345,20 @@ export function OwnerPortal({
         </div>
 
         {loading && units.length === 0 ? (
-          <div className="rounded-2xl border border-stone-200/70 bg-white p-10 text-center text-sm text-[#6B7280]">
-            جاري تحميل وحداتك...
+          <div className="space-y-3" aria-busy="true" aria-label="جاري تحميل وحداتك">
+            {Array.from({ length: 3 }).map((_, idx) => (
+              <div
+                key={idx}
+                className="flex animate-pulse items-center gap-4 rounded-2xl border border-stone-200/70 bg-white p-4 shadow-xs"
+              >
+                <div className="h-20 w-24 shrink-0 rounded-xl bg-stone-200" />
+                <div className="flex-1 space-y-2">
+                  <div className="h-4 w-1/3 rounded bg-stone-200" />
+                  <div className="h-3 w-1/2 rounded bg-stone-100" />
+                  <div className="h-3 w-1/4 rounded bg-stone-100" />
+                </div>
+              </div>
+            ))}
           </div>
         ) : units.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center">
@@ -2372,8 +2391,12 @@ export function OwnerPortal({
                       <div className="h-20 w-24 shrink-0 overflow-hidden rounded-xl bg-slate-100">
                         {unit.images[0] ? (
                           <img
-                            src={unit.images[0]}
+                            {...buildResponsiveImageAttributes(unit.images[0], '96px')}
                             alt={unit.title}
+                            width={96}
+                            height={80}
+                            loading="lazy"
+                            decoding="async"
                             className="h-full w-full object-cover"
                           />
                         ) : (

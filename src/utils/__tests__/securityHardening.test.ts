@@ -5,15 +5,18 @@ import migrationSql from '../../../supabase/migrations/006_secure_v2.sql?raw';
 import migration007Sql from '../../../supabase/migrations/007_maintenance_and_legacy_triggers_fix.sql?raw';
 import migration008Sql from '../../../supabase/migrations/008_verification_reports_and_stats.sql?raw';
 import migration009Sql from '../../../supabase/migrations/009_marketplace_enhancements.sql?raw';
+import migration010Sql from '../../../supabase/migrations/010_ux_support_audit_and_booking_hardening.sql?raw';
 import pgTapSql from '../../../supabase/tests/006_secure_v2.test.sql?raw';
 import repoSource from '@/services/agzstayRepository.ts?raw';
 
 import adminDashboardSource from '@/components/AdminDashboard.tsx?raw';
 import heroSearchSource from '@/components/HeroSearch.tsx?raw';
+import myBookingsSource from '@/components/MyBookingsPage.tsx?raw';
 import navbarSource from '@/components/Navbar.tsx?raw';
 import ownerPortalSource from '@/components/OwnerPortal.tsx?raw';
 import pricingPageSource from '@/components/PricingPage.tsx?raw';
 import propertyDetailSource from '@/components/PropertyDetailPage.tsx?raw';
+import supportModalSource from '@/components/SupportContactModal.tsx?raw';
 import chaletMetaSource from '../../../api/chalet-meta.ts?raw';
 import mainActivitySource from '../../../app/src/main/java/com/masayef/app/MainActivity.kt?raw';
 
@@ -235,5 +238,59 @@ describe('006_secure_v2.sql security & concurrency invariants', () => {
     expect(ownerPortalSource).toContain('upsertChaletPricingRule');
     expect(ownerPortalSource).toContain('buildOwnerMarketingCopy');
     expect(navbarSource).toContain('fetchMyNotifications');
+  });
+
+  it('enforces server-side booking pricing, support_tickets RLS, audit_logs, and zero select(*) in 010 and UI', () => {
+    const secDefHeaders =
+      migration010Sql.match(/create\s+or\s+replace\s+function\s+[\s\S]*?as\s+\$\$/gi) ?? [];
+    expect(secDefHeaders.length).toBeGreaterThanOrEqual(12);
+    for (const header of secDefHeaders) {
+      if (/security\s+(definer|invoker)/i.test(header)) {
+        expect(header).toMatch(/set\s+search_path\s*=\s*''/i);
+      }
+    }
+
+    const codeOnly = migration010Sql.replace(/--.*$/gm, '').toLowerCase();
+    expect(codeOnly).not.toContain('x-forwarded-for');
+    expect(codeOnly).not.toContain('request.headers');
+    expect(migration010Sql).toContain('pg_catalog.inet_client_addr()');
+    expect(migration010Sql).toContain('pg_catalog.pg_advisory_xact_lock');
+    expect(migration010Sql).toContain('bookings_no_overlap');
+    expect(migration010Sql).toContain('public.calculate_booking_quote(');
+    expect(migration010Sql).toContain('public.create_booking(');
+    expect(migration010Sql).toContain('public.modify_my_booking(');
+    expect(migration010Sql).toContain('public.cancel_booking(');
+    expect(migration010Sql).toContain('public.submit_support_ticket(');
+    expect(migration010Sql).toContain('public.admin_update_support_ticket(');
+    expect(migration010Sql).toContain('create table if not exists public.support_tickets');
+    expect(migration010Sql).toContain('create table if not exists public.audit_logs');
+    expect(migration010Sql).toContain('trg_audit_bookings');
+    expect(migration010Sql).toContain('trg_audit_profiles');
+    expect(migration010Sql).toContain('trg_audit_support_tickets');
+
+    const policyBlocks = migration010Sql.match(/create\s+policy\s+[\s\S]*?;/gi) ?? [];
+    expect(policyBlocks.length).toBeGreaterThanOrEqual(3);
+    for (const policy of policyBlocks) {
+      if (policy.toLowerCase().includes('auth.uid()')) {
+        expect(policy.toLowerCase()).toContain('(select auth.uid())');
+      }
+    }
+
+    // No direct .select('*') anywhere in repository
+    expect(repoSource).not.toMatch(/\.select\(\s*'\*'\s*\)/);
+
+    // Guided 3-step booking, MyBookings, Support & Admin Audit UI wiring
+    expect(propertyDetailSource).toContain('fetchServerBookingQuote');
+    expect(propertyDetailSource).toContain('createBookingViaRpc');
+    expect(propertyDetailSource).toContain('bookingStep');
+    expect(myBookingsSource).toContain('fetchMyBookingsPage');
+    expect(myBookingsSource).toContain('modifyBookingViaRpc');
+    expect(myBookingsSource).toContain('cancelBookingViaRpc');
+    expect(myBookingsSource).toContain('fetchBookingAuditTimeline');
+    expect(supportModalSource).toContain('submitSupportTicketRpc');
+    expect(supportModalSource).toContain('fetchMySupportTicketsPage');
+    expect(adminDashboardSource).toContain('fetchAdminSupportTicketsPage');
+    expect(adminDashboardSource).toContain('adminUpdateSupportTicketRpc');
+    expect(adminDashboardSource).toContain('fetchAdminAuditLogsPage');
   });
 });

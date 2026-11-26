@@ -20,6 +20,8 @@ interface NavbarProps {
 
 const NAV_LINKS: { id: RouteSection; label: string; href: string }[] = [
   { id: 'home', label: 'الرئيسية', href: '/' },
+  { id: 'bookings', label: 'حجوزاتي', href: '/bookings' },
+  { id: 'support', label: 'المساعدة والدعم', href: '/support' },
   { id: 'pricing', label: 'الباقات', href: '/pricing' },
   { id: 'owner', label: 'بوابة المعلن', href: '/owner' },
   { id: 'admin', label: 'الإدارة', href: '/admin' },

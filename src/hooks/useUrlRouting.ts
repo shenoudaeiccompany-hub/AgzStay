@@ -4,6 +4,8 @@ import type { RouteSection } from '@/types/chalet';
 function readSectionFromLocation(): RouteSection {
   try {
     const path = window.location.pathname;
+    if (path === '/bookings') return 'bookings';
+    if (path === '/support') return 'support';
     if (path === '/pricing') return 'pricing';
     if (path === '/owner') return 'owner';
     if (path === '/admin') return 'admin';
@@ -47,6 +49,10 @@ export function useUrlRouting() {
       let targetPath = '/';
       if (selectedChaletId) {
         targetPath = `/chalet/${encodeURIComponent(selectedChaletId)}`;
+      } else if (activeSection === 'bookings') {
+        targetPath = '/bookings';
+      } else if (activeSection === 'support') {
+        targetPath = '/support';
       } else if (activeSection === 'pricing') {
         targetPath = '/pricing';
       } else if (activeSection === 'owner') {

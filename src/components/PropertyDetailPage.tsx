@@ -15,7 +15,6 @@ import {
   MessageCircle,
   Phone,
   RefreshCw,
-  Share2,
   ShieldAlert,
   ShieldCheck,
   Sparkles,
@@ -31,6 +30,8 @@ import { ChaletGallery } from '@/components/ChaletGallery';
 import { ChaletShareActions } from '@/components/ChaletShareActions';
 import { ImageLightboxModal } from '@/components/ImageLightboxModal';
 import { PropertyCard } from '@/components/PropertyCard';
+import { ShareChaletButton } from '@/components/ShareChaletButton';
+import { copyChaletLink, getChaletShareUrl } from '@/utils/shareChalet';
 import {
   formatEGP,
   getAmenityLabel,
@@ -39,12 +40,23 @@ import {
   isMonthlyOnlyProperty,
 } from '@/data/chalets';
 import {
+  createBookingViaRpc,
   fetchChaletReviews,
+  fetchMyProfile,
+  fetchServerBookingQuote,
+  getCurrentAuthUser,
+  isValidEgyptianMobile,
   revealListingContact,
   submitChaletReviewRpc,
   submitListingReportRpc,
 } from '@/services/agzstayRepository';
-import type { Chalet, ChaletReviewRecord } from '@/types/chalet';
+import type {
+  BookingRecord,
+  Chalet,
+  ChaletReviewRecord,
+  RouteSection,
+  ServerBookingQuote,
+} from '@/types/chalet';
 import {
   addDaysIso,
   buildWhatsAppPhoneUrl,
@@ -65,6 +77,8 @@ interface PropertyDetailPageProps {
   onBack: () => void;
   onSelectChalet?: (chalet: Chalet) => void;
   onToggleFavorite?: (id: string) => void;
+  onNavigate?: (section: RouteSection) => void;
+  onOpenSupport?: (bookingId?: string) => void;
 }
 
 const EXACT_RENTER_SECURITY_WARNING =
@@ -79,6 +93,8 @@ export function PropertyDetailPage({
   onBack,
   onSelectChalet,
   onToggleFavorite,
+  onNavigate,
+  onOpenSupport,
 }: PropertyDetailPageProps) {
   const [activeImageIndex, setActiveImageIndex] = useState(0);
   const [imageError, setImageError] = useState(false);
@@ -105,6 +121,20 @@ export function PropertyDetailPage({
   const [reviewError, setReviewError] = useState('');
   const [reviewSuccess, setReviewSuccess] = useState('');
 
+  // Guided 3-step booking state
+  const [bookingStep, setBookingStep] = useState<1 | 2 | 3>(1);
+  const [guestName, setGuestName] = useState('');
+  const [guestPhone, setGuestPhone] = useState('');
+  const [bookingNotes, setBookingNotes] = useState('');
+  const [policyAccepted, setPolicyAccepted] = useState(false);
+  const [stepValidationError, setStepValidationError] = useState('');
+  const [loadingServerQuote, setLoadingServerQuote] = useState(false);
+  const [serverQuote, setServerQuote] = useState<ServerBookingQuote | null>(null);
+  const [submittingBooking, setSubmittingBooking] = useState(false);
+  const [bookingSubmitError, setBookingSubmitError] = useState('');
+  const [confirmedBooking, setConfirmedBooking] = useState<BookingRecord | null>(null);
+  const [isAuthenticatedUser, setIsAuthenticatedUser] = useState(false);
+
   useEffect(() => {
     setActiveImageIndex(0);
     setImageError(false);
@@ -113,6 +143,12 @@ export function PropertyDetailPage({
     setReportError('');
     setReportSuccess('');
     setContactError(null);
+    setBookingStep(1);
+    setPolicyAccepted(false);
+    setStepValidationError('');
+    setBookingSubmitError('');
+    setServerQuote(null);
+    setConfirmedBooking(null);
 
     if (chalet.isDemo) {
       setReviews([]);
@@ -130,6 +166,24 @@ export function PropertyDetailPage({
       active = false;
     };
   }, [chalet.id, chalet.isDemo]);
+
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      const user = await getCurrentAuthUser();
+      if (!active) return;
+      setIsAuthenticatedUser(Boolean(user));
+      if (user) {
+        const prof = await fetchMyProfile();
+        if (!active || !prof.data) return;
+        setGuestName((prev) => prev || prof.data?.name || '');
+        setGuestPhone((prev) => prev || prof.data?.phone || '');
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const todayIso = useMemo(() => formatIsoDate(new Date()), []);
   const blockedSet = useMemo(() => getBlockedDatesSet(chalet), [chalet]);
@@ -213,10 +267,105 @@ export function PropertyDetailPage({
 
   const handleDateRangeSelect = (nextIn: string, nextOut: string) => {
     setCheckIn(nextIn);
+    setStepValidationError('');
+    setServerQuote(null);
     if (nextOut && calculateNightsBetween(nextIn, nextOut) > 0) {
       setCheckOut(nextOut);
     } else {
       setCheckOut(addDaysIso(nextIn, isMonthlyOnly ? 30 : 3));
+    }
+  };
+
+  const validateStepOne = (): string | null => {
+    if (!checkIn || checkIn < todayIso) {
+      return 'يرجى اختيار تاريخ وصول صالح من اليوم فصاعداً.';
+    }
+    if (!isMonthlyOnly && (!checkOut || calculateNightsBetween(checkIn, checkOut) <= 0)) {
+      return 'يرجى اختيار تاريخ مغادرة بعد تاريخ الوصول بليلة واحدة على الأقل.';
+    }
+    if (hasBlockedConflict) {
+      return 'التواريخ المختارة تتعارض مع مواعيد محجوزة أو مغلقة، يرجى اختيار تواريخ أخرى.';
+    }
+    if (!isMonthlyOnly && (guests < 1 || guests > (chalet.maxGuests || 1))) {
+      return `عدد الضيوف يجب أن يكون بين ١ و ${(chalet.maxGuests || 1).toLocaleString('ar-EG')} أفراد.`;
+    }
+    if (guestName.trim().length < 2) {
+      return 'يرجى كتابة الاسم الكامل (حرفين على الأقل) للمتابعة.';
+    }
+    if (!isValidEgyptianMobile(guestPhone)) {
+      return 'يرجى إدخال رقم موبايل مصري صحيح (١١ رقماً يبدأ بـ 010 أو 011 أو 012 أو 015).';
+    }
+    return null;
+  };
+
+  const handleProceedToReview = async () => {
+    const validationErr = validateStepOne();
+    if (validationErr) {
+      setStepValidationError(validationErr);
+      return;
+    }
+    setStepValidationError('');
+    setBookingSubmitError('');
+
+    if (!chalet.isDemo) {
+      setLoadingServerQuote(true);
+      try {
+        const res = await fetchServerBookingQuote({
+          chaletId: chalet.id,
+          checkIn,
+          checkOut: isMonthlyOnly ? addDaysIso(checkIn, 30) : checkOut,
+          rentalDuration: isMonthlyOnly ? 'monthly' : nights >= 7 && nights % 7 === 0 ? 'weekly' : 'daily',
+        });
+        if (res.error) {
+          setStepValidationError(res.error);
+          return;
+        }
+        setServerQuote(res.data);
+      } finally {
+        setLoadingServerQuote(false);
+      }
+    }
+    setBookingStep(2);
+  };
+
+  const handleConfirmBookingRequest = async () => {
+    setBookingSubmitError('');
+    if (!policyAccepted) {
+      setBookingSubmitError('يرجى الموافقة على شروط الإلغاء ومواعيد الدخول والخروج أولاً.');
+      return;
+    }
+    if (chalet.isDemo) {
+      setBookingSubmitError('هذه وحدة تجريبية للمعاينة فقط — لإتمام حجز فعلي اختر وحدة منشورة.');
+      return;
+    }
+
+    setSubmittingBooking(true);
+    try {
+      const duration = isMonthlyOnly
+        ? 'monthly'
+        : nights >= 7 && nights % 7 === 0
+        ? 'weekly'
+        : 'daily';
+      const res = await createBookingViaRpc({
+        chaletId: chalet.id,
+        checkIn,
+        nights: isMonthlyOnly ? 30 : nights,
+        duration,
+        guests: isMonthlyOnly ? 1 : guests,
+        guestName,
+        guestPhone,
+        notes: bookingNotes,
+        policyAccepted: true,
+        channel: 'form',
+      });
+      if (res.error || !res.data) {
+        setBookingSubmitError(res.error ?? 'تعذر إرسال طلب الحجز الآن.');
+        return;
+      }
+      setConfirmedBooking(res.data);
+      setBookingStep(3);
+    } finally {
+      setSubmittingBooking(false);
     }
   };
 
@@ -299,39 +448,12 @@ export function PropertyDetailPage({
     [chalet.blockedDates, todayIso]
   );
 
-  const shareUrl = useMemo(() => {
-    const encodedId = encodeURIComponent(chalet.id);
-    try {
-      return `${window.location.origin}/chalet/${encodedId}`;
-    } catch {
-      return `https://agzstay.com/chalet/${encodedId}`;
-    }
-  }, [chalet.id]);
-
-  const quickWhatsAppShareHref = useMemo(() => {
-    const summary = `${chalet.title} — ${locationDisplay} (${formatEGP(
-      quote.unitPrice
-    )} ${getShortPriceUnitLabel(chalet)}) عبر AgzStay\n${shareUrl}`;
-    return `https://wa.me/?text=${encodeURIComponent(summary)}`;
-  }, [chalet, locationDisplay, quote.unitPrice, shareUrl]);
+  const shareUrl = useMemo(() => getChaletShareUrl(chalet.id), [chalet.id]);
 
   const handleQuickCopyLink = async () => {
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(shareUrl);
-      } else {
-        const input = document.createElement('input');
-        input.value = shareUrl;
-        document.body.appendChild(input);
-        input.select();
-        document.execCommand('copy');
-        document.body.removeChild(input);
-      }
-      setQuickCopied(true);
-      window.setTimeout(() => setQuickCopied(false), 2200);
-    } catch {
-      setQuickCopied(true);
-    }
+    await copyChaletLink(shareUrl);
+    setQuickCopied(true);
+    window.setTimeout(() => setQuickCopied(false), 2200);
   };
 
   const handleSubmitReport = async (e: React.FormEvent) => {
@@ -412,7 +534,7 @@ export function PropertyDetailPage({
           <button
             type="button"
             onClick={() => void handleQuickCopyLink()}
-            className={`inline-flex min-h-[38px] items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-semibold shadow-xs transition ${
+            className={`inline-flex min-h-[42px] items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-semibold shadow-xs transition ${
               quickCopied
                 ? 'border-emerald-300 bg-emerald-50 text-emerald-700'
                 : 'border-stone-200/70 bg-white text-[#1E3A5F] hover:bg-[#FAF9F6]'
@@ -422,15 +544,7 @@ export function PropertyDetailPage({
             <span>{quickCopied ? 'تم النسخ' : 'نسخ الرابط'}</span>
           </button>
 
-          <a
-            href={quickWhatsAppShareHref}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex min-h-[38px] items-center gap-1.5 rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white shadow-xs transition hover:bg-emerald-700"
-          >
-            <Share2 className="h-3.5 w-3.5" />
-            <span>مشاركة الإعلان</span>
-          </a>
+          <ShareChaletButton chalet={chalet} variant="detail" />
         </div>
       </div>
 
@@ -727,154 +841,418 @@ export function PropertyDetailPage({
               </div>
             </div>
 
-            {/* Date & Guests Selection */}
-            <div className="mt-5 space-y-3.5">
-              {isMonthlyOnly ? (
-                <ArabicSingleDateField
-                  label="تاريخ المعاينة / السكن المقترح"
-                  value={checkIn}
-                  minDateIso={todayIso}
-                  onChange={(nextIn) => handleDateRangeSelect(nextIn, addDaysIso(nextIn, 30))}
-                />
-              ) : (
-                <ArabicDateRangeField
-                  checkInDate={checkIn}
-                  checkOutDate={checkOut}
-                  minDateIso={todayIso}
-                  blockedDates={blockedSet}
-                  allowClear={false}
-                  onChange={handleDateRangeSelect}
-                />
-              )}
-
-              {!isMonthlyOnly && (
-                <div>
-                  <label
-                    htmlFor="detail-guests"
-                    className="mb-1.5 block text-xs font-semibold text-[#6B7280]"
-                  >
-                    عدد الأفراد
-                  </label>
-                  <select
-                    id="detail-guests"
-                    value={guests}
-                    onChange={(e) => setGuests(Number(e.target.value))}
-                    className="h-11 w-full rounded-xl border border-stone-200/80 bg-[#FAF9F6] px-3 text-xs font-semibold text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
-                  >
-                    {Array.from({ length: Math.max(1, chalet.maxGuests) }).map((_, i) => (
-                      <option key={i + 1} value={i + 1}>
-                        {(i + 1).toLocaleString('ar-EG')} أفراد
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
-
-              {hasBlockedConflict && (
-                <div
-                  className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 p-3 text-xs font-semibold text-red-800"
-                  role="alert"
-                >
-                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" />
-                  <span>
-                    عذراً، بعض التواريخ المختارة مغلقة من قِبل المعلن:{' '}
-                    {conflictingDates.map(formatArabicDate).join(' ، ')}. يرجى اختيار تواريخ أخرى.
-                  </span>
-                </div>
-              )}
-            </div>
-
-            {/* Flexible Weekend & Seasonal Rate Info Strip */}
-            {!isMonthlyOnly &&
-              ((chalet.weekendPrice ?? 0) > 0 || (chalet.seasonalPrice ?? 0) > 0) && (
-                <div className="mt-4 flex flex-wrap gap-2">
-                  {(chalet.weekendPrice ?? 0) > 0 && (
-                    <span className="inline-flex items-center gap-1 rounded-xl border border-[#C5A880]/60 bg-[#FAF6F0] px-2.5 py-1 text-[11px] font-bold text-[#1E3A5F]">
-                      الويك إند (خميس/جمعة): {formatEGP(chalet.weekendPrice!)}
-                    </span>
-                  )}
-                  {(chalet.seasonalPrice ?? 0) > 0 && (
-                    <span className="inline-flex items-center gap-1 rounded-xl border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-bold text-amber-900">
-                      {chalet.seasonalLabel || 'سعر الموسم'}: {formatEGP(chalet.seasonalPrice!)}
-                      {chalet.seasonalStart && chalet.seasonalEnd
-                        ? ` (${formatArabicDate(chalet.seasonalStart)} - ${formatArabicDate(chalet.seasonalEnd)})`
-                        : ''}
-                    </span>
-                  )}
-                </div>
-              )}
-
-            {/* Clear Deposit & Pricing Summary (`deposit_type` + `deposit_value`) */}
-            <div className="mt-5 space-y-2 rounded-2xl border border-stone-200/70 bg-[#FAF9F6] p-4 text-xs">
-              {!isMonthlyOnly ? (
-                quote.hasDynamicPricing ? (
-                  <>
-                    {quote.regularNightsCount > 0 && (
-                      <div className="flex items-center justify-between text-[#6B7280]">
-                        <span>
-                          {quote.regularNightsCount.toLocaleString('ar-EG')} ليالٍ عادية ×{' '}
-                          {formatEGP(quote.unitPrice)}
-                        </span>
-                        <span className="font-semibold text-[#1F2937]">
-                          {formatEGP(quote.regularNightsCount * quote.unitPrice)}
-                        </span>
-                      </div>
-                    )}
-                    {quote.weekendNightsCount > 0 && (chalet.weekendPrice ?? 0) > 0 && (
-                      <div className="flex items-center justify-between text-[#6B7280]">
-                        <span>
-                          {quote.weekendNightsCount.toLocaleString('ar-EG')} ليالٍ ويك إند ×{' '}
-                          {formatEGP(chalet.weekendPrice!)}
-                        </span>
-                        <span className="font-semibold text-[#1F2937]">
-                          {formatEGP(quote.weekendNightsCount * chalet.weekendPrice!)}
-                        </span>
-                      </div>
-                    )}
-                    {quote.seasonalNightsCount > 0 && (chalet.seasonalPrice ?? 0) > 0 && (
-                      <div className="flex items-center justify-between text-[#6B7280]">
-                        <span>
-                          {quote.seasonalNightsCount.toLocaleString('ar-EG')} ليالٍ ({chalet.seasonalLabel || 'موسم'}) ×{' '}
-                          {formatEGP(chalet.seasonalPrice!)}
-                        </span>
-                        <span className="font-semibold text-[#1F2937]">
-                          {formatEGP(quote.seasonalNightsCount * chalet.seasonalPrice!)}
-                        </span>
-                      </div>
-                    )}
-                    <div className="flex items-center justify-between border-t border-stone-200/70 pt-2 text-[#1E3A5F]">
-                      <span className="font-bold">
-                        الإجمالي لـ {quote.nights.toLocaleString('ar-EG')} ليالٍ
-                      </span>
-                      <strong className="text-sm">{formatEGP(quote.subtotal)}</strong>
+            {/* Guided 3-Step Booking Stepper Header */}
+            <div className="mt-4">
+              <div className="grid grid-cols-3 gap-1.5 rounded-2xl border border-stone-200/70 bg-[#FAF9F6] p-1.5 text-center text-[11px] font-bold">
+                {(
+                  [
+                    { step: 1, label: '١. الوحدة والتواريخ' },
+                    { step: 2, label: '٢. السعر والشروط' },
+                    { step: 3, label: '٣. تأكيد الحجز' },
+                  ] as const
+                ).map((item) => {
+                  const active = bookingStep === item.step;
+                  const done = bookingStep > item.step;
+                  return (
+                    <div
+                      key={item.step}
+                      className={`rounded-xl px-2 py-2 transition ${
+                        active
+                          ? 'bg-[#1E3A5F] text-white shadow-xs'
+                          : done
+                          ? 'bg-emerald-50 text-emerald-800'
+                          : 'text-[#6B7280]'
+                      }`}
+                    >
+                      {item.label}
                     </div>
-                  </>
-                ) : (
-                  <div className="flex items-center justify-between text-[#6B7280]">
-                    <span>
-                      {formatEGP(quote.unitPrice)} × {quote.nights.toLocaleString('ar-EG')} ليالٍ
-                    </span>
-                    <strong className="text-sm text-[#1E3A5F]">{formatEGP(quote.subtotal)}</strong>
-                  </div>
-                )
-              ) : (
-                <div className="flex items-center justify-between text-[#6B7280]">
-                  <span>قيمة الإيجار الشهري المعلنة</span>
-                  <strong className="text-sm text-[#1E3A5F]">{formatEGP(quote.subtotal)}</strong>
-                </div>
-              )}
-
-              <div className="flex items-center justify-between border-t border-stone-200/70 pt-2.5 text-[#1F2937]">
-                <span className="font-medium text-[#6B7280]">
-                  جدية الحجز ({chalet.depositType === 'fixed' ? 'مبلغ ثابت' : 'نسبة مئوية'}):
-                </span>
-                <strong className="text-[#1E3A5F]">
-                  {quote.hasInformationalDeposit
-                    ? quote.depositDisplayText
-                    : 'تُحدد عند التواصل والاتفاق'}
-                </strong>
+                  );
+                })}
               </div>
             </div>
+
+            {bookingStep === 1 && (
+              <>
+                {/* Step 1: Dates, Guests & Contact Details */}
+                <div className="mt-4 space-y-3.5">
+                  {isMonthlyOnly ? (
+                    <ArabicSingleDateField
+                      label="تاريخ المعاينة / السكن المقترح"
+                      value={checkIn}
+                      minDateIso={todayIso}
+                      onChange={(nextIn) => handleDateRangeSelect(nextIn, addDaysIso(nextIn, 30))}
+                    />
+                  ) : (
+                    <ArabicDateRangeField
+                      checkInDate={checkIn}
+                      checkOutDate={checkOut}
+                      minDateIso={todayIso}
+                      blockedDates={blockedSet}
+                      allowClear={false}
+                      onChange={handleDateRangeSelect}
+                    />
+                  )}
+
+                  {!isMonthlyOnly && (
+                    <div>
+                      <label
+                        htmlFor="detail-guests"
+                        className="mb-1.5 block text-xs font-semibold text-[#6B7280]"
+                      >
+                        عدد الأفراد
+                      </label>
+                      <select
+                        id="detail-guests"
+                        value={guests}
+                        onChange={(e) => {
+                          setGuests(Number(e.target.value));
+                          setStepValidationError('');
+                        }}
+                        className="h-11 w-full rounded-xl border border-stone-200/80 bg-[#FAF9F6] px-3 text-xs font-semibold text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
+                      >
+                        {Array.from({ length: Math.max(1, chalet.maxGuests) }).map((_, i) => (
+                          <option key={i + 1} value={i + 1}>
+                            {(i + 1).toLocaleString('ar-EG')} أفراد
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div>
+                      <label
+                        htmlFor="booking-guest-name"
+                        className="mb-1 block text-xs font-semibold text-[#6B7280]"
+                      >
+                        الاسم الكامل
+                      </label>
+                      <input
+                        id="booking-guest-name"
+                        type="text"
+                        value={guestName}
+                        onChange={(e) => {
+                          setGuestName(e.target.value);
+                          setStepValidationError('');
+                        }}
+                        placeholder="الاسم الثلاثي"
+                        className="h-11 w-full rounded-xl border border-stone-200/80 bg-[#FAF9F6] px-3 text-xs text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label
+                        htmlFor="booking-guest-phone"
+                        className="mb-1 block text-xs font-semibold text-[#6B7280]"
+                      >
+                        رقم الموبايل المصري
+                      </label>
+                      <input
+                        id="booking-guest-phone"
+                        type="tel"
+                        dir="ltr"
+                        value={guestPhone}
+                        onChange={(e) => {
+                          setGuestPhone(e.target.value);
+                          setStepValidationError('');
+                        }}
+                        placeholder="01012345678"
+                        className="h-11 w-full rounded-xl border border-stone-200/80 bg-[#FAF9F6] px-3 text-right text-xs text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label
+                      htmlFor="booking-notes"
+                      className="mb-1 block text-xs font-semibold text-[#6B7280]"
+                    >
+                      ملاحظات للمعلن (اختياري)
+                    </label>
+                    <input
+                      id="booking-notes"
+                      type="text"
+                      maxLength={300}
+                      value={bookingNotes}
+                      onChange={(e) => setBookingNotes(e.target.value)}
+                      placeholder="وقت الوصول المتوقع أو أي استفسار..."
+                      className="h-11 w-full rounded-xl border border-stone-200/80 bg-[#FAF9F6] px-3 text-xs text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
+                    />
+                  </div>
+
+                  {hasBlockedConflict && (
+                    <div
+                      className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 p-3 text-xs font-semibold text-red-800"
+                      role="alert"
+                    >
+                      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" />
+                      <span>
+                        عذراً، بعض التواريخ المختارة مغلقة من قِبل المعلن:{' '}
+                        {conflictingDates.map(formatArabicDate).join(' ، ')}. يرجى اختيار تواريخ أخرى.
+                      </span>
+                    </div>
+                  )}
+
+                  {stepValidationError && (
+                    <div
+                      className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 p-3 text-xs font-semibold text-red-800"
+                      role="alert"
+                    >
+                      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" />
+                      <span>{stepValidationError}</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Flexible Weekend & Seasonal Rate Info Strip */}
+                {!isMonthlyOnly &&
+                  ((chalet.weekendPrice ?? 0) > 0 || (chalet.seasonalPrice ?? 0) > 0) && (
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      {(chalet.weekendPrice ?? 0) > 0 && (
+                        <span className="inline-flex items-center gap-1 rounded-xl border border-[#C5A880]/60 bg-[#FAF6F0] px-2.5 py-1 text-[11px] font-bold text-[#1E3A5F]">
+                          الويك إند (خميس/جمعة): {formatEGP(chalet.weekendPrice!)}
+                        </span>
+                      )}
+                      {(chalet.seasonalPrice ?? 0) > 0 && (
+                        <span className="inline-flex items-center gap-1 rounded-xl border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-bold text-amber-900">
+                          {chalet.seasonalLabel || 'سعر الموسم'}: {formatEGP(chalet.seasonalPrice!)}
+                          {chalet.seasonalStart && chalet.seasonalEnd
+                            ? ` (${formatArabicDate(chalet.seasonalStart)} - ${formatArabicDate(chalet.seasonalEnd)})`
+                            : ''}
+                        </span>
+                      )}
+                    </div>
+                  )}
+
+                {/* Estimated Quick Summary */}
+                <div className="mt-4 space-y-2 rounded-2xl border border-stone-200/70 bg-[#FAF9F6] p-4 text-xs">
+                  <div className="flex items-center justify-between text-[#1E3A5F]">
+                    <span className="font-bold">
+                      {isMonthlyOnly
+                        ? 'الإيجار الشهري المعلن'
+                        : `الإجمالي التقديري (${quote.nights.toLocaleString('ar-EG')} ليالٍ)`}
+                    </span>
+                    <strong className="text-sm">{formatEGP(quote.subtotal)}</strong>
+                  </div>
+                  <div className="flex items-center justify-between text-[#6B7280]">
+                    <span>جدية الحجز:</span>
+                    <strong className="text-[#1F2937]">
+                      {quote.hasInformationalDeposit
+                        ? quote.depositDisplayText
+                        : 'تُحدد عند الاتفاق'}
+                    </strong>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  disabled={hasBlockedConflict || loadingServerQuote}
+                  onClick={() => void handleProceedToReview()}
+                  className="mt-4 flex min-h-[48px] w-full items-center justify-center gap-2 rounded-xl bg-[#1E3A5F] px-4 py-3 text-sm font-bold text-white shadow-xs transition hover:bg-[#172E4D] disabled:opacity-60"
+                >
+                  {loadingServerQuote && <RefreshCw className="h-4 w-4 animate-spin" />}
+                  <span>
+                    {loadingServerQuote
+                      ? 'جاري مراجعة السعر والتوافر...'
+                      : 'الخطوة التالية: مراجعة السعر والشروط'}
+                  </span>
+                </button>
+              </>
+            )}
+
+            {bookingStep === 2 && (
+              <div className="mt-4 space-y-4">
+                <div className="rounded-2xl border border-stone-200/70 bg-[#FAF9F6] p-4 text-xs space-y-2.5">
+                  <div className="flex items-center justify-between border-b border-stone-200/70 pb-2">
+                    <span className="font-bold text-[#1E3A5F]">ملخص السعر النهائي المعتمد</span>
+                    <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700">
+                      محتسب من الخادم
+                    </span>
+                  </div>
+
+                  <div className="flex items-center justify-between text-[#6B7280]">
+                    <span>التواريخ:</span>
+                    <span className="font-bold text-[#1F2937]">
+                      {formatArabicDate(checkIn)} ←{' '}
+                      {formatArabicDate(isMonthlyOnly ? addDaysIso(checkIn, 30) : checkOut)}
+                    </span>
+                  </div>
+
+                  {!isMonthlyOnly && (
+                    <div className="flex items-center justify-between text-[#6B7280]">
+                      <span>عدد الضيوف:</span>
+                      <span className="font-bold text-[#1F2937]">
+                        {guests.toLocaleString('ar-EG')} أفراد
+                      </span>
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-between text-[#6B7280]">
+                    <span>الإجمالي النهائي:</span>
+                    <strong className="text-base text-[#1E3A5F]">
+                      {formatEGP(serverQuote?.totalPrice ?? quote.subtotal)}
+                    </strong>
+                  </div>
+
+                  <div className="flex items-center justify-between text-[#6B7280]">
+                    <span>جدية الحجز (العربون):</span>
+                    <strong className="text-[#1F2937]">
+                      {formatEGP(serverQuote?.depositAmount ?? quote.depositAmount)}
+                    </strong>
+                  </div>
+
+                  <div className="flex items-center justify-between text-[#6B7280]">
+                    <span>المتبقي عند الاستلام:</span>
+                    <strong className="text-[#1F2937]">
+                      {formatEGP(
+                        serverQuote?.remainingAmount ??
+                          Math.max(0, quote.subtotal - quote.depositAmount)
+                      )}
+                    </strong>
+                  </div>
+                </div>
+
+                {/* Check-in / Check-out & Cancellation Policy */}
+                <div className="rounded-2xl border border-[#C5A880]/70 bg-[#FAF6F0] p-4 text-xs space-y-2">
+                  <div className="font-bold text-[#1E3A5F]">مواعيد الدخول والخروج وسياسة الإلغاء</div>
+                  <div className="grid grid-cols-2 gap-2 text-[11px]">
+                    <div className="rounded-xl bg-white p-2.5">
+                      <span className="block text-[#6B7280]">موعد الدخول</span>
+                      <strong className="text-[#1E3A5F]">
+                        {serverQuote?.checkinTime ?? '١٤:٠٠ (٢:٠٠ عصراً)'}
+                      </strong>
+                    </div>
+                    <div className="rounded-xl bg-white p-2.5">
+                      <span className="block text-[#6B7280]">موعد الخروج</span>
+                      <strong className="text-[#1E3A5F]">
+                        {serverQuote?.checkoutTime ?? '١٢:٠٠ (١٢:٠٠ ظهراً)'}
+                      </strong>
+                    </div>
+                  </div>
+                  <p className="text-[11px] leading-relaxed text-[#4B5563]">
+                    <strong>سياسة الإلغاء:</strong>{' '}
+                    {serverQuote?.cancellationPolicy ??
+                      'إلغاء مجاني قبل موعد الوصول بـ ١٠ أيام على الأقل؛ بعد ذلك يُخصم مبلغ جدية الحجز (إن وُجد).'}
+                  </p>
+                </div>
+
+                <label className="flex cursor-pointer items-start gap-2.5 rounded-xl border border-stone-200/80 bg-white p-3 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={policyAccepted}
+                    onChange={(e) => {
+                      setPolicyAccepted(e.target.checked);
+                      setBookingSubmitError('');
+                    }}
+                    className="mt-0.5 h-4 w-4 rounded accent-[#1E3A5F]"
+                  />
+                  <span className="font-semibold leading-relaxed text-[#1F2937]">
+                    أقر بقراءة ملخص السعر ومواعيد الدخول والخروج وشروط الإلغاء والموافقة عليها.
+                  </span>
+                </label>
+
+                {!isAuthenticatedUser && !chalet.isDemo && (
+                  <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950">
+                    <p className="font-bold">يتطلب إرسال طلب الحجز الإلكتروني تسجيل الدخول أولاً.</p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {onNavigate && (
+                        <button
+                          type="button"
+                          onClick={() => onNavigate('bookings')}
+                          className="min-h-[38px] rounded-lg bg-[#1E3A5F] px-3 py-1.5 text-xs font-bold text-white"
+                        >
+                          تسجيل الدخول / حسابي
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {bookingSubmitError && (
+                  <div
+                    className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 p-3 text-xs font-semibold text-red-800"
+                    role="alert"
+                  >
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" />
+                    <span>{bookingSubmitError}</span>
+                  </div>
+                )}
+
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <button
+                    type="button"
+                    onClick={() => setBookingStep(1)}
+                    className="min-h-[46px] flex-1 rounded-xl border border-stone-200/80 bg-white px-4 py-2.5 text-xs font-bold text-[#1E3A5F] hover:bg-[#FAF9F6]"
+                  >
+                    تعديل البيانات
+                  </button>
+                  <button
+                    type="button"
+                    disabled={submittingBooking}
+                    onClick={() => void handleConfirmBookingRequest()}
+                    className="inline-flex min-h-[46px] flex-[2] items-center justify-center gap-2 rounded-xl bg-[#1E3A5F] px-4 py-2.5 text-xs font-bold text-white shadow-xs hover:bg-[#172E4D] disabled:opacity-60"
+                  >
+                    {submittingBooking && <RefreshCw className="h-4 w-4 animate-spin" />}
+                    <span>{submittingBooking ? 'جاري التأكيد...' : 'تأكيد وإرسال طلب الحجز'}</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {bookingStep === 3 && confirmedBooking && (
+              <div className="mt-4 space-y-4 rounded-2xl border border-emerald-200 bg-emerald-50/70 p-4 text-xs">
+                <div className="flex items-start gap-2.5">
+                  <CheckCircle2 className="mt-0.5 h-6 w-6 shrink-0 text-emerald-600" />
+                  <div>
+                    <h3 className="text-sm font-extrabold text-emerald-950">
+                      تم إرسال طلب الحجز بنجاح!
+                    </h3>
+                    <p className="mt-1 text-emerald-900">
+                      رقم الحجز: <strong dir="ltr">{confirmedBooking.id}</strong> — الحالة:{' '}
+                      <span className="rounded-full bg-white px-2 py-0.5 font-bold text-[#1E3A5F]">
+                        قيد المراجعة
+                      </span>
+                    </p>
+                  </div>
+                </div>
+
+                <div className="rounded-xl bg-white p-3 space-y-1.5 text-[#1F2937]">
+                  <div className="flex justify-between">
+                    <span className="text-[#6B7280]">التواريخ:</span>
+                    <strong>
+                      {formatArabicDate(confirmedBooking.checkIn)} ←{' '}
+                      {formatArabicDate(confirmedBooking.checkOut)}
+                    </strong>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[#6B7280]">الإجمالي المعتمد:</span>
+                    <strong className="text-[#1E3A5F]">
+                      {formatEGP(confirmedBooking.totalPrice)}
+                    </strong>
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-2">
+                  {onNavigate && (
+                    <button
+                      type="button"
+                      onClick={() => onNavigate('bookings')}
+                      className="min-h-[44px] w-full rounded-xl bg-[#1E3A5F] px-4 py-2.5 text-xs font-bold text-white hover:bg-[#172E4D]"
+                    >
+                      عرض تفاصيل الحجز في «حجوزاتي»
+                    </button>
+                  )}
+                  {onOpenSupport && (
+                    <button
+                      type="button"
+                      onClick={() => onOpenSupport(confirmedBooking.id)}
+                      className="min-h-[42px] w-full rounded-xl border border-stone-200 bg-white px-4 py-2 text-xs font-bold text-[#1E3A5F] hover:bg-[#FAF9F6]"
+                    >
+                      طلب مساعدة أو تعديل لهذا الحجز
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
 
             {/* Mandatory Security Alert Box Above WhatsApp CTA */}
             <div
@@ -992,7 +1370,7 @@ export function PropertyDetailPage({
                   setReportSuccess('');
                   setIsReportOpen(true);
                 }}
-                className="flex min-h-[40px] w-full items-center justify-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold text-[#6B7280] transition hover:bg-red-50 hover:text-red-700"
+                className="flex min-h-[44px] w-full items-center justify-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold text-[#6B7280] transition hover:bg-red-50 hover:text-red-700"
               >
                 <Flag className="h-3.5 w-3.5" />
                 <span>الإبلاغ عن مخالفة في هذا الإعلان</span>

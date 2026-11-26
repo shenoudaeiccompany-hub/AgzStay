@@ -13,6 +13,7 @@ import {
   Users,
 } from 'lucide-react';
 import { formatEGP, getShortPriceUnitLabel, isMonthlyOnlyProperty } from '@/data/chalets';
+import { ShareChaletButton } from '@/components/ShareChaletButton';
 import type { Chalet } from '@/types/chalet';
 import { buildResponsiveImageAttributes } from '@/utils/imageOptimization';
 
@@ -46,12 +47,12 @@ export function PropertyCard({
   return (
     <article
       onClick={() => onSelect(property)}
-      className={`group flex cursor-pointer flex-col overflow-hidden rounded-2xl border bg-white shadow-xs transition duration-300 hover:-translate-y-0.5 hover:shadow-md ${
+      className={`group flex cursor-pointer flex-col rounded-2xl border bg-white shadow-xs transition duration-300 hover:-translate-y-0.5 hover:shadow-md ${
         property.isFeatured ? 'border-[#C5A880]/80' : 'border-stone-200/70'
       }`}
     >
       {/* Uniform aspect-[4/3] Image Container */}
-      <div className="relative aspect-[4/3] w-full overflow-hidden bg-stone-100">
+      <div className="relative aspect-[4/3] w-full overflow-hidden rounded-t-2xl bg-stone-100">
         {!imageError && responsiveImage.src ? (
           <img
             src={responsiveImage.src}
@@ -176,16 +177,19 @@ export function PropertyCard({
             )}
           </div>
 
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onSelect(property);
-            }}
-            className="min-h-[40px] rounded-xl bg-[#1E3A5F] px-4 py-2 text-xs font-semibold text-white shadow-xs transition hover:bg-[#172E4D]"
-          >
-            عرض التفاصيل
-          </button>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <ShareChaletButton chalet={property} variant="card" />
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onSelect(property);
+              }}
+              className="min-h-[40px] rounded-xl bg-[#1E3A5F] px-3.5 py-2 text-xs font-semibold text-white shadow-xs transition hover:bg-[#172E4D]"
+            >
+              عرض التفاصيل
+            </button>
+          </div>
         </div>
       </div>
     </article>

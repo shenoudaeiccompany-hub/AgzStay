@@ -9,7 +9,11 @@ import type {
   AdvertiserRoleLabel,
   AdvertiserTypeCode,
   AmenityId,
+  AuditLogRecord,
   AuthUserSummary,
+  BookingAuditEvent,
+  BookingRecord,
+  BookingStatus,
   Chalet,
   ChaletPricingRuleInput,
   ChaletRevealStat,
@@ -26,11 +30,16 @@ import type {
   PendingSubscriptionInfo,
   ProfileRole,
   PropertyType,
+  RentalDuration,
   RouteSection,
+  ServerBookingQuote,
   SubscriptionPlan,
   SubscriptionPlanId,
   SubscriptionRecord,
   SubscriptionStatus,
+  SupportTicketCategory,
+  SupportTicketRecord,
+  SupportTicketStatus,
   UserNotificationRecord,
   UserProfile,
   VerificationDocumentType,
@@ -425,6 +434,69 @@ export async function signUpOwnerAccount(payload: {
         advertiserType: payload.advertiserType,
       });
       await ensureOwnerRole(payload.advertiserType);
+    }
+
+    return {
+      data: {
+        user: summary,
+        needsEmailConfirmation: !data.session,
+      },
+      error: null,
+    };
+  } catch (err) {
+    return {
+      data: null,
+      error: formatSupabaseError(err, 'تعذر إنشاء الحساب.'),
+    };
+  }
+}
+
+export async function signUpRenterAccount(payload: {
+  email: string;
+  password: string;
+  name: string;
+  phone: string;
+}): Promise<RepoResult<{ user: AuthUserSummary; needsEmailConfirmation: boolean }>> {
+  if (!isSupabaseConfigured || !supabase) {
+    return { data: null, error: 'الاتصال بـ Supabase غير مهيأ في هذه البيئة.' };
+  }
+
+  const normalizedPhone = normalizeEgyptianPhone(payload.phone);
+  if (!isValidEgyptianMobile(normalizedPhone)) {
+    return { data: null, error: MESSAGES.phone_invalid, errorCode: 'phone_invalid' };
+  }
+
+  try {
+    const { data, error } = await supabase.auth.signUp({
+      email: payload.email.trim(),
+      password: payload.password,
+      options: {
+        data: {
+          name: payload.name.trim(),
+          phone: normalizedPhone,
+          advertiser_type: 'owner',
+        },
+      },
+    });
+
+    if (error || !data.user) {
+      return {
+        data: null,
+        error: formatSupabaseError(error, 'تعذر إنشاء الحساب الجديد.'),
+      };
+    }
+
+    const summary: AuthUserSummary = {
+      id: data.user.id,
+      email: data.user.email ?? payload.email.trim(),
+    };
+
+    if (data.session) {
+      await updateMyProfile({
+        name: payload.name.trim(),
+        phone: normalizedPhone,
+        advertiserType: 'owner',
+      });
     }
 
     return {
@@ -1377,7 +1449,7 @@ export async function fetchPlansFromDb(): Promise<RepoResult<SubscriptionPlan[]>
   try {
     const { data, error } = await supabase
       .from('plans')
-      .select('*')
+      .select('id, name, badge, price, max_units, is_featured_eligible, priority_label, features, sort_order, is_active')
       .order('sort_order', { ascending: true });
 
     if (error) {
@@ -1551,7 +1623,7 @@ export async function fetchAllSubscriptionsAdmin(): Promise<RepoResult<Subscript
   try {
     const { data, error } = await supabase
       .from('subscriptions')
-      .select('*')
+      .select('id, user_id, plan_id, plan_name, price, max_units, receipt_path, status, admin_note, expires_at, created_at, reviewed_at')
       .order('created_at', { ascending: false });
 
     if (error) {
@@ -1776,7 +1848,7 @@ export async function fetchMyOwnerVerification(): Promise<
   try {
     const { data, error } = await supabase
       .from('owner_verifications')
-      .select('*')
+      .select('id, owner_id, owner_name, phone, document_type, document_number, document_path, status, rejection_reason, submitted_at, reviewed_at')
       .eq('owner_id', user.id)
       .maybeSingle();
 
@@ -1855,7 +1927,7 @@ export async function fetchAllOwnerVerificationsAdmin(): Promise<
   try {
     const { data, error } = await supabase
       .from('owner_verifications')
-      .select('*')
+      .select('id, owner_id, owner_name, phone, document_type, document_number, document_path, status, rejection_reason, submitted_at, reviewed_at')
       .order('submitted_at', { ascending: false });
 
     if (error) {
@@ -2049,7 +2121,7 @@ export async function fetchAllListingReportsAdmin(
   try {
     const { data, error } = await supabase
       .from('listing_reports')
-      .select('*')
+      .select('id, chalet_id, reporter_id, reason, details, status, admin_note, created_at, reviewed_at')
       .order('created_at', { ascending: false });
 
     if (error) {
@@ -2258,7 +2330,12 @@ function mapNotificationFromRow(row: Record<string, unknown>): UserNotificationR
       : 'system';
   const rawLink = row.link_section ? String(row.link_section) : '';
   const linkSection: RouteSection | undefined =
-    rawLink === 'home' || rawLink === 'pricing' || rawLink === 'owner' || rawLink === 'admin'
+    rawLink === 'home' ||
+    rawLink === 'bookings' ||
+    rawLink === 'support' ||
+    rawLink === 'pricing' ||
+    rawLink === 'owner' ||
+    rawLink === 'admin'
       ? rawLink
       : undefined;
 
@@ -2331,4 +2408,619 @@ export async function markAllNotificationsRead(): Promise<void> {
   }
 }
 
+// ---------- Bookings, Quote RPC, My Bookings Pagination & Audit Timeline (`010`) ----------
+
+const BOOKING_SELECT_COLUMNS =
+  'id, chalet_id, renter_id, chalet_title, resort, destination_label, owner_name, guest_name, guest_phone, check_in, check_out, nights, rental_duration, guests, total_price, deposit_amount, remaining_amount, policy_accepted, notes, status, cancellation_policy, cancellation_reason, rejection_reason, modification_note, approved_at, confirmed_at, modified_at, cancelled_at, completed_at, expires_at, created_at, updated_at';
+
+function normalizeBookingStatus(raw: unknown): BookingStatus {
+  const s = String(raw ?? 'pending');
+  if (
+    s === 'pending' ||
+    s === 'approved' ||
+    s === 'payment_submitted' ||
+    s === 'confirmed' ||
+    s === 'modified' ||
+    s === 'completed' ||
+    s === 'cancelled' ||
+    s === 'rejected' ||
+    s === 'expired' ||
+    s === 'pending_verification'
+  ) {
+    return s;
+  }
+  return 'pending';
+}
+
+function mapBookingFromRow(row: Record<string, unknown>): BookingRecord {
+  const durRaw = String(row.rental_duration ?? 'daily');
+  const rentalDuration: RentalDuration =
+    durRaw === 'weekly' || durRaw === 'monthly' ? durRaw : 'daily';
+
+  return {
+    id: String(row.id),
+    chaletId: String(row.chalet_id ?? ''),
+    renterId: String(row.renter_id ?? ''),
+    chaletTitle: String(row.chalet_title ?? ''),
+    resort: String(row.resort ?? ''),
+    destinationLabel: String(row.destination_label ?? ''),
+    ownerName: String(row.owner_name ?? ''),
+    guestName: String(row.guest_name ?? ''),
+    guestPhone: String(row.guest_phone ?? ''),
+    checkIn: String(row.check_in ?? ''),
+    checkOut: String(row.check_out ?? ''),
+    nights: Math.max(1, Number(row.nights ?? 1)),
+    rentalDuration,
+    guests: Math.max(1, Number(row.guests ?? 1)),
+    totalPrice: Number(row.total_price ?? 0),
+    depositAmount: Number(row.deposit_amount ?? 0),
+    remainingAmount: Number(row.remaining_amount ?? 0),
+    policyAccepted: Boolean(row.policy_accepted),
+    notes: String(row.notes ?? ''),
+    status: normalizeBookingStatus(row.status),
+    cancellationPolicy: row.cancellation_policy ? String(row.cancellation_policy) : undefined,
+    cancellationReason: row.cancellation_reason ? String(row.cancellation_reason) : undefined,
+    rejectionReason: row.rejection_reason ? String(row.rejection_reason) : undefined,
+    modificationNote: row.modification_note ? String(row.modification_note) : undefined,
+    approvedAt: row.approved_at ? String(row.approved_at) : undefined,
+    confirmedAt: row.confirmed_at ? String(row.confirmed_at) : undefined,
+    modifiedAt: row.modified_at ? String(row.modified_at) : undefined,
+    cancelledAt: row.cancelled_at ? String(row.cancelled_at) : undefined,
+    completedAt: row.completed_at ? String(row.completed_at) : undefined,
+    expiresAt: row.expires_at ? String(row.expires_at) : undefined,
+    createdAt: String(row.created_at ?? new Date().toISOString()),
+    updatedAt: row.updated_at ? String(row.updated_at) : undefined,
+  };
+}
+
+export async function fetchServerBookingQuote(params: {
+  chaletId: string;
+  checkIn: string;
+  checkOut: string;
+  rentalDuration?: RentalDuration;
+}): Promise<RepoResult<ServerBookingQuote>> {
+  if (!isSupabaseConfigured || !supabase) {
+    return { data: null, error: 'الاتصال بـ Supabase غير مهيأ.' };
+  }
+  try {
+    const { data, error } = await supabase.rpc('calculate_booking_quote', {
+      p_chalet_id: params.chaletId,
+      p_check_in: params.checkIn,
+      p_check_out: params.checkOut,
+      p_rental_duration: params.rentalDuration ?? 'daily',
+    });
+
+    if (error || !data || typeof data !== 'object') {
+      return {
+        data: null,
+        error: formatSupabaseError(error, 'تعذر حساب السعر النهائي من الخادم.'),
+        errorCode: extractErrorCodeKey(error) ?? undefined,
+      };
+    }
+
+    const r = data as Record<string, unknown>;
+    return {
+      data: {
+        nights: Number(r.nights ?? 1),
+        regularNights: Number(r.regular_nights ?? 0),
+        weekendNights: Number(r.weekend_nights ?? 0),
+        seasonalNights: Number(r.seasonal_nights ?? 0),
+        unitPrice: Number(r.unit_price ?? 0),
+        totalPrice: Number(r.total_price ?? 0),
+        depositAmount: Number(r.deposit_amount ?? 0),
+        remainingAmount: Number(r.remaining_amount ?? 0),
+        isAvailable: r.is_available !== false,
+        checkinTime: String(r.checkin_time ?? '١٤:٠٠ (٢:٠٠ عصراً)'),
+        checkoutTime: String(r.checkout_time ?? '١٢:٠٠ (١٢:٠٠ ظهراً)'),
+        cancellationPolicy: String(
+          r.cancellation_policy ??
+            'إلغاء مجاني قبل موعد الوصول بـ ١٠ أيام على الأقل؛ بعد ذلك يُخصم مبلغ جدية الحجز (إن وُجد).'
+        ),
+      },
+      error: null,
+    };
+  } catch (err) {
+    return {
+      data: null,
+      error: formatSupabaseError(err, 'تعذر حساب تسعير الحجز من قاعدة البيانات.'),
+      errorCode: extractErrorCodeKey(err) ?? undefined,
+    };
+  }
+}
+
+export async function createBookingViaRpc(payload: {
+  chaletId: string;
+  checkIn: string;
+  nights: number;
+  duration: RentalDuration;
+  guests: number;
+  guestName: string;
+  guestPhone: string;
+  notes?: string;
+  policyAccepted: boolean;
+  channel?: 'form' | 'whatsapp' | 'phone';
+}): Promise<RepoResult<BookingRecord>> {
+  if (!isSupabaseConfigured || !supabase) {
+    return { data: null, error: 'الاتصال بـ Supabase غير مهيأ في هذه البيئة.' };
+  }
+  const user = await getCurrentAuthUser();
+  if (!user) {
+    return { data: null, error: MESSAGES.not_authenticated, errorCode: 'not_authenticated' };
+  }
+
+  const normalizedPhone = normalizeEgyptianPhone(payload.guestPhone);
+  if (!isValidEgyptianMobile(normalizedPhone)) {
+    return { data: null, error: MESSAGES.phone_invalid, errorCode: 'phone_invalid' };
+  }
+
+  if (!payload.policyAccepted) {
+    return { data: null, error: MESSAGES.policy_not_accepted, errorCode: 'policy_not_accepted' };
+  }
+
+  try {
+    const { data, error } = await supabase.rpc('create_booking', {
+      p_chalet_id: payload.chaletId,
+      p_check_in: payload.checkIn,
+      p_nights: payload.nights,
+      p_duration: payload.duration,
+      p_guests: payload.guests,
+      p_guest_name: payload.guestName.trim(),
+      p_guest_phone: normalizedPhone,
+      p_notes: (payload.notes ?? '').trim(),
+      p_policy_accepted: true,
+      p_channel: payload.channel ?? 'form',
+    });
+
+    if (error || !data || typeof data !== 'object') {
+      return {
+        data: null,
+        error: formatSupabaseError(error, 'تعذر إتمام إرسال طلب الحجز.'),
+        errorCode: extractErrorCodeKey(error) ?? undefined,
+      };
+    }
+
+    return { data: mapBookingFromRow(data as Record<string, unknown>), error: null };
+  } catch (err) {
+    return {
+      data: null,
+      error: formatSupabaseError(err, 'تعذر إرسال طلب الحجز.'),
+      errorCode: extractErrorCodeKey(err) ?? undefined,
+    };
+  }
+}
+
+export async function fetchMyBookingsPage(
+  page = 0,
+  pageSize = 10
+): Promise<RepoResult<{ items: BookingRecord[]; hasMore: boolean }>> {
+  if (!isSupabaseConfigured || !supabase) {
+    return { data: { items: [], hasMore: false }, error: null };
+  }
+  const user = await getCurrentAuthUser();
+  if (!user) {
+    return { data: null, error: MESSAGES.not_authenticated, errorCode: 'not_authenticated' };
+  }
+
+  const from = Math.max(0, page) * pageSize;
+  const to = from + pageSize; // fetch +1 to detect hasMore without extra count query
+
+  try {
+    const { data, error } = await supabase
+      .from('bookings')
+      .select(BOOKING_SELECT_COLUMNS)
+      .eq('renter_id', user.id)
+      .order('created_at', { ascending: false })
+      .range(from, to);
+
+    if (error) {
+      return {
+        data: null,
+        error: formatSupabaseError(error, 'تعذر تحميل قائمة حجوزاتك.'),
+      };
+    }
+
+    const rows = (data ?? []) as Record<string, unknown>[];
+    const hasMore = rows.length > pageSize;
+    const sliced = hasMore ? rows.slice(0, pageSize) : rows;
+
+    return {
+      data: {
+        items: sliced.map(mapBookingFromRow),
+        hasMore,
+      },
+      error: null,
+    };
+  } catch (err) {
+    return {
+      data: null,
+      error: formatSupabaseError(err, 'تعذر تحميل الحجوزات.'),
+    };
+  }
+}
+
+export async function modifyBookingViaRpc(payload: {
+  bookingId: string;
+  checkIn: string;
+  checkOut: string;
+  guests?: number;
+  note?: string;
+}): Promise<RepoResult<BookingRecord>> {
+  if (!isSupabaseConfigured || !supabase) {
+    return { data: null, error: 'الاتصال بـ Supabase غير مهيأ.' };
+  }
+  const user = await getCurrentAuthUser();
+  if (!user) {
+    return { data: null, error: MESSAGES.not_authenticated, errorCode: 'not_authenticated' };
+  }
+
+  try {
+    const { data, error } = await supabase.rpc('modify_my_booking', {
+      p_booking_id: payload.bookingId,
+      p_check_in: payload.checkIn,
+      p_check_out: payload.checkOut,
+      p_guests: payload.guests ?? null,
+      p_note: (payload.note ?? '').trim(),
+    });
+
+    if (error || !data || typeof data !== 'object') {
+      return {
+        data: null,
+        error: formatSupabaseError(error, 'تعذر تعديل الحجز في هذه المرحلة.'),
+        errorCode: extractErrorCodeKey(error) ?? undefined,
+      };
+    }
+
+    return { data: mapBookingFromRow(data as Record<string, unknown>), error: null };
+  } catch (err) {
+    return {
+      data: null,
+      error: formatSupabaseError(err, 'تعذر تعديل الحجز.'),
+      errorCode: extractErrorCodeKey(err) ?? undefined,
+    };
+  }
+}
+
+export async function cancelBookingViaRpc(
+  bookingId: string,
+  reason = ''
+): Promise<RepoResult<BookingRecord>> {
+  if (!isSupabaseConfigured || !supabase) {
+    return { data: null, error: 'الاتصال بـ Supabase غير مهيأ.' };
+  }
+  const user = await getCurrentAuthUser();
+  if (!user) {
+    return { data: null, error: MESSAGES.not_authenticated, errorCode: 'not_authenticated' };
+  }
+
+  try {
+    const { data, error } = await supabase.rpc('cancel_booking', {
+      p_booking_id: bookingId,
+      p_reason: reason.trim() || null,
+    });
+
+    if (error || !data || typeof data !== 'object') {
+      return {
+        data: null,
+        error: formatSupabaseError(error, 'تعذر إلغاء الحجز حالياً.'),
+        errorCode: extractErrorCodeKey(error) ?? undefined,
+      };
+    }
+
+    return { data: mapBookingFromRow(data as Record<string, unknown>), error: null };
+  } catch (err) {
+    return {
+      data: null,
+      error: formatSupabaseError(err, 'تعذر إلغاء الحجز.'),
+      errorCode: extractErrorCodeKey(err) ?? undefined,
+    };
+  }
+}
+
+export async function fetchBookingAuditTimeline(
+  bookingId: string
+): Promise<RepoResult<BookingAuditEvent[]>> {
+  if (!isSupabaseConfigured || !supabase) {
+    return { data: [], error: null };
+  }
+
+  try {
+    const { data, error } = await supabase.rpc('get_my_booking_audit_timeline', {
+      p_booking_id: bookingId,
+    });
+
+    if (error) {
+      return {
+        data: null,
+        error: formatSupabaseError(error, 'تعذر تحميل سجل التحديثات.'),
+      };
+    }
+
+    const rows = Array.isArray(data) ? (data as Record<string, unknown>[]) : [];
+    return {
+      data: rows.map((r) => ({
+        id: String(r.id),
+        action: String(r.action ?? ''),
+        summaryAr: String(r.summary_ar ?? ''),
+        createdAt: String(r.created_at ?? new Date().toISOString()),
+      })),
+      error: null,
+    };
+  } catch (err) {
+    return {
+      data: null,
+      error: formatSupabaseError(err, 'تعذر تحميل سجل التحديثات.'),
+    };
+  }
+}
+
+// ---------- Customer Support Tickets (`support_tickets` + RPCs) ----------
+
+const SUPPORT_TICKET_SELECT_COLUMNS =
+  'id, ticket_code, user_id, booking_id, contact_name, contact_email, contact_phone, category, subject, message, status, admin_reply, responded_at, created_at, updated_at';
+
+function mapSupportTicketFromRow(row: Record<string, unknown>): SupportTicketRecord {
+  const catRaw = String(row.category ?? 'inquiry');
+  const category: SupportTicketCategory =
+    catRaw === 'booking_modify' ||
+    catRaw === 'booking_cancel' ||
+    catRaw === 'complaint' ||
+    catRaw === 'technical'
+      ? catRaw
+      : 'inquiry';
+
+  const statusRaw = String(row.status ?? 'open');
+  const status: SupportTicketStatus =
+    statusRaw === 'replied' || statusRaw === 'closed' ? statusRaw : 'open';
+
+  return {
+    id: String(row.id),
+    ticketCode: String(row.ticket_code ?? ''),
+    userId: row.user_id ? String(row.user_id) : undefined,
+    bookingId: row.booking_id ? String(row.booking_id) : undefined,
+    contactName: String(row.contact_name ?? ''),
+    contactEmail: String(row.contact_email ?? ''),
+    contactPhone: String(row.contact_phone ?? ''),
+    category,
+    subject: String(row.subject ?? ''),
+    message: String(row.message ?? ''),
+    status,
+    adminReply: row.admin_reply ? String(row.admin_reply) : undefined,
+    respondedAt: row.responded_at ? String(row.responded_at) : undefined,
+    createdAt: String(row.created_at ?? new Date().toISOString()),
+    updatedAt: row.updated_at ? String(row.updated_at) : undefined,
+  };
+}
+
+export async function submitSupportTicketRpc(payload: {
+  category: SupportTicketCategory;
+  subject: string;
+  message: string;
+  bookingId?: string;
+  contactName: string;
+  contactEmail?: string;
+  contactPhone?: string;
+}): Promise<RepoResult<{ id: string; ticketCode: string; status: SupportTicketStatus }>> {
+  if (!isSupabaseConfigured || !supabase) {
+    return { data: null, error: 'الاتصال بـ Supabase غير مهيأ في هذه البيئة.' };
+  }
+
+  try {
+    const { data, error } = await supabase.rpc('submit_support_ticket', {
+      p_category: payload.category,
+      p_subject: payload.subject.trim(),
+      p_message: payload.message.trim(),
+      p_booking_id: payload.bookingId?.trim() || null,
+      p_contact_name: payload.contactName.trim(),
+      p_contact_email: (payload.contactEmail ?? '').trim(),
+      p_contact_phone: (payload.contactPhone ?? '').trim(),
+    });
+
+    if (error || !data || typeof data !== 'object') {
+      return {
+        data: null,
+        error: formatSupabaseError(error, 'تعذر إرسال طلب الدعم الآن.'),
+        errorCode: extractErrorCodeKey(error) ?? undefined,
+      };
+    }
+
+    const r = data as Record<string, unknown>;
+    return {
+      data: {
+        id: String(r.id ?? ''),
+        ticketCode: String(r.ticket_code ?? ''),
+        status: (r.status === 'replied' || r.status === 'closed' ? r.status : 'open') as SupportTicketStatus,
+      },
+      error: null,
+    };
+  } catch (err) {
+    return {
+      data: null,
+      error: formatSupabaseError(err, 'تعذر إرسال طلب الدعم.'),
+      errorCode: extractErrorCodeKey(err) ?? undefined,
+    };
+  }
+}
+
+export async function fetchMySupportTicketsPage(
+  page = 0,
+  pageSize = 10
+): Promise<RepoResult<{ items: SupportTicketRecord[]; hasMore: boolean }>> {
+  if (!isSupabaseConfigured || !supabase) {
+    return { data: { items: [], hasMore: false }, error: null };
+  }
+  const user = await getCurrentAuthUser();
+  if (!user) {
+    return { data: null, error: MESSAGES.not_authenticated, errorCode: 'not_authenticated' };
+  }
+
+  const from = Math.max(0, page) * pageSize;
+  const to = from + pageSize;
+
+  try {
+    const { data, error } = await supabase
+      .from('support_tickets')
+      .select(SUPPORT_TICKET_SELECT_COLUMNS)
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false })
+      .range(from, to);
+
+    if (error) {
+      return {
+        data: null,
+        error: formatSupabaseError(error, 'تعذر تحميل تذاكر الدعم الخاصة بك.'),
+      };
+    }
+
+    const rows = (data ?? []) as Record<string, unknown>[];
+    const hasMore = rows.length > pageSize;
+    const sliced = hasMore ? rows.slice(0, pageSize) : rows;
+
+    return {
+      data: {
+        items: sliced.map(mapSupportTicketFromRow),
+        hasMore,
+      },
+      error: null,
+    };
+  } catch (err) {
+    return {
+      data: null,
+      error: formatSupabaseError(err, 'تعذر تحميل التذاكر.'),
+    };
+  }
+}
+
+export async function fetchAdminSupportTicketsPage(
+  page = 0,
+  pageSize = 20
+): Promise<RepoResult<{ items: SupportTicketRecord[]; hasMore: boolean }>> {
+  if (!isSupabaseConfigured || !supabase) {
+    return { data: { items: [], hasMore: false }, error: null };
+  }
+
+  const from = Math.max(0, page) * pageSize;
+  const to = from + pageSize;
+
+  try {
+    const { data, error } = await supabase
+      .from('support_tickets')
+      .select(SUPPORT_TICKET_SELECT_COLUMNS)
+      .order('created_at', { ascending: false })
+      .range(from, to);
+
+    if (error) {
+      return {
+        data: null,
+        error: formatSupabaseError(error, 'تعذر تحميل تذاكر الدعم.'),
+      };
+    }
+
+    const rows = (data ?? []) as Record<string, unknown>[];
+    const hasMore = rows.length > pageSize;
+    const sliced = hasMore ? rows.slice(0, pageSize) : rows;
+
+    return {
+      data: {
+        items: sliced.map(mapSupportTicketFromRow),
+        hasMore,
+      },
+      error: null,
+    };
+  } catch (err) {
+    return {
+      data: null,
+      error: formatSupabaseError(err, 'تعذر تحميل تذاكر الدعم.'),
+    };
+  }
+}
+
+export async function adminUpdateSupportTicketRpc(
+  ticketId: string,
+  status: SupportTicketStatus,
+  adminReply?: string
+): Promise<RepoResult<SupportTicketRecord>> {
+  if (!isSupabaseConfigured || !supabase) {
+    return { data: null, error: 'الاتصال بـ Supabase غير مهيأ.' };
+  }
+
+  try {
+    const { data, error } = await supabase.rpc('admin_update_support_ticket', {
+      p_ticket_id: ticketId,
+      p_status: status,
+      p_admin_reply: adminReply?.trim() || null,
+    });
+
+    if (error || !data || typeof data !== 'object') {
+      return {
+        data: null,
+        error: formatSupabaseError(error, 'تعذر تحديث تذكرة الدعم.'),
+        errorCode: extractErrorCodeKey(error) ?? undefined,
+      };
+    }
+
+    return { data: mapSupportTicketFromRow(data as Record<string, unknown>), error: null };
+  } catch (err) {
+    return {
+      data: null,
+      error: formatSupabaseError(err, 'تعذر تحديث تذكرة الدعم.'),
+    };
+  }
+}
+
+// ---------- Admin Audit Logs (`audit_logs`) ----------
+
+export async function fetchAdminAuditLogsPage(
+  page = 0,
+  pageSize = 25
+): Promise<RepoResult<{ items: AuditLogRecord[]; hasMore: boolean }>> {
+  if (!isSupabaseConfigured || !supabase) {
+    return { data: { items: [], hasMore: false }, error: null };
+  }
+
+  const from = Math.max(0, page) * pageSize;
+  const to = from + pageSize;
+
+  try {
+    const { data, error } = await supabase
+      .from('audit_logs')
+      .select('id, actor_id, actor_role, action, entity_type, entity_id, summary_ar, old_data, new_data, created_at')
+      .order('created_at', { ascending: false })
+      .range(from, to);
+
+    if (error) {
+      return {
+        data: null,
+        error: formatSupabaseError(error, 'تعذر تحميل سجل التدقيق الأمني.'),
+      };
+    }
+
+    const rows = (data ?? []) as Record<string, unknown>[];
+    const hasMore = rows.length > pageSize;
+    const sliced = hasMore ? rows.slice(0, pageSize) : rows;
+
+    return {
+      data: {
+        items: sliced.map((r) => ({
+          id: String(r.id),
+          actorId: r.actor_id ? String(r.actor_id) : undefined,
+          actorRole: String(r.actor_role ?? 'system'),
+          action: String(r.action ?? ''),
+          entityType: String(r.entity_type ?? ''),
+          entityId: String(r.entity_id ?? ''),
+          summaryAr: String(r.summary_ar ?? ''),
+          oldData: (r.old_data as Record<string, unknown> | null) ?? null,
+          newData: (r.new_data as Record<string, unknown> | null) ?? null,
+          createdAt: String(r.created_at ?? new Date().toISOString()),
+        })),
+        hasMore,
+      },
+      error: null,
+    };
+  } catch (err) {
+    return {
+      data: null,
+      error: formatSupabaseError(err, 'تعذر تحميل سجل التدقيق.'),
+    };
+  }
+}
 
