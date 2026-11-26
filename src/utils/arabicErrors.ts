@@ -15,10 +15,22 @@ export const MESSAGES: Record<string, string> = {
   policy_not_accepted: 'يجب الموافقة على الشروط والأحكام.',
   invalid_state: 'لا يمكن تنفيذ هذا الإجراء في الحالة الحالية.',
   listing_suspended: 'هذا الإعلان موقوف حالياً من الإدارة.',
+  forbidden_status: 'غير مسموح بتغيير حالة الإعلان إلى هذه الحالة.',
   forbidden: 'غير مسموح لك بتنفيذ هذا الإجراء.',
   'row-level security': 'غير مسموح لك بتنفيذ هذا الإجراء (صلاحيات غير كافية).',
   'duplicate key': 'هذا السجل موجود بالفعل.',
+  plan_is_free: 'الباقة المجانية لا تحتاج إلى اشتراك.',
+  invalid_receipt_path: 'ملف الإيصال غير صالح، أعد رفعه ثم حاول مجدداً.',
+  owner_missing: 'هذا الاشتراك غير مربوط بحساب معلن بعد. اربط الحساب أولاً.',
+  chalet_not_found: 'الإعلان غير موجود أو غير منشور.',
+  profile_not_found: 'لم يتم العثور على الملف الشخصي المطلوب.',
+  not_found: 'العنصر المطلوب غير موجود.',
+  chalets_limits_chk:
+    'إحدى بيانات الإعلان خارج الحدود المسموحة (عنوان طويل، صور كثيرة، أو سعر غير منطقي).',
 };
+
+// Match longest keys first so shorter prefixes (e.g. `forbidden`) don't swallow `forbidden_status`
+const MESSAGE_KEYS = Object.keys(MESSAGES).sort((a, b) => b.length - a.length);
 
 const ARABIC_CHAR_REGEX = /[\u0600-\u06FF]/;
 
@@ -28,13 +40,13 @@ export function toArabicError(
   const msg = err?.message ?? '';
   const code = err?.code ?? '';
 
-  const exactKey = Object.keys(MESSAGES).find((k) => msg.includes(k));
+  const exactKey = MESSAGE_KEYS.find((k) => msg.includes(k));
   if (exactKey) {
     return MESSAGES[exactKey];
   }
 
   const lowerMsg = msg.toLowerCase();
-  const caseInsensitiveKey = Object.keys(MESSAGES).find((k) =>
+  const caseInsensitiveKey = MESSAGE_KEYS.find((k) =>
     lowerMsg.includes(k.toLowerCase())
   );
   if (caseInsensitiveKey) {
@@ -68,6 +80,12 @@ export function extractErrorCodeKey(err: unknown): string | null {
     'contact_not_available',
     'duplicate_request',
     'invalid_plan',
+    'plan_is_free',
+    'invalid_receipt_path',
+    'owner_missing',
+    'chalet_not_found',
+    'profile_not_found',
+    'forbidden_status',
     'phone_invalid',
     'forbidden',
   ];

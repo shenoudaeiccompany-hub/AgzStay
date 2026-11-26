@@ -43,4 +43,13 @@ describe('arabicErrors utilities', () => {
   it('requireSupabase throws clear Arabic error when Supabase is not configured', () => {
     expect(() => requireSupabase()).toThrow('Supabase غير مضبوط');
   });
+
+  it('matches longer V2 error keys without being shadowed by shorter prefixes', () => {
+    expect(toArabicError({ message: 'forbidden_status' })).toContain('حالة الإعلان');
+    expect(toArabicError({ message: 'chalet_not_found' })).toContain('الإعلان');
+    expect(toArabicError({ message: 'invalid_receipt_path' })).toContain('الإيصال');
+    expect(toArabicError({ message: 'plan_is_free' })).toContain('المجانية');
+    expect(toArabicError({ message: 'owner_missing' })).toContain('غير مربوط');
+  });
 });
+

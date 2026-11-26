@@ -35,16 +35,27 @@ npm run dev
 
 ---
 
-## إعداد Supabase
+## إعداد Supabase والأمان
 
-1. افتح **SQL Editor** في لوحة Supabase ونفّذ الترحيلات بالترتيب:
-   - `supabase/migrations/001_init.sql` (الجداول، `profiles`، `chalet_contacts` المحمي، منع التداخل بـ `btree_gist`، وRLS)
-   - `supabase/migrations/002_phase2_lifecycle_and_payments.sql` (الباكتات الخاصة `verification-docs` و `payment-receipts` و `chalet-images`، ودوال RPC لثبات السيرفر ودورة حياة الحجز)
-2. (اختياري) أنشئ أول حساب Admin بتحديث عمود `role` إلى `'admin'` في جدول `profiles` من لوحة Supabase مباشرة.
-3. لنشر دالة إشعارات واتساب/الهاتف عند تغير حالة الحجز:
+1. افتح **SQL Editor** في لوحة Supabase ونفّذ الترحيلات بالترتيب من `001` حتى `007`:
+   - `001`–`005`: الجداول الأساسية، الباقات، نظام الحجز، الإعلانات، والتخزين.
+   - `supabase/migrations/006_secure_v2.sql`: إغلاق الثغرات الأمنية (`SECURITY INVOKER` + `set search_path = ''`، عزل `owner_phone` في `chalet_contacts`، كشف الرقم المحدود بـ `reveal_listing_contact()`، حصر الاشتراكات عبر `request_subscription` و`admin_review_subscription`، قفل باكت `receipts`، وحماية صلاحية `admin`).
+   - `supabase/migrations/007_maintenance_and_legacy_triggers_fix.sql`: إصلاح تريجرات `002`/`003` القديمة، وإضافة دوال الصيانة المجدولة (`expire_subscriptions()`، `purge_contact_reveals()`) ودالة ربط الإعلانات القديمة (`admin_link_legacy_owner(p_user_id, p_phone)`).
+2. لتعيين حساب مدير من **SQL Editor** (مرتبط بالمشروع الصحيح):
+   ```sql
+   update public.profiles
+      set role = 'admin'
+    where id = (select id from auth.users where email = 'you@example.com');
+   ```
+3. للجدولة الاختيارية (`pg_cron` من `Database → Extensions`):
+   - `select cron.schedule('agzstay-expire-subscriptions', '0 * * * *', $$ select public.expire_subscriptions(); $$);`
+   - `select cron.schedule('agzstay-purge-reveals', '30 3 * * *', $$ select public.purge_contact_reveals(); $$);`
+4. الاختبارات الأمنية: `supabase/tests/006_secure_v2.test.sql` (pgTAP) + `npm test`.
+5. لنشر دالة إشعارات واتساب/الهاتف عند تغير حالة الحجز:
    ```bash
    supabase functions deploy notify-whatsapp
    ```
+
 
 ---
 

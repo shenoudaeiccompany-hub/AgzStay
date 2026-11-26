@@ -1,0 +1,3809 @@
+diff --git a/.env.example b/.env.example
+index 180fbb4..f8e23a3 100644
+--- a/.env.example
++++ b/.env.example
+@@ -1,7 +1,6 @@
+ VITE_SUPABASE_URL=
+ VITE_SUPABASE_ANON_KEY=
+ VITE_SUBSCRIPTION_WALLET=
+-VITE_ADMIN_PIN=
+ VITE_SHOW_DEMO=
+ VITE_SUPPORT_EMAIL=
+ VITE_SUPPORT_WHATSAPP=
+diff --git a/README.md b/README.md
+index 3e2c623..2136b6a 100644
+--- a/README.md
++++ b/README.md
+@@ -90,3 +90,19 @@ npm run build       # بناء نسخة الإنتاج في dist/
+    ```
+ 2. احتفظ بنسخة احتياطية آمنة ومشفّرة من ملف `.jks` وكلمات المرور + `keyAlias` في مدير كلمات مرور موثوق أو خزنة آمنة (فقدانه يمنعك من تحديث التطبيق مستقبلاً على Google Play — مع تفعيل Play App Signing على Play Console كحماية إضافية).
+ 3. عند بناء AAB للنشر الفعلي، مرّر بيانات التوقيع عبر متغيرات البيئة في بيئة البناء الآمنة أو Play App Signing دون حفظ كلمات المرور في الكود المصدري.
++
++## الأمان (مهم — اقرأه قبل النشر)
++
++> يتطلب النشر تطبيق **`supabase/migrations/006_secure_v2.sql`** بعد 001–005، ونشر الواجهة الحالية معاً.
++
++- **الهوية:** Supabase Auth (بريد + كلمة مرور). لا جلسة هاتف محلية ولا PIN إدارة في الواجهة.
++- **الإدارة:** `profiles.role = 'admin'` فقط، وتُمنح من SQL Editor:
++  `update public.profiles set role='admin' where id = (select id from auth.users where email='you@example.com');`
++- **الملكية:** كل إعلان له `owner_id = auth.uid()`؛ التعديل والحذف لصاحبه والمدير فقط (RLS).
++- **أرقام المعلنين:** في جدول خاص `chalet_contacts`، وتُكشف عبر `reveal_listing_contact()` بحد معدل لكل زائر.
++- **الباقات:** مصدر الحقيقة جدول `plans`؛ الطلب عبر `request_subscription()` والتفعيل عبر `admin_review_subscription()` (مدير فقط). الحد الأقصى للوحدات وشارة "مميز" تفرضها قاعدة البيانات.
++- **الإيصالات:** باكت `receipts` خاص، ورفع/قراءة داخل مجلد المستخدم، والمدير يفتحها برابط مؤقت.
++- **الاختبارات:** `supabase/tests/006_security_tests.sql` (شغّله على مشروع staging، ينتهي بـ ROLLBACK) + `npm test`.
++- **الجدولة (pg_cron):** `expire_subscriptions()` كل ساعة، `purge_contact_reveals()` يومياً (الأوامر في آخر 006).
++- **ربط الإعلانات القديمة (جلسة الهاتف):** يسجّل المعلن حساباً، ثم يتحقق المدير من هاتفه خارج النظام وينفّذ
++  `select public.admin_link_legacy_owner('<user uuid>', '01012345678');`
+diff --git a/src/components/AdminDashboard.tsx b/src/components/AdminDashboard.tsx
+index 32343b4..bbda61e 100644
+--- a/src/components/AdminDashboard.tsx
++++ b/src/components/AdminDashboard.tsx
+@@ -34,7 +34,6 @@ import {
+   type SupabaseUnitsTestResult,
+ } from '@/lib/supabase';
+ import {
+-  agzstayStorageKeys,
+   deleteChaletRecord,
+   fetchAllChaletsFromDb,
+   fetchAllSubscriptions,
+@@ -43,10 +42,13 @@ import {
+   reviewSubscriptionAdmin,
+   updateChaletRecord,
+ } from '@/services/agzstayRepository';
++import { AuthForm } from '@/components/AuthForm';
++import { loadAuthSession, signOutUser, subscribeToAuth } from '@/services/authService';
+ import type {
+   AdvertiserRoleLabel,
+   Chalet,
+   PropertyType,
++  OwnerSession,
+   SubscriptionRecord,
+ } from '@/types/chalet';
+ 
+@@ -54,28 +56,22 @@ interface AdminDashboardProps {
+   onDataChanged?: () => void;
+ }
+ 
+-const ADMIN_PIN = (import.meta.env.VITE_ADMIN_PIN as string | undefined)?.trim() || '123456';
+-
+-const QUICK_V2_SQL_HINT = `-- يرجى تنفيذ ملف supabase/migrations/005_agzstay_v2_schema.sql في Supabase SQL Editor
+--- للتأكد من تهيئة جدول chalets وجدول subscriptions وحاويات property-images و receipts.`;
++const QUICK_V2_SQL_HINT = `-- يرجى تنفيذ ملفات supabase/migrations بالترتيب حتى 006_secure_v2.sql في Supabase SQL Editor
++-- (006 يفعّل الأمان: ملكية الإعلانات، الاشتراكات عبر RPC، باكتات خاصة، دور admin من الخادم).`;
+ 
+ export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
+-  const [unlocked, setUnlocked] = useState<boolean>(() => {
+-    try {
+-      return sessionStorage.getItem(agzstayStorageKeys.adminPinVerified) === '1';
+-    } catch {
+-      return false;
+-    }
+-  });
+-  const [pinInput, setPinInput] = useState('');
+-  const [pinError, setPinError] = useState('');
++  // الدخول بحساب Supabase حقيقي؛ الصلاحية = profiles.role === 'admin' (تُمنح من SQL فقط)
++  // ملاحظة: هذا الفحص للواجهة فقط، والحماية الفعلية في RLS و RPC بقاعدة البيانات.
++  const [session, setSession] = useState<OwnerSession | null>(null);
++  const [sessionLoading, setSessionLoading] = useState(true);
++  const unlocked = session?.role === 'admin';
+ 
+   const [activeTab, setActiveTab] = useState<'units' | 'subscriptions'>('units');
+   const [units, setUnits] = useState<Chalet[]>([]);
+   const [subscriptions, setSubscriptions] = useState<SubscriptionRecord[]>([]);
+   const [loading, setLoading] = useState(false);
+   const [unitSearch, setUnitSearch] = useState('');
+-  const [subFilter, setSubFilter] = useState<'all' | 'pending' | 'active' | 'rejected'>('all');
++  const [subFilter, setSubFilter] = useState<'all' | 'pending' | 'active' | 'rejected' | 'expired'>('all');
+ 
+   const [diagResult, setDiagResult] = useState<SupabaseUnitsTestResult | null>(null);
+   const [testingDiag, setTestingDiag] = useState(false);
+@@ -128,29 +124,27 @@ export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
+     void loadAdminData();
+   }, [loadAdminData]);
+ 
+-  const handlePinSubmit = (e: React.FormEvent) => {
+-    e.preventDefault();
+-    if (pinInput.trim() === ADMIN_PIN) {
+-      setPinError('');
+-      setUnlocked(true);
+-      try {
+-        sessionStorage.setItem(agzstayStorageKeys.adminPinVerified, '1');
+-      } catch {
+-        // ignore
+-      }
+-    } else {
+-      setPinError('رمز الدخول غير صحيح. تأكد من الرمز وحاول مرة أخرى.');
+-    }
+-  };
+-
+-  const handleLockAdmin = () => {
+-    setUnlocked(false);
+-    setPinInput('');
+-    try {
+-      sessionStorage.removeItem(agzstayStorageKeys.adminPinVerified);
+-    } catch {
+-      // ignore
+-    }
++  useEffect(() => {
++    let active = true;
++    void loadAuthSession().then((s) => {
++      if (!active) return;
++      setSession(s);
++      setSessionLoading(false);
++    });
++    const unsubscribe = subscribeToAuth((s) => {
++      if (active) setSession(s);
++    });
++    return () => {
++      active = false;
++      unsubscribe();
++    };
++  }, []);
++
++  const handleLockAdmin = async () => {
++    await signOutUser();
++    setSession(null);
++    setUnits([]);
++    setSubscriptions([]);
+   };
+ 
+   const handleRunDiagnostics = async () => {
+@@ -303,7 +297,7 @@ export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
+   };
+ 
+   const handlePreviewReceipt = async (sub: SubscriptionRecord) => {
+-    const res = await resolveReceiptPreviewUrl(sub.receiptUrl, sub.receiptPath);
++    const res = await resolveReceiptPreviewUrl(sub.receiptPath);
+     if (res.error || !res.data) {
+       setFeedback({ type: 'error', text: res.error ?? 'تعذر فتح الإيصال.' });
+       return;
+@@ -316,7 +310,7 @@ export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
+     sub: SubscriptionRecord,
+     decision: 'active' | 'rejected'
+   ) => {
+-    const res = await reviewSubscriptionAdmin(sub.id, sub.ownerPhone, decision);
++    const res = await reviewSubscriptionAdmin(sub.id, decision);
+     if (res.error) {
+       setFeedback({ type: 'error', text: res.error });
+       return;
+@@ -349,8 +343,15 @@ export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
+ 
+   const pendingSubsCount = subscriptions.filter((s) => s.status === 'pending').length;
+ 
+-  // Admin PIN Gate
+-  if (!unlocked) {
++  if (sessionLoading) {
++    return (
++      <main className="mx-auto w-full max-w-md flex-1 px-4 py-14 text-center text-sm font-semibold text-[#6B7280] sm:px-6">
++        جاري التحقق من صلاحياتك…
++      </main>
++    );
++  }
++
++  if (!session) {
+     return (
+       <main className="mx-auto w-full max-w-md flex-1 px-4 py-14 sm:px-6">
+         <div className="rounded-2xl border border-stone-200/70 bg-white p-6 shadow-xs sm:p-8">
+@@ -359,40 +360,32 @@ export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
+           </div>
+           <h1 className="mt-4 text-2xl font-bold text-[#1E3A5F]">لوحة تحكم الإدارة</h1>
+           <p className="mt-1.5 text-sm text-[#6B7280]">
+-            أدخل رمز الحماية (PIN) للوصول إلى إدارة الوحدات ومراجعة اشتراكات المعلنين.
++            سجّل الدخول بحساب الإدارة للوصول إلى إدارة الوحدات ومراجعة اشتراكات المعلنين.
+           </p>
++          <AuthForm onAuthenticated={setSession} loginLabel="دخول الإدارة" />
++        </div>
++      </main>
++    );
++  }
+ 
+-          <form onSubmit={handlePinSubmit} className="mt-5 space-y-4">
+-            <div>
+-              <label htmlFor="admin-pin" className="mb-1.5 block text-xs font-semibold text-slate-700">
+-                رمز الدخول (PIN)
+-              </label>
+-              <input
+-                id="admin-pin"
+-                type="password"
+-                inputMode="numeric"
+-                required
+-                dir="ltr"
+-                value={pinInput}
+-                onChange={(e) => setPinInput(e.target.value)}
+-                placeholder="••••••"
+-                className="h-11 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-3 text-center font-mono text-lg tracking-widest text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
+-              />
+-            </div>
+-
+-            {pinError && (
+-              <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700">
+-                {pinError}
+-              </div>
+-            )}
+-
+-            <button
+-              type="submit"
+-              className="min-h-[46px] w-full rounded-xl bg-[#1E3A5F] px-5 py-2.5 text-sm font-bold text-white hover:bg-[#172E4D]"
+-            >
+-              فتح لوحة الأدمن
+-            </button>
+-          </form>
++  if (!unlocked) {
++    return (
++      <main className="mx-auto w-full max-w-md flex-1 px-4 py-14 sm:px-6">
++        <div className="rounded-2xl border border-red-200 bg-white p-6 shadow-xs sm:p-8">
++          <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-red-600 text-white">
++            <Lock className="h-6 w-6" />
++          </div>
++          <h1 className="mt-4 text-xl font-bold text-[#1E3A5F]">غير مصرّح لك بهذه الصفحة</h1>
++          <p className="mt-1.5 text-sm text-[#6B7280]">
++            حسابك ({session.email}) ليس حساب إدارة. تُمنح صلاحية الإدارة من قاعدة البيانات فقط.
++          </p>
++          <button
++            type="button"
++            onClick={() => void handleLockAdmin()}
++            className="mt-5 min-h-[44px] rounded-xl border border-stone-200/70 bg-white px-4 py-2 text-xs font-bold text-[#1E3A5F] hover:bg-[#FAF9F6]"
++          >
++            تسجيل الخروج
++          </button>
+         </div>
+       </main>
+     );
+@@ -442,7 +435,7 @@ export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
+ 
+           <button
+             type="button"
+-            onClick={handleLockAdmin}
++            onClick={() => void handleLockAdmin()}
+             className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-red-200 bg-red-50 px-3.5 py-2 text-xs font-semibold text-red-700 hover:bg-red-100"
+           >
+             <LogOut className="h-4 w-4" />
+@@ -725,7 +718,7 @@ export function AdminDashboard({ onDataChanged }: AdminDashboardProps) {
+                   </div>
+ 
+                   <div className="flex flex-wrap items-center gap-2">
+-                    {(sub.receiptUrl || sub.receiptPath) && (
++                    {sub.receiptPath && (
+                       <button
+                         type="button"
+                         onClick={() => void handlePreviewReceipt(sub)}
+diff --git a/src/components/AuthForm.tsx b/src/components/AuthForm.tsx
+new file mode 100644
+index 0000000..e2634bd
+--- /dev/null
++++ b/src/components/AuthForm.tsx
+@@ -0,0 +1,219 @@
++import { useState } from 'react';
++import { KeyRound, Loader2, Mail, Phone, User } from 'lucide-react';
++import {
++  loadAuthSession,
++  requestPasswordReset,
++  signInWithEmail,
++  signUpWithEmail,
++} from '@/services/authService';
++import type { OwnerSession } from '@/types/chalet';
++
++type Mode = 'login' | 'register' | 'reset';
++
++interface AuthFormProps {
++  onAuthenticated: (session: OwnerSession) => void;
++  /** نص زر الإرسال في وضع الدخول */
++  loginLabel?: string;
++}
++
++const inputClass =
++  'h-11 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] pl-3 pr-10 text-sm text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none';
++
++/**
++ * نموذج دخول/تسجيل/استعادة كلمة مرور عبر Supabase Auth.
++ * يُستخدم في بوابة المعلن وصفحة الباقات ولوحة الإدارة.
++ */
++export function AuthForm({ onAuthenticated, loginLabel = 'تسجيل الدخول' }: AuthFormProps) {
++  const [mode, setMode] = useState<Mode>('login');
++  const [name, setName] = useState('');
++  const [phone, setPhone] = useState('');
++  const [email, setEmail] = useState('');
++  const [password, setPassword] = useState('');
++  const [busy, setBusy] = useState(false);
++  const [error, setError] = useState('');
++  const [info, setInfo] = useState('');
++
++  const switchMode = (next: Mode) => {
++    setMode(next);
++    setError('');
++    setInfo('');
++  };
++
++  const handleSubmit = async (e: React.FormEvent) => {
++    e.preventDefault();
++    setError('');
++    setInfo('');
++    setBusy(true);
++    try {
++      if (mode === 'login') {
++        const res = await signInWithEmail(email, password);
++        if (res.error || !res.data) {
++          setError(res.error ?? 'تعذر تسجيل الدخول.');
++          return;
++        }
++        onAuthenticated(res.data);
++        return;
++      }
++
++      if (mode === 'register') {
++        const res = await signUpWithEmail({ name, email, password, phone });
++        if (res.error || !res.data) {
++          setError(res.error ?? 'تعذر إنشاء الحساب.');
++          return;
++        }
++        if (res.data.needsEmailConfirmation) {
++          setInfo('تم إنشاء حسابك. افتح الرابط المرسل إلى بريدك لتأكيده، ثم سجّل الدخول.');
++          setMode('login');
++          setPassword('');
++          return;
++        }
++        const session = await loadAuthSession();
++        if (session) onAuthenticated(session);
++        return;
++      }
++
++      const res = await requestPasswordReset(email);
++      if (res.error) {
++        setError(res.error);
++        return;
++      }
++      setInfo('أرسلنا رابط استعادة كلمة المرور إلى بريدك الإلكتروني.');
++    } finally {
++      setBusy(false);
++    }
++  };
++
++  const submitLabel =
++    mode === 'login' ? loginLabel : mode === 'register' ? 'إنشاء حساب' : 'إرسال رابط الاستعادة';
++
++  return (
++    <form onSubmit={handleSubmit} className="mt-6 space-y-4" noValidate>
++      {mode === 'register' && (
++        <>
++          <div>
++            <label htmlFor="auth-name" className="mb-1.5 block text-xs font-semibold text-slate-700">
++              الاسم بالكامل أو اسم المكتب العقاري
++            </label>
++            <div className="relative">
++              <User className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
++              <input
++                id="auth-name"
++                type="text"
++                autoComplete="name"
++                required
++                value={name}
++                onChange={(e) => setName(e.target.value)}
++                placeholder="مثال: أ. كريم عبد الله"
++                className={inputClass}
++              />
++            </div>
++          </div>
++          <div>
++            <label htmlFor="auth-phone" className="mb-1.5 block text-xs font-semibold text-slate-700">
++              رقم الموبايل / واتساب (يظهر للمهتمين بإعلانك)
++            </label>
++            <div className="relative">
++              <Phone className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
++              <input
++                id="auth-phone"
++                type="tel"
++                autoComplete="tel"
++                required
++                dir="ltr"
++                value={phone}
++                onChange={(e) => setPhone(e.target.value)}
++                placeholder="01012345678"
++                className={`${inputClass} text-right`}
++              />
++            </div>
++          </div>
++        </>
++      )}
++
++      <div>
++        <label htmlFor="auth-email" className="mb-1.5 block text-xs font-semibold text-slate-700">
++          البريد الإلكتروني
++        </label>
++        <div className="relative">
++          <Mail className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
++          <input
++            id="auth-email"
++            type="email"
++            autoComplete="email"
++            required
++            dir="ltr"
++            value={email}
++            onChange={(e) => setEmail(e.target.value)}
++            placeholder="name@example.com"
++            className={`${inputClass} text-right`}
++          />
++        </div>
++      </div>
++
++      {mode !== 'reset' && (
++        <div>
++          <label htmlFor="auth-password" className="mb-1.5 block text-xs font-semibold text-slate-700">
++            كلمة المرور {mode === 'register' && '(8 أحرف على الأقل)'}
++          </label>
++          <div className="relative">
++            <KeyRound className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
++            <input
++              id="auth-password"
++              type="password"
++              autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
++              required
++              minLength={mode === 'register' ? 8 : undefined}
++              dir="ltr"
++              value={password}
++              onChange={(e) => setPassword(e.target.value)}
++              className={`${inputClass} text-right`}
++            />
++          </div>
++        </div>
++      )}
++
++      {error && (
++        <div
++          role="alert"
++          className="rounded-xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-xs font-semibold text-red-700"
++        >
++          {error}
++        </div>
++      )}
++      {info && (
++        <div
++          role="status"
++          className="rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-2.5 text-xs font-semibold text-emerald-800"
++        >
++          {info}
++        </div>
++      )}
++
++      <button
++        type="submit"
++        disabled={busy}
++        className="flex min-h-[48px] w-full items-center justify-center gap-2 rounded-xl bg-[#1E3A5F] px-5 py-3 text-sm font-bold text-white shadow-xs transition hover:bg-[#172E4D] disabled:opacity-60"
++      >
++        {busy && <Loader2 className="h-4 w-4 animate-spin" />}
++        <span>{submitLabel}</span>
++      </button>
++
++      <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-semibold text-[#1E3A5F]">
++        {mode === 'login' ? (
++          <>
++            <button type="button" onClick={() => switchMode('register')} className="hover:underline">
++              ليس لديك حساب؟ أنشئ حساباً
++            </button>
++            <button type="button" onClick={() => switchMode('reset')} className="hover:underline">
++              نسيت كلمة المرور؟
++            </button>
++          </>
++        ) : (
++          <button type="button" onClick={() => switchMode('login')} className="hover:underline">
++            لديك حساب؟ سجّل الدخول
++          </button>
++        )}
++      </div>
++    </form>
++  );
++}
+diff --git a/src/components/OwnerPortal.tsx b/src/components/OwnerPortal.tsx
+index ff47b6b..5cfa7d4 100644
+--- a/src/components/OwnerPortal.tsx
++++ b/src/components/OwnerPortal.tsx
+@@ -11,13 +11,11 @@ import {
+   ImagePlus,
+   LogOut,
+   MapPin,
+-  Phone,
+   Plus,
+   RefreshCw,
+   ShieldCheck,
+   Sparkles,
+   Trash2,
+-  User,
+   X,
+ } from 'lucide-react';
+ import {
+@@ -32,24 +30,30 @@ import {
+   getAreasForCity,
+   getCitiesForGovernorate,
+ } from '@/data/egyptLocations';
+-import { normalizeEgyptianPhone, resolveOwnerQuota } from '@/data/subscriptions';
+ import { isSupabaseConfigured } from '@/lib/supabase';
++import { AuthForm } from '@/components/AuthForm';
+ import {
+   deleteChaletRecord,
+-  fetchOwnerChaletsByPhone,
+-  fetchSubscriptionsByPhone,
++  fetchMyChalets,
++  fetchMySubscriptions,
++  fetchMySubscriptionSummary,
+   insertChaletRecord,
+-  loadOwnerSession,
+-  saveOwnerSession,
+   updateChaletRecord,
+   uploadPropertyImages,
+ } from '@/services/agzstayRepository';
++import {
++  loadAuthSession,
++  signOutUser,
++  subscribeToAuth,
++  updateMyProfile,
++} from '@/services/authService';
+ import type {
+   AdvertiserRoleLabel,
+   AmenityId,
+   Chalet,
+   DepositType,
+   OwnerSession,
++  OwnerSubscriptionSummary,
+   PropertyType,
+   RouteSection,
+   SubscriptionRecord,
+@@ -140,13 +144,15 @@ function unitToFormState(unit: Chalet): UnitFormState {
+ }
+ 
+ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
+-  const [session, setSession] = useState<OwnerSession | null>(() => loadOwnerSession());
+-  const [loginName, setLoginName] = useState(session?.name ?? '');
+-  const [loginPhone, setLoginPhone] = useState(session?.phone ?? '');
+-  const [loginError, setLoginError] = useState('');
++  const [session, setSession] = useState<OwnerSession | null>(null);
++  const [sessionLoading, setSessionLoading] = useState(true);
++  const [phoneDraft, setPhoneDraft] = useState('');
++  const [phoneError, setPhoneError] = useState('');
++  const [savingPhone, setSavingPhone] = useState(false);
+ 
+   const [units, setUnits] = useState<Chalet[]>([]);
+   const [subscriptions, setSubscriptions] = useState<SubscriptionRecord[]>([]);
++  const [summary, setSummary] = useState<OwnerSubscriptionSummary | null>(null);
+   const [loading, setLoading] = useState(false);
+   const [loadError, setLoadError] = useState('');
+   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(
+@@ -169,9 +175,10 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
+     setLoading(true);
+     setLoadError('');
+     try {
+-      const [unitsRes, subsRes] = await Promise.all([
+-        fetchOwnerChaletsByPhone(activeSession.phone),
+-        fetchSubscriptionsByPhone(activeSession.phone),
++      const [unitsRes, subsRes, summaryRes] = await Promise.all([
++        fetchMyChalets(),
++        fetchMySubscriptions(),
++        fetchMySubscriptionSummary(),
+       ]);
+       if (unitsRes.error) {
+         setLoadError(unitsRes.error);
+@@ -181,19 +188,46 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
+       if (!subsRes.error && subsRes.data) {
+         setSubscriptions(subsRes.data);
+       }
++      if (!summaryRes.error && summaryRes.data) {
++        setSummary(summaryRes.data);
++      }
+     } finally {
+       setLoading(false);
+     }
+   }, []);
+ 
++  // الجلسة من Supabase Auth (لا localStorage): نحمّلها عند الفتح ونتابع تغيّرها
++  useEffect(() => {
++    let active = true;
++    void loadAuthSession().then((s) => {
++      if (!active) return;
++      setSession(s);
++      setSessionLoading(false);
++    });
++    const unsubscribe = subscribeToAuth((s) => {
++      if (active) setSession(s);
++    });
++    return () => {
++      active = false;
++      unsubscribe();
++    };
++  }, []);
++
+   useEffect(() => {
+     void loadOwnerData(session);
+   }, [loadOwnerData, session]);
+ 
++  // حد الوحدات والباقة محسوبان في الخادم (my_subscription) وتفرضهما قاعدة البيانات عند الإضافة
+   const quota = useMemo(() => {
+-    if (!session) return null;
+-    return resolveOwnerQuota(session.phone, subscriptions);
+-  }, [session, subscriptions]);
++    if (!summary) return null;
++    return {
++      maxUnits: summary.maxUnits,
++      activePlan: { name: summary.planName, isFeaturedEligible: summary.featuredEligible },
++      pendingSubscription: subscriptions.find(
++        (sub) => sub.id === summary.pendingRequestId && sub.status === 'pending'
++      ),
++    };
++  }, [summary, subscriptions]);
+ 
+   const canAddAnotherUnit = quota ? units.length < quota.maxUnits : true;
+   const citiesForSelectedGov = useMemo(
+@@ -205,38 +239,32 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
+     [form.governorate, form.city]
+   );
+ 
+-  const handleLoginSubmit = (e: React.FormEvent) => {
+-    e.preventDefault();
+-    const cleanName = loginName.trim();
+-    const cleanPhone = normalizeEgyptianPhone(loginPhone);
+-    if (cleanName.length < 3) {
+-      setLoginError('يرجى إدخال الاسم ثلاثياً على الأقل.');
+-      return;
+-    }
+-    if (cleanPhone.length < 10) {
+-      setLoginError('يرجى إدخال رقم هاتف مصري صحيح.');
+-      return;
+-    }
+-    setLoginError('');
+-    const nextSession: OwnerSession = {
+-      name: cleanName,
+-      phone: cleanPhone,
+-      loggedInAt: new Date().toISOString(),
+-    };
+-    saveOwnerSession(nextSession);
+-    setSession(nextSession);
+-  };
+-
+-  const handleLogout = () => {
+-    saveOwnerSession(null);
++  const handleLogout = async () => {
++    await signOutUser();
+     setSession(null);
+     setUnits([]);
+     setSubscriptions([]);
++    setSummary(null);
+     setIsFormOpen(false);
+     setEditingUnitId(null);
+     setFeedback(null);
+   };
+ 
++  const handleSavePhone = async (e: React.FormEvent) => {
++    e.preventDefault();
++    if (!session) return;
++    setSavingPhone(true);
++    setPhoneError('');
++    const res = await updateMyProfile({ userId: session.userId, phone: phoneDraft });
++    setSavingPhone(false);
++    if (res.error) {
++      setPhoneError(res.error);
++      return;
++    }
++    const refreshed = await loadAuthSession();
++    if (refreshed) setSession(refreshed);
++  };
++
+   const openAddForm = () => {
+     if (!canAddAnotherUnit) {
+       setFeedback({
+@@ -296,7 +324,7 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
+     setUploadingImages(true);
+     setFeedback(null);
+     try {
+-      const res = await uploadPropertyImages(files, session.phone);
++      const res = await uploadPropertyImages(files);
+       if (res.error || !res.data) {
+         setFeedback({ type: 'error', text: res.error ?? 'تعذر رفع الصور.' });
+         return;
+@@ -360,7 +388,6 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
+       .filter(Boolean);
+ 
+     const existingUnit = editingUnitId ? units.find((u) => u.id === editingUnitId) : undefined;
+-    const isFeatured = Boolean(quota?.activePlan.isFeaturedEligible || existingUnit?.isFeatured);
+ 
+     const payload = {
+       title: form.title.trim(),
+@@ -372,7 +399,7 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
+       advertiserRole: form.advertiserRole,
+       ownerName: session.name,
+       ownerPhone: session.phone,
+-      isFeatured,
++      // شارة "مميز" لا تُرسل: الخادم يحددها من الباقة الفعّالة
+       depositType: form.depositType,
+       depositValue: Number.isFinite(parsedDeposit) && parsedDeposit > 0 ? parsedDeposit : 0,
+       pricePerNight: parsedPrice,
+@@ -485,7 +512,14 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
+     }
+   };
+ 
+-  // Fast Phone + Name Gate
++  if (sessionLoading) {
++    return (
++      <main className="mx-auto w-full max-w-xl flex-1 px-4 py-12 text-center text-sm font-semibold text-[#6B7280] sm:px-6">
++        جاري التحقق من حسابك…
++      </main>
++    );
++  }
++
+   if (!session) {
+     return (
+       <main className="mx-auto w-full max-w-xl flex-1 px-4 py-12 sm:px-6">
+@@ -493,67 +527,60 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
+           <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[#1E3A5F] text-white">
+             <Building2 className="h-6 w-6 text-[#C5A880]" />
+           </div>
+-          <h1 className="mt-4 text-2xl font-bold text-[#1E3A5F]">بوابة المعلن السريعة</h1>
++          <h1 className="mt-4 text-2xl font-bold text-[#1E3A5F]">بوابة المعلن</h1>
+           <p className="mt-2 text-sm leading-relaxed text-[#6B7280]">
+-            أدخل اسمك ورقم هاتفك (واتساب) للدخول الفوري وإدارة وحداتك وتقويم الحجوزات بدون تعقيد.
++            سجّل الدخول أو أنشئ حساباً مجانياً لإدارة وحداتك وتقويم التوفر. حسابك يحمي إعلاناتك من أي تعديل من غيرك.
+           </p>
+-
+-          <form onSubmit={handleLoginSubmit} className="mt-6 space-y-4">
+-            <div>
+-              <label htmlFor="owner-name" className="mb-1.5 block text-xs font-semibold text-slate-700">
+-                الاسم بالكامل أو اسم المكتب العقاري
+-              </label>
+-              <div className="relative">
+-                <User className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+-                <input
+-                  id="owner-name"
+-                  type="text"
+-                  required
+-                  value={loginName}
+-                  onChange={(e) => setLoginName(e.target.value)}
+-                  placeholder="مثال: أ. كريم عبد الله"
+-                  className="h-11 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] pl-3 pr-10 text-sm text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
+-                />
+-              </div>
+-            </div>
+-
+-            <div>
+-              <label htmlFor="owner-phone" className="mb-1.5 block text-xs font-semibold text-slate-700">
+-                رقم الهاتف / واتساب
+-              </label>
+-              <div className="relative">
+-                <Phone className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+-                <input
+-                  id="owner-phone"
+-                  type="tel"
+-                  required
+-                  dir="ltr"
+-                  value={loginPhone}
+-                  onChange={(e) => setLoginPhone(e.target.value)}
+-                  placeholder="01012345678"
+-                  className="h-11 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] pl-3 pr-10 text-right text-sm text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
+-                />
+-              </div>
+-            </div>
+-
+-            {loginError && (
+-              <div className="rounded-xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-xs font-semibold text-red-700">
+-                {loginError}
+-              </div>
+-            )}
+-
+-            <button
+-              type="submit"
+-              className="min-h-[48px] w-full rounded-xl bg-[#1E3A5F] px-5 py-3 text-sm font-bold text-white shadow-xs transition hover:bg-[#172E4D]"
+-            >
+-              دخول إلى بوابة المعلن
+-            </button>
+-          </form>
++          {isSupabaseConfigured ? (
++            <AuthForm onAuthenticated={setSession} loginLabel="دخول إلى بوابة المعلن" />
++          ) : (
++            <p className="mt-6 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs font-semibold text-amber-900">
++              الخدمة غير متاحة حالياً (لم يتم ربط قاعدة البيانات).
++            </p>
++          )}
+         </div>
+       </main>
+     );
+   }
+ 
++  if (!session.phone) {
++    return (
++      <main className="mx-auto w-full max-w-xl flex-1 px-4 py-12 sm:px-6">
++        <form
++          onSubmit={handleSavePhone}
++          className="rounded-2xl border border-stone-200/70 bg-white p-6 shadow-xs sm:p-8"
++          noValidate
++        >
++          <h1 className="text-xl font-bold text-[#1E3A5F]">أضف رقم التواصل</h1>
++          <p className="mt-2 text-sm leading-relaxed text-[#6B7280]">
++            هذا الرقم يظهر للمهتمين بإعلانك (واتساب/اتصال) ولا يُعرض علناً إلا بطلبهم.
++          </p>
++          <input
++            type="tel"
++            dir="ltr"
++            required
++            value={phoneDraft}
++            onChange={(e) => setPhoneDraft(e.target.value)}
++            placeholder="01012345678"
++            className="mt-4 h-11 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-3 text-right text-sm focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
++          />
++          {phoneError && (
++            <p role="alert" className="mt-3 text-xs font-semibold text-red-700">
++              {phoneError}
++            </p>
++          )}
++          <button
++            type="submit"
++            disabled={savingPhone}
++            className="mt-4 min-h-[48px] w-full rounded-xl bg-[#1E3A5F] px-5 py-3 text-sm font-bold text-white hover:bg-[#172E4D] disabled:opacity-60"
++          >
++            {savingPhone ? 'جاري الحفظ…' : 'حفظ ومتابعة'}
++          </button>
++        </form>
++      </main>
++    );
++  }
++
+   const isMonthlySelected = form.propertyType === 'شقة فاضية';
+ 
+   return (
+@@ -594,11 +621,11 @@ export function OwnerPortal({ onNavigate, onDataChanged }: OwnerPortalProps) {
+ 
+           <button
+             type="button"
+-            onClick={handleLogout}
++            onClick={() => void handleLogout()}
+             className="inline-flex min-h-[42px] items-center gap-1.5 rounded-xl border border-stone-200/70 bg-white px-3.5 py-2 text-xs font-semibold text-[#6B7280] hover:bg-slate-50"
+           >
+             <LogOut className="h-4 w-4" />
+-            <span>تغيير الرقم</span>
++            <span>تسجيل الخروج</span>
+           </button>
+         </div>
+       </div>
+diff --git a/src/components/PricingPage.tsx b/src/components/PricingPage.tsx
+index 2461ecd..f05530d 100644
+--- a/src/components/PricingPage.tsx
++++ b/src/components/PricingPage.tsx
+@@ -1,4 +1,4 @@
+-import { useState } from 'react';
++import { useEffect, useState } from 'react';
+ import {
+   AlertTriangle,
+   Building2,
+@@ -13,12 +13,13 @@ import {
+ import { formatEGP } from '@/data/chalets';
+ import { SUBSCRIPTION_PLANS } from '@/data/subscriptions';
+ import { isSupabaseConfigured } from '@/lib/supabase';
++import { AuthForm } from '@/components/AuthForm';
+ import {
+   createSubscriptionRequest,
+-  loadOwnerSession,
+   uploadSubscriptionReceiptFile,
+ } from '@/services/agzstayRepository';
+-import type { RouteSection, SubscriptionPlan } from '@/types/chalet';
++import { loadAuthSession, subscribeToAuth } from '@/services/authService';
++import type { OwnerSession, RouteSection, SubscriptionPlan } from '@/types/chalet';
+ 
+ interface PricingPageProps {
+   onNavigate: (section: RouteSection) => void;
+@@ -29,16 +30,29 @@ const ADMIN_WALLET_INFO =
+   (import.meta.env.VITE_SUBSCRIPTION_WALLET as string | undefined)?.trim() || '';
+ 
+ export function PricingPage({ onNavigate, onSubscriptionSubmitted }: PricingPageProps) {
+-  const existingSession = loadOwnerSession();
++  const [session, setSession] = useState<OwnerSession | null>(null);
++  const [sessionLoading, setSessionLoading] = useState(true);
+   const [selectedPlan, setSelectedPlan] = useState<SubscriptionPlan | null>(null);
+-  const [ownerName, setOwnerName] = useState(existingSession?.name ?? '');
+-  const [ownerPhone, setOwnerPhone] = useState(existingSession?.phone ?? '');
+   const [receiptFile, setReceiptFile] = useState<File | null>(null);
+   const [submitting, setSubmitting] = useState(false);
+   const [errorMsg, setErrorMsg] = useState('');
+   const [successMsg, setSuccessMsg] = useState('');
+   const [walletCopied, setWalletCopied] = useState(false);
+ 
++  useEffect(() => {
++    let active = true;
++    void loadAuthSession().then((s) => {
++      if (!active) return;
++      setSession(s);
++      setSessionLoading(false);
++    });
++    const unsubscribe = subscribeToAuth((s) => active && setSession(s));
++    return () => {
++      active = false;
++      unsubscribe();
++    };
++  }, []);
++
+   const handleSelectPlan = (plan: SubscriptionPlan) => {
+     setErrorMsg('');
+     setSuccessMsg('');
+@@ -70,14 +84,8 @@ export function PricingPage({ onNavigate, onSubscriptionSubmitted }: PricingPage
+     e.preventDefault();
+     if (!selectedPlan) return;
+ 
+-    const cleanName = ownerName.trim();
+-    const cleanPhone = ownerPhone.replace(/\D/g, '');
+-    if (cleanName.length < 3) {
+-      setErrorMsg('يرجى كتابة اسم المعلن أو المكتب ثلاثياً على الأقل.');
+-      return;
+-    }
+-    if (cleanPhone.length < 10) {
+-      setErrorMsg('يرجى إدخال رقم هاتف مصري صحيح مكون من ١١ رقماً.');
++    if (!session) {
++      setErrorMsg('سجّل الدخول أولاً لإرسال طلب الاشتراك.');
+       return;
+     }
+     if (!receiptFile) {
+@@ -92,21 +100,16 @@ export function PricingPage({ onNavigate, onSubscriptionSubmitted }: PricingPage
+     setErrorMsg('');
+     setSubmitting(true);
+     try {
+-      const uploadRes = await uploadSubscriptionReceiptFile(receiptFile, cleanPhone);
++      const uploadRes = await uploadSubscriptionReceiptFile(receiptFile);
+       if (uploadRes.error || !uploadRes.data) {
+         setErrorMsg(uploadRes.error ?? 'تعذر رفع صورة الإيصال.');
+         return;
+       }
+ 
++      // السعر والسعة يحددهما الخادم من جدول plans؛ نرسل الباقة ومسار الإيصال فقط
+       const subRes = await createSubscriptionRequest({
+-        ownerName: cleanName,
+-        ownerPhone: cleanPhone,
+         planId: selectedPlan.id,
+-        planName: selectedPlan.name,
+-        price: selectedPlan.price,
+-        maxUnits: selectedPlan.maxUnits,
+         receiptPath: uploadRes.data.path,
+-        receiptUrl: uploadRes.data.publicUrl,
+       });
+ 
+       if (subRes.error || !subRes.data) {
+@@ -348,44 +351,25 @@ export function PricingPage({ onNavigate, onSubscriptionSubmitted }: PricingPage
+                 <span>الانتقال إلى بوابة المعلن</span>
+               </button>
+             </div>
++          ) : sessionLoading ? (
++            <p className="mt-6 text-center text-xs font-semibold text-[#6B7280]">جاري التحقق من حسابك…</p>
++          ) : !session ? (
++            <div className="mt-5">
++              <p className="text-sm font-semibold text-[#1F2937]">
++                سجّل الدخول (أو أنشئ حساباً مجانياً) لإرسال طلب الاشتراك ورفع الإيصال.
++              </p>
++              <AuthForm onAuthenticated={setSession} loginLabel="تسجيل الدخول ومتابعة الاشتراك" />
++            </div>
+           ) : (
+             <form onSubmit={handleSubmit} className="mt-5 space-y-4">
+-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+-                <div>
+-                  <label
+-                    htmlFor="sub-name"
+-                    className="mb-1.5 block text-xs font-semibold text-[#6B7280]"
+-                  >
+-                    اسم المعلن أو المكتب
+-                  </label>
+-                  <input
+-                    id="sub-name"
+-                    type="text"
+-                    required
+-                    value={ownerName}
+-                    onChange={(e) => setOwnerName(e.target.value)}
+-                    placeholder="مثال: أ. كريم محمد"
+-                    className="h-11 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-3 text-sm text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
+-                  />
+-                </div>
+-                <div>
+-                  <label
+-                    htmlFor="sub-phone"
+-                    className="mb-1.5 block text-xs font-semibold text-[#6B7280]"
+-                  >
+-                    رقم الهاتف المسجل في بوابة المعلن
+-                  </label>
+-                  <input
+-                    id="sub-phone"
+-                    type="tel"
+-                    required
+-                    dir="ltr"
+-                    value={ownerPhone}
+-                    onChange={(e) => setOwnerPhone(e.target.value)}
+-                    placeholder="01012345678"
+-                    className="h-11 w-full rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-3 text-right text-sm text-[#1F2937] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
+-                  />
+-                </div>
++              <div className="rounded-xl border border-stone-200/70 bg-[#FAF9F6] px-4 py-3 text-xs text-[#6B7280]">
++                <p>
++                  الحساب:{' '}
++                  <span className="font-bold text-[#1E3A5F]">{session?.name || session?.email}</span>
++                </p>
++                <p className="mt-0.5" dir="ltr" style={{ textAlign: 'right' }}>
++                  {session?.email}
++                </p>
+               </div>
+ 
+               <div>
+diff --git a/src/components/PropertyDetailPage.tsx b/src/components/PropertyDetailPage.tsx
+index 92ce261..ca1d04e 100644
+--- a/src/components/PropertyDetailPage.tsx
++++ b/src/components/PropertyDetailPage.tsx
+@@ -1,4 +1,4 @@
+-import { useMemo, useState } from 'react';
++import { useEffect, useMemo, useState } from 'react';
+ import {
+   AlertTriangle,
+   ArrowRight,
+@@ -25,6 +25,7 @@ import {
+   getShortPriceUnitLabel,
+   isMonthlyOnlyProperty,
+ } from '@/data/chalets';
++import { revealListingContact } from '@/services/agzstayRepository';
+ import type { Chalet } from '@/types/chalet';
+ import {
+   addDaysIso,
+@@ -161,7 +162,30 @@ export function PropertyDetailPage({
+     quote.subtotal,
+   ]);
+ 
+-  const cleanPhone = (chalet.ownerPhone || '').trim();
++  // رقم المعلن لا يأتي مع الإعلان: يُكشف عند الطلب من الخادم (محدود المعدل لمنع جمع الأرقام آلياً)
++  const [revealedPhone, setRevealedPhone] = useState(chalet.isDemo ? chalet.ownerPhone || '' : '');
++  const [revealing, setRevealing] = useState(false);
++  const [revealError, setRevealError] = useState('');
++
++  useEffect(() => {
++    setRevealedPhone(chalet.isDemo ? chalet.ownerPhone || '' : '');
++    setRevealError('');
++  }, [chalet.id, chalet.isDemo, chalet.ownerPhone]);
++
++  const handleRevealPhone = async () => {
++    if (revealing) return;
++    setRevealing(true);
++    setRevealError('');
++    const res = await revealListingContact(chalet.id);
++    setRevealing(false);
++    if (res.error || !res.data) {
++      setRevealError(res.error ?? 'تعذر إظهار رقم المعلن الآن.');
++      return;
++    }
++    setRevealedPhone(res.data);
++  };
++
++  const cleanPhone = revealedPhone.trim();
+   const hasPhone = cleanPhone.replace(/\D/g, '').length >= 8;
+   const whatsappHref = hasPhone ? buildWhatsAppPhoneUrl(cleanPhone, whatsappMessage) : '';
+ 
+@@ -502,21 +526,33 @@ export function PropertyDetailPage({
+                   <MessageCircle className="h-5 w-5" />
+                   <span>تواصل مع المعلن عبر واتساب لتأكيد الحجز</span>
+                 </a>
+-              ) : (
++              ) : hasBlockedConflict ? (
+                 <button
+                   type="button"
+                   disabled
+                   className="flex min-h-[48px] w-full cursor-not-allowed items-center justify-center gap-2 rounded-xl bg-stone-200 px-4 py-3 text-sm font-bold text-[#6B7280]"
+                 >
+                   <MessageCircle className="h-5 w-5" />
+-                  <span>
+-                    {hasBlockedConflict
+-                      ? 'يرجى اختيار تواريخ متاحة أولاً'
+-                      : 'رقم واتساب المعلن غير متاح حالياً'}
+-                  </span>
++                  <span>يرجى اختيار تواريخ متاحة أولاً</span>
++                </button>
++              ) : (
++                <button
++                  type="button"
++                  onClick={() => void handleRevealPhone()}
++                  disabled={revealing}
++                  className="flex min-h-[48px] w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-3 text-sm font-bold text-white shadow-xs transition hover:bg-emerald-700 disabled:opacity-60"
++                >
++                  <MessageCircle className="h-5 w-5" />
++                  <span>{revealing ? 'جاري إظهار الرقم…' : 'إظهار رقم المعلن للتواصل'}</span>
+                 </button>
+               )}
+ 
++              {revealError && (
++                <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-xs font-semibold text-red-700">
++                  {revealError}
++                </p>
++              )}
++
+               {hasPhone && (
+                 <a
+                   href={`tel:${cleanPhone}`}
+@@ -532,7 +568,7 @@ export function PropertyDetailPage({
+       </div>
+ 
+       {/* Comfortable Mobile Sticky Bottom Contact Bar */}
+-      {hasPhone && !hasBlockedConflict && (
++      {!hasBlockedConflict && (
+         <div className="fixed inset-x-0 bottom-0 z-30 border-t border-stone-200/80 bg-white/95 px-4 py-3 shadow-lg backdrop-blur-md lg:hidden">
+           <div className="mx-auto flex max-w-lg items-center justify-between gap-3">
+             <div>
+@@ -546,15 +582,27 @@ export function PropertyDetailPage({
+                 </span>
+               </span>
+             </div>
+-            <a
+-              href={whatsappHref}
+-              target="_blank"
+-              rel="noopener noreferrer"
+-              className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl bg-emerald-600 px-5 py-2.5 text-xs font-bold text-white shadow-xs transition hover:bg-emerald-700"
+-            >
+-              <MessageCircle className="h-4 w-4" />
+-              <span>تواصل عبر واتساب</span>
+-            </a>
++            {hasPhone ? (
++              <a
++                href={whatsappHref}
++                target="_blank"
++                rel="noopener noreferrer"
++                className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl bg-emerald-600 px-5 py-2.5 text-xs font-bold text-white shadow-xs transition hover:bg-emerald-700"
++              >
++                <MessageCircle className="h-4 w-4" />
++                <span>تواصل عبر واتساب</span>
++              </a>
++            ) : (
++              <button
++                type="button"
++                onClick={() => void handleRevealPhone()}
++                disabled={revealing}
++                className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl bg-emerald-600 px-5 py-2.5 text-xs font-bold text-white shadow-xs transition hover:bg-emerald-700 disabled:opacity-60"
++              >
++                <MessageCircle className="h-4 w-4" />
++                <span>{revealing ? 'جاري الإظهار…' : 'إظهار رقم المعلن'}</span>
++              </button>
++            )}
+           </div>
+         </div>
+       )}
+diff --git a/src/data/__tests__/plansParity.test.ts b/src/data/__tests__/plansParity.test.ts
+new file mode 100644
+index 0000000..116ca42
+--- /dev/null
++++ b/src/data/__tests__/plansParity.test.ts
+@@ -0,0 +1,27 @@
++import { describe, expect, it } from 'vitest';
++import { SUBSCRIPTION_PLANS } from '@/data/subscriptions';
++import sql from '../../../supabase/migrations/006_secure_v2.sql?raw';
++
++/**
++ * الباقات معرّفة مرتين: في الواجهة (للعرض) وفي قاعدة البيانات (المرجع الفعلي للسعر والحد).
++ * هذا الاختبار يمنع تباعدهما: أي تعديل في أحدهما بلا الآخر يفشل البناء.
++ */
++describe('تطابق الباقات بين الواجهة وملف 006_secure_v2.sql', () => {
++  const block = sql.slice(sql.indexOf('insert into public.plans'), sql.indexOf('on conflict (id) do update'));
++
++  const rows = [...block.matchAll(/\('(\w+)',\s*'[^']*',\s*(\d+),\s*(\d+),\s*(true|false),\s*(\d+),\s*(\d+)\)/g)].map(
++    (m) => ({ id: m[1], price: Number(m[2]), maxUnits: Number(m[3]), featured: m[4] === 'true' })
++  );
++
++  it('تحتوي الهجرة على نفس عدد الباقات', () => {
++    expect(rows).toHaveLength(SUBSCRIPTION_PLANS.length);
++  });
++
++  it.each(SUBSCRIPTION_PLANS)('الباقة $id: السعر والسعة والشارة متطابقة', (plan) => {
++    const row = rows.find((r) => r.id === plan.id);
++    expect(row, `الباقة ${plan.id} غير موجودة في SQL`).toBeDefined();
++    expect(row?.price).toBe(plan.price);
++    expect(row?.maxUnits).toBe(plan.maxUnits);
++    expect(row?.featured).toBe(plan.isFeaturedEligible);
++  });
++});
+diff --git a/src/data/chalets.ts b/src/data/chalets.ts
+index c79b4b3..c54adff 100644
+--- a/src/data/chalets.ts
++++ b/src/data/chalets.ts
+@@ -84,7 +84,7 @@ export const THREE_REAL_EGYPT_SAMPLE_UNITS: Omit<Chalet, 'id'>[] = [
+     propertyType: 'شاليه',
+     advertiserRole: 'مالك مباشر',
+     ownerName: 'م. طارق المنشاوي',
+-    ownerPhone: '01012345678',
++    ownerPhone: '01000000001',
+     isFeatured: true,
+     depositType: 'percent',
+     depositValue: 20,
+@@ -114,7 +114,7 @@ export const THREE_REAL_EGYPT_SAMPLE_UNITS: Omit<Chalet, 'id'>[] = [
+     propertyType: 'شاليه',
+     advertiserRole: 'مالك مباشر',
+     ownerName: 'أ. نادية الشريف',
+-    ownerPhone: '01098765432',
++    ownerPhone: '01000000002',
+     isFeatured: true,
+     depositType: 'percent',
+     depositValue: 20,
+@@ -144,7 +144,7 @@ export const THREE_REAL_EGYPT_SAMPLE_UNITS: Omit<Chalet, 'id'>[] = [
+     propertyType: 'استوديو',
+     advertiserRole: 'مالك مباشر',
+     ownerName: 'أ. مينا جورج',
+-    ownerPhone: '01223344556',
++    ownerPhone: '01000000003',
+     isFeatured: false,
+     depositType: 'percent',
+     depositValue: 20,
+@@ -194,7 +194,7 @@ export const INITIAL_CHALETS: Chalet[] = [
+     propertyType: 'شقة مفروشة',
+     advertiserRole: 'مالك مباشر',
+     ownerName: 'م. شريف عبد الرحمن',
+-    ownerPhone: '01001122334',
++    ownerPhone: '01000000004',
+     isFeatured: true,
+     depositType: 'fixed',
+     depositValue: 2000,
+@@ -226,7 +226,7 @@ export const INITIAL_CHALETS: Chalet[] = [
+     propertyType: 'شقة فاضية',
+     advertiserRole: 'مكتب / وسيط',
+     ownerName: 'مكتب زايد العقاري',
+-    ownerPhone: '01112223344',
++    ownerPhone: '01000000005',
+     isFeatured: false,
+     depositType: 'fixed',
+     depositValue: 18000,
+@@ -259,7 +259,7 @@ export const INITIAL_CHALETS: Chalet[] = [
+     propertyType: 'فيلا',
+     advertiserRole: 'مالك مباشر',
+     ownerName: 'م. تامر عبد الحميد',
+-    ownerPhone: '01055667788',
++    ownerPhone: '01000000006',
+     isFeatured: true,
+     depositType: 'percent',
+     depositValue: 25,
+diff --git a/src/data/subscriptions.ts b/src/data/subscriptions.ts
+index cc69df9..2b6f484 100644
+--- a/src/data/subscriptions.ts
++++ b/src/data/subscriptions.ts
+@@ -71,6 +71,10 @@ export function normalizeEgyptianPhone(rawPhone: string): string {
+   return digits;
+ }
+ 
++/**
++ * @deprecated للعرض والاختبارات فقط. حد الوحدات والباقة الفعّالة يحسبهما الخادم (my_subscription)
++ * وتفرضهما قاعدة البيانات عند الإضافة (trigger chalets_protect في 006_secure_v2.sql).
++ */
+ export function resolveOwnerQuota(
+   ownerPhone: string,
+   subscriptions: SubscriptionRecord[]
+diff --git a/src/services/agzstayRepository.ts b/src/services/agzstayRepository.ts
+index 3e8f3c0..facf5e8 100644
+--- a/src/services/agzstayRepository.ts
++++ b/src/services/agzstayRepository.ts
+@@ -7,7 +7,7 @@ import type {
+   Chalet,
+   DepositType,
+   ListingAvailabilityStatus,
+-  OwnerSession,
++  OwnerSubscriptionSummary,
+   PropertyType,
+   SubscriptionPlanId,
+   SubscriptionRecord,
+@@ -20,8 +20,6 @@ export type RepoResult<T> = { data: T; error: null } | { data: null; error: stri
+ 
+ const STORAGE_KEYS = {
+   favorites: 'agzstay_favorites_v2',
+-  ownerSession: 'agzstay_owner_session_v2',
+-  adminPinVerified: 'agzstay_admin_pin_ok_v2',
+   pwaDismissed: 'agzstay_pwa_dismissed_v2',
+ } as const;
+ 
+@@ -33,6 +31,9 @@ export function migrateLegacyStorageKeys(): void {
+     if (legacyFav && !localStorage.getItem(STORAGE_KEYS.favorites)) {
+       localStorage.setItem(STORAGE_KEYS.favorites, legacyFav);
+     }
++    // مفاتيح الجلسة المحلية القديمة (هاتف/PIN إدارة) لم تعد مستخدمة: نحذفها لأنها لا تمنح أي صلاحية الآن
++    localStorage.removeItem('agzstay_owner_session_v2');
++    localStorage.removeItem('agzstay_admin_pin_ok_v2');
+   } catch {
+     // Ignore storage access restrictions
+   }
+@@ -55,22 +56,6 @@ export function saveLocalJson<T>(key: string, value: T): void {
+   }
+ }
+ 
+-export function loadOwnerSession(): OwnerSession | null {
+-  return loadLocalJson<OwnerSession | null>(STORAGE_KEYS.ownerSession, null);
+-}
+-
+-export function saveOwnerSession(session: OwnerSession | null): void {
+-  if (!session) {
+-    try {
+-      localStorage.removeItem(STORAGE_KEYS.ownerSession);
+-    } catch {
+-      // ignore
+-    }
+-    return;
+-  }
+-  saveLocalJson(STORAGE_KEYS.ownerSession, session);
+-}
+-
+ const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+ const RECEIPT_MIME_EXT: Record<string, string> = {
+   'image/jpeg': 'jpg',
+@@ -149,7 +134,10 @@ function mapChaletFromRow(row: Record<string, unknown>): Chalet {
+     propertyType: normalizePropertyType(row.property_type ?? row.unit_type),
+     advertiserRole: normalizeAdvertiserRole(row.advertiser_role ?? row.owner_role_type),
+     ownerName: String(row.owner_name ?? 'معلن AgzStay'),
+-    ownerPhone: String(row.owner_phone ?? ''),
++    // رقم التواصل لا يُرسل مع الإعلان؛ يُجلب عند الطلب عبر revealListingContact()
++    ownerPhone: '',
++    ownerId: row.owner_id ? String(row.owner_id) : undefined,
++    ownerVerified: Boolean(row.owner_verified),
+     isFeatured: Boolean(row.is_featured ?? row.featured ?? false),
+     depositType: normalizeDepositType(row.deposit_type),
+     depositValue: Number.isFinite(depositValueRaw) ? depositValueRaw : 0,
+@@ -183,13 +171,16 @@ function mapChaletFromRow(row: Record<string, unknown>): Chalet {
+ function mapSubscriptionFromRow(row: Record<string, unknown>): SubscriptionRecord {
+   const statusRaw = String(row.status ?? 'pending');
+   const status: SubscriptionStatus =
+-    statusRaw === 'active' || statusRaw === 'rejected' ? statusRaw : 'pending';
++    statusRaw === 'active' || statusRaw === 'rejected' || statusRaw === 'expired'
++      ? statusRaw
++      : 'pending';
+   const planRaw = String(row.plan_id ?? 'free');
+   const planId: SubscriptionPlanId =
+     planRaw === 'starter' || planRaw === 'pro' || planRaw === 'enterprise' ? planRaw : 'free';
+ 
+   return {
+     id: String(row.id),
++    ownerId: row.owner_id ? String(row.owner_id) : undefined,
+     ownerName: String(row.owner_name ?? ''),
+     ownerPhone: String(row.owner_phone ?? ''),
+     planId,
+@@ -201,65 +192,72 @@ function mapSubscriptionFromRow(row: Record<string, unknown>): SubscriptionRecor
+     status,
+     createdAt: String(row.created_at ?? new Date().toISOString()),
+     reviewedAt: row.reviewed_at ? String(row.reviewed_at) : undefined,
++    expiresAt: row.expires_at ? String(row.expires_at) : undefined,
++    reviewNote: row.review_note ? String(row.review_note) : undefined,
+   };
+ }
+ 
++// ---------- أدوات داخلية ----------
++
++const NOT_CONFIGURED = 'الاتصال بـ Supabase غير مهيأ في هذه البيئة.';
++const LOGIN_REQUIRED = 'سجّل الدخول أولاً للمتابعة.';
++
++async function currentUserId(): Promise<string | null> {
++  if (!isSupabaseConfigured || !supabase) return null;
++  const { data } = await supabase.auth.getSession();
++  return data.session?.user.id ?? null;
++}
++
++function randomId(): string {
++  return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
++    ? crypto.randomUUID()
++    : `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
++}
++
+ // ---------- Storage Uploads (`property-images` & `receipts`) ----------
++// كل الرفع داخل مجلد باسم معرّف المستخدم ({auth.uid()}/...) وهو شرط سياسات التخزين في 006.
++
++/** يرفع صور الوحدة بعد ضغطها. عند فشل أي صورة تُحذف الصور المرفوعة قبلها. */
++export async function uploadPropertyImages(files: File[]): Promise<RepoResult<string[]>> {
++  if (!isSupabaseConfigured || !supabase) return { data: null, error: NOT_CONFIGURED };
++  const uid = await currentUserId();
++  if (!uid) return { data: null, error: LOGIN_REQUIRED };
+ 
+-export async function uploadPropertyImages(
+-  files: File[],
+-  ownerPhone: string
+-): Promise<RepoResult<string[]>> {
+-  if (!isSupabaseConfigured || !supabase) {
+-    return { data: null, error: 'الاتصال بـ Supabase غير مهيأ في هذه البيئة.' };
+-  }
+-  const folder = normalizeEgyptianPhone(ownerPhone) || 'public';
+   const urls: string[] = [];
++  const uploadedPaths: string[] = [];
++  const bucket = supabase.storage.from('property-images');
+ 
+   try {
+     for (const file of files) {
+       if (file.size <= 0 || file.size > MAX_UPLOAD_BYTES) {
+-        return {
+-          data: null,
+-          error: `حجم الصورة "${file.name}" غير صالح أو يتجاوز ٥ ميجابايت.`,
+-        };
++        throw new Error(`حجم الصورة "${file.name}" غير صالح أو يتجاوز ٥ ميجابايت.`);
+       }
+       const blob = await compressImage(file);
+-      const uid =
+-        typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+-          ? crypto.randomUUID()
+-          : `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+-      const path = `${folder}/${uid}.webp`;
+-      const { error } = await supabase.storage
+-        .from('property-images')
+-        .upload(path, blob, { contentType: 'image/webp', upsert: false });
+-
+-      if (error) {
+-        return {
+-          data: null,
+-          error: formatSupabaseError(error, 'تعذر رفع صور الوحدة إلى حاوية property-images.'),
+-        };
+-      }
+-
+-      const { data: pub } = supabase.storage.from('property-images').getPublicUrl(path);
+-      urls.push(pub.publicUrl);
++      const path = `${uid}/${randomId()}.webp`;
++      const { error } = await bucket.upload(path, blob, { contentType: 'image/webp', upsert: false });
++      if (error) throw error;
++      uploadedPaths.push(path);
++      urls.push(bucket.getPublicUrl(path).data.publicUrl);
+     }
+     return { data: urls, error: null };
+   } catch (err) {
++    if (uploadedPaths.length > 0) await bucket.remove(uploadedPaths).catch(() => undefined);
++    const message = err instanceof Error && err.message.includes('ميجابايت') ? err.message : null;
+     return {
+       data: null,
+-      error: formatSupabaseError(err, 'حدث خطأ أثناء معالجة ورفع الصور.'),
++      error: message ?? formatSupabaseError(err, 'حدث خطأ أثناء معالجة ورفع الصور.'),
+     };
+   }
+ }
+ 
++/** يرفع إيصال الاشتراك إلى باكت خاص ويعيد المسار فقط (لا رابط عام) */
+ export async function uploadSubscriptionReceiptFile(
+-  file: File,
+-  ownerPhone: string
+-): Promise<RepoResult<{ path: string; publicUrl: string }>> {
+-  if (!isSupabaseConfigured || !supabase) {
+-    return { data: null, error: 'الاتصال بـ Supabase غير مهيأ في هذه البيئة.' };
+-  }
++  file: File
++): Promise<RepoResult<{ path: string }>> {
++  if (!isSupabaseConfigured || !supabase) return { data: null, error: NOT_CONFIGURED };
++  const uid = await currentUserId();
++  if (!uid) return { data: null, error: LOGIN_REQUIRED };
++
+   if (file.size <= 0 || file.size > MAX_UPLOAD_BYTES) {
+     return { data: null, error: 'حجم ملف الإيصال يجب أن يكون أقل من ٥ ميجابايت.' };
+   }
+@@ -268,61 +266,82 @@ export async function uploadSubscriptionReceiptFile(
+     return { data: null, error: 'صيغة الإيصال غير مدعومة (يُقبل JPG, PNG, WebP, PDF).' };
+   }
+ 
+-  const folder = normalizeEgyptianPhone(ownerPhone) || 'guest';
+-  const path = `${folder}/sub-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.${ext}`;
+-
++  const path = `${uid}/sub-${randomId()}.${ext}`;
+   try {
+     const { error } = await supabase.storage
+       .from('receipts')
+       .upload(path, file, { contentType: file.type, upsert: false });
+-
+     if (error) {
+-      return {
+-        data: null,
+-        error: formatSupabaseError(error, 'تعذر رفع إيصال الباقة إلى حاوية receipts.'),
+-      };
++      return { data: null, error: formatSupabaseError(error, 'تعذر رفع إيصال الباقة.') };
+     }
+-
+-    const { data: pub } = supabase.storage.from('receipts').getPublicUrl(path);
+-    return { data: { path, publicUrl: pub.publicUrl }, error: null };
++    return { data: { path }, error: null };
+   } catch (err) {
+-    return {
+-      data: null,
+-      error: formatSupabaseError(err, 'تعذر رفع صورة الإيصال.'),
+-    };
++    return { data: null, error: formatSupabaseError(err, 'تعذر رفع صورة الإيصال.') };
+   }
+ }
+ 
+-export async function resolveReceiptPreviewUrl(
+-  receiptUrl?: string,
+-  receiptPath?: string
+-): Promise<RepoResult<string>> {
+-  if (receiptUrl) {
+-    return { data: receiptUrl, error: null };
+-  }
+-  if (!receiptPath) {
+-    return { data: null, error: 'لا يوجد إيصال مرفق لهذا الاشتراك.' };
+-  }
+-  if (!isSupabaseConfigured || !supabase) {
+-    return { data: null, error: 'الاتصال بـ Supabase غير مهيأ.' };
+-  }
++/** رابط مؤقت (5 دقائق) لعرض الإيصال؛ يعمل لصاحبه وللمدير فقط */
++export async function resolveReceiptPreviewUrl(receiptPath?: string): Promise<RepoResult<string>> {
++  if (!receiptPath) return { data: null, error: 'لا يوجد إيصال مرفق لهذا الاشتراك.' };
++  if (!isSupabaseConfigured || !supabase) return { data: null, error: NOT_CONFIGURED };
+   try {
+     const signed = await supabase.storage.from('receipts').createSignedUrl(receiptPath, 300);
+-    if (!signed.error && signed.data?.signedUrl) {
+-      return { data: signed.data.signedUrl, error: null };
++    if (signed.error || !signed.data?.signedUrl) {
++      return { data: null, error: formatSupabaseError(signed.error, 'تعذر عرض ملف الإيصال.') };
+     }
+-    const { data: pub } = supabase.storage.from('receipts').getPublicUrl(receiptPath);
+-    if (pub.publicUrl) {
+-      return { data: pub.publicUrl, error: null };
+-    }
+-    return { data: null, error: 'تعذر عرض ملف الإيصال.' };
++    return { data: signed.data.signedUrl, error: null };
+   } catch (err) {
+     return { data: null, error: formatSupabaseError(err, 'تعذر فتح الإيصال.') };
+   }
+ }
+ 
++// ---------- أرقام التواصل (جدول chalet_contacts الخاص + دالة الكشف المحدودة) ----------
++
++/** أرقام إعلاناتك (للمالك) أو كل الأرقام (للمدير)؛ سياسات RLS تحدد ما يُعاد */
++export async function fetchChaletContacts(
++  chaletIds: string[]
++): Promise<RepoResult<Record<string, string>>> {
++  if (!isSupabaseConfigured || !supabase) return { data: {}, error: null };
++  if (chaletIds.length === 0) return { data: {}, error: null };
++  try {
++    const { data, error } = await supabase
++      .from('chalet_contacts')
++      .select('chalet_id, owner_phone')
++      .in('chalet_id', chaletIds);
++    if (error) {
++      return { data: null, error: formatSupabaseError(error, 'تعذر تحميل أرقام التواصل.') };
++    }
++    const map: Record<string, string> = {};
++    (data ?? []).forEach((row) => {
++      const r = row as Record<string, unknown>;
++      map[String(r.chalet_id)] = String(r.owner_phone ?? '');
++    });
++    return { data: map, error: null };
++  } catch (err) {
++    return { data: null, error: formatSupabaseError(err, 'تعذر تحميل أرقام التواصل.') };
++  }
++}
++
++/**
++ * يكشف رقم معلن لزائر (مع حد معدل في الخادم: يمنع جمع الأرقام آلياً).
++ * الأرقام لم تعد تُرسل مع قائمة الإعلانات.
++ */
++export async function revealListingContact(chaletId: string): Promise<RepoResult<string>> {
++  if (!isSupabaseConfigured || !supabase) return { data: null, error: NOT_CONFIGURED };
++  try {
++    const { data, error } = await supabase.rpc('reveal_listing_contact', { p_chalet_id: chaletId });
++    if (error || typeof data !== 'string' || !data) {
++      return { data: null, error: formatSupabaseError(error, 'تعذر إظهار رقم المعلن الآن.') };
++    }
++    return { data, error: null };
++  } catch (err) {
++    return { data: null, error: formatSupabaseError(err, 'تعذر إظهار رقم المعلن الآن.') };
++  }
++}
++
+ // ---------- Chalets CRUD (`chalets` table) ----------
+ 
++/** الإعلانات المنشورة للتصفح العام. includeHidden=true للمدير (يرى الكل) أو للمالك (المنشور + إعلاناته) */
+ export async function fetchAllChaletsFromDb(includeHidden = false): Promise<RepoResult<Chalet[]>> {
+   if (!isSupabaseConfigured || !supabase) {
+     return { data: [], error: null };
+@@ -334,7 +353,8 @@ export async function fetchAllChaletsFromDb(includeHidden = false): Promise<Repo
+     }
+     const { data, error } = await query
+       .order('is_featured', { ascending: false })
+-      .order('created_at', { ascending: false });
++      .order('created_at', { ascending: false })
++      .limit(1000);
+ 
+     if (error) {
+       return {
+@@ -343,48 +363,50 @@ export async function fetchAllChaletsFromDb(includeHidden = false): Promise<Repo
+       };
+     }
+ 
+-    return {
+-      data: (data ?? []).map((row) => mapChaletFromRow(row as Record<string, unknown>)),
+-      error: null,
+-    };
++    const chalets = (data ?? []).map((row) => mapChaletFromRow(row as Record<string, unknown>));
++
++    // المدير: نُرفق أرقام التواصل لعرضها في لوحة الإدارة (RLS تمنع غيره)
++    if (includeHidden) {
++      const contacts = await fetchChaletContacts(chalets.map((c) => c.id));
++      if (contacts.data) {
++        chalets.forEach((c) => {
++          c.ownerPhone = contacts.data?.[c.id] ?? '';
++        });
++      }
++    }
++    return { data: chalets, error: null };
+   } catch (err) {
+-    return {
+-      data: null,
+-      error: formatSupabaseError(err, 'تعذر الاتصال بقاعدة البيانات.'),
+-    };
++    return { data: null, error: formatSupabaseError(err, 'تعذر الاتصال بقاعدة البيانات.') };
+   }
+ }
+ 
+-export async function fetchOwnerChaletsByPhone(
+-  ownerPhone: string
+-): Promise<RepoResult<Chalet[]>> {
+-  if (!isSupabaseConfigured || !supabase) {
+-    return { data: [], error: null };
+-  }
+-  const normalizedTarget = normalizeEgyptianPhone(ownerPhone);
++/** كل وحدات المستخدم الحالي (بما فيها المخفية) مع أرقام التواصل الخاصة بها */
++export async function fetchMyChalets(): Promise<RepoResult<Chalet[]>> {
++  if (!isSupabaseConfigured || !supabase) return { data: [], error: null };
++  const uid = await currentUserId();
++  if (!uid) return { data: [], error: null };
++
+   try {
+     const { data, error } = await supabase
+       .from('chalets')
+       .select('*')
++      .eq('owner_id', uid)
+       .order('created_at', { ascending: false });
+ 
+     if (error) {
+-      return {
+-        data: null,
+-        error: formatSupabaseError(error, 'تعذر تحميل وحداتك من قاعدة البيانات.'),
+-      };
++      return { data: null, error: formatSupabaseError(error, 'تعذر تحميل وحداتك من قاعدة البيانات.') };
+     }
+ 
+-    const mapped = (data ?? [])
+-      .map((row) => mapChaletFromRow(row as Record<string, unknown>))
+-      .filter((c) => normalizeEgyptianPhone(c.ownerPhone) === normalizedTarget);
+-
+-    return { data: mapped, error: null };
++    const chalets = (data ?? []).map((row) => mapChaletFromRow(row as Record<string, unknown>));
++    const contacts = await fetchChaletContacts(chalets.map((c) => c.id));
++    if (contacts.data) {
++      chalets.forEach((c) => {
++        c.ownerPhone = contacts.data?.[c.id] ?? '';
++      });
++    }
++    return { data: chalets, error: null };
+   } catch (err) {
+-    return {
+-      data: null,
+-      error: formatSupabaseError(err, 'تعذر تحميل وحدات المعلن.'),
+-    };
++    return { data: null, error: formatSupabaseError(err, 'تعذر تحميل وحدات المعلن.') };
+   }
+ }
+ 
+@@ -397,8 +419,10 @@ export interface UpsertChaletPayload {
+   propertyType: PropertyType;
+   advertiserRole: AdvertiserRoleLabel;
+   ownerName: string;
++  /** رقم التواصل: يُحفظ في جدول chalet_contacts الخاص لا في الإعلان */
+   ownerPhone: string;
+-  isFeatured: boolean;
++  /** للمدير فقط؛ الخادم يتجاهله لغيره ويحدده تلقائياً من الباقة */
++  isFeatured?: boolean;
+   depositType: DepositType;
+   depositValue: number;
+   pricePerNight: number;
+@@ -414,15 +438,26 @@ export interface UpsertChaletPayload {
+   availabilityStatus?: ListingAvailabilityStatus;
+ }
+ 
++async function saveContact(chaletId: string, ownerPhone: string): Promise<string | null> {
++  const phone = normalizeEgyptianPhone(ownerPhone);
++  if (!/^01[0125][0-9]{8}$/.test(phone)) return 'رقم الموبايل غير صحيح (مثال: 01012345678).';
++  const { error } = await requireSupabase()
++    .from('chalet_contacts')
++    .upsert({ chalet_id: chaletId, owner_phone: phone }, { onConflict: 'chalet_id' });
++  return error ? formatSupabaseError(error, 'تعذر حفظ رقم التواصل.') : null;
++}
++
+ export async function insertChaletRecord(
+   payload: UpsertChaletPayload
+ ): Promise<RepoResult<Chalet>> {
+-  if (!isSupabaseConfigured || !supabase) {
+-    return { data: null, error: 'الاتصال بـ Supabase غير مهيأ.' };
+-  }
++  if (!isSupabaseConfigured || !supabase) return { data: null, error: NOT_CONFIGURED };
++  const uid = await currentUserId();
++  if (!uid) return { data: null, error: LOGIN_REQUIRED };
+ 
+   const coordinates = resolveCoordinatesForLocation(payload.governorate, payload.city);
+-  const insertRow = {
++  const insertRow: Record<string, unknown> = {
++    // الخادم يفرض owner_id = المستخدم الحالي ويتجاهل is_featured/rating/التوثيق
++    owner_id: uid,
+     title: payload.title.trim(),
+     description: payload.description.trim(),
+     governorate: payload.governorate,
+@@ -431,8 +466,6 @@ export async function insertChaletRecord(
+     property_type: payload.propertyType,
+     advertiser_role: payload.advertiserRole,
+     owner_name: payload.ownerName.trim(),
+-    owner_phone: normalizeEgyptianPhone(payload.ownerPhone),
+-    is_featured: payload.isFeatured,
+     deposit_type: payload.depositType,
+     deposit_value: Number.isFinite(payload.depositValue) ? payload.depositValue : 0,
+     price_per_night: payload.pricePerNight,
+@@ -459,17 +492,20 @@ export async function insertChaletRecord(
+     const sb = requireSupabase();
+     const { data, error } = await sb.from('chalets').insert(insertRow).select('*').single();
+     if (error || !data) {
+-      return {
+-        data: null,
+-        error: formatSupabaseError(error, 'تعذر حفظ الوحدة في جدول chalets.'),
+-      };
++      return { data: null, error: formatSupabaseError(error, 'تعذر حفظ الوحدة في جدول chalets.') };
++    }
++
++    const chalet = mapChaletFromRow(data as Record<string, unknown>);
++    const contactError = await saveContact(chalet.id, payload.ownerPhone);
++    if (contactError) {
++      // لا نترك إعلاناً منشوراً بلا وسيلة تواصل
++      await sb.from('chalets').delete().eq('id', chalet.id);
++      return { data: null, error: contactError };
+     }
+-    return { data: mapChaletFromRow(data as Record<string, unknown>), error: null };
++    chalet.ownerPhone = normalizeEgyptianPhone(payload.ownerPhone);
++    return { data: chalet, error: null };
+   } catch (err) {
+-    return {
+-      data: null,
+-      error: formatSupabaseError(err, 'تعذر نشر الوحدة الآن.'),
+-    };
++    return { data: null, error: formatSupabaseError(err, 'تعذر نشر الوحدة الآن.') };
+   }
+ }
+ 
+@@ -477,9 +513,7 @@ export async function updateChaletRecord(
+   chaletId: string,
+   updates: Partial<UpsertChaletPayload>
+ ): Promise<RepoResult<Chalet>> {
+-  if (!isSupabaseConfigured || !supabase) {
+-    return { data: null, error: 'الاتصال بـ Supabase غير مهيأ.' };
+-  }
++  if (!isSupabaseConfigured || !supabase) return { data: null, error: NOT_CONFIGURED };
+ 
+   const patch: Record<string, unknown> = {};
+   if (updates.title !== undefined) patch.title = updates.title.trim();
+@@ -499,8 +533,7 @@ export async function updateChaletRecord(
+   }
+   if (updates.advertiserRole !== undefined) patch.advertiser_role = updates.advertiserRole;
+   if (updates.ownerName !== undefined) patch.owner_name = updates.ownerName.trim();
+-  if (updates.ownerPhone !== undefined)
+-    patch.owner_phone = normalizeEgyptianPhone(updates.ownerPhone);
++  // is_featured: يُقبل من المدير فقط (الخادم يتجاهله لغيره)
+   if (updates.isFeatured !== undefined) patch.is_featured = updates.isFeatured;
+   if (updates.depositType !== undefined) patch.deposit_type = updates.depositType;
+   if (updates.depositValue !== undefined) patch.deposit_value = updates.depositValue;
+@@ -526,37 +559,42 @@ export async function updateChaletRecord(
+   }
+ 
+   try {
++    // RLS لا ترمي خطأ عند منع التعديل بل تُرجع 0 صفوف، لذلك نفحص النتيجة صراحةً
+     const { data, error } = await supabase
+       .from('chalets')
+       .update(patch)
+       .eq('id', chaletId)
+       .select('*')
+-      .single();
++      .maybeSingle();
+ 
+-    if (error || !data) {
+-      return {
+-        data: null,
+-        error: formatSupabaseError(error, 'تعذر تحديث بيانات الوحدة.'),
+-      };
++    if (error) {
++      return { data: null, error: formatSupabaseError(error, 'تعذر تحديث بيانات الوحدة.') };
++    }
++    if (!data) {
++      return { data: null, error: 'غير مسموح لك بتعديل هذه الوحدة، أو لم تعد موجودة.' };
+     }
+ 
+-    return { data: mapChaletFromRow(data as Record<string, unknown>), error: null };
++    const chalet = mapChaletFromRow(data as Record<string, unknown>);
++    if (updates.ownerPhone !== undefined) {
++      const contactError = await saveContact(chaletId, updates.ownerPhone);
++      if (contactError) return { data: null, error: contactError };
++      chalet.ownerPhone = normalizeEgyptianPhone(updates.ownerPhone);
++    }
++    return { data: chalet, error: null };
+   } catch (err) {
+     return { data: null, error: formatSupabaseError(err, 'تعذر تعديل الوحدة.') };
+   }
+ }
+ 
+ export async function deleteChaletRecord(chaletId: string): Promise<RepoResult<boolean>> {
+-  if (!isSupabaseConfigured || !supabase) {
+-    return { data: null, error: 'الاتصال بـ Supabase غير مهيأ.' };
+-  }
++  if (!isSupabaseConfigured || !supabase) return { data: null, error: NOT_CONFIGURED };
+   try {
+-    const { error } = await supabase.from('chalets').delete().eq('id', chaletId);
++    const { data, error } = await supabase.from('chalets').delete().eq('id', chaletId).select('id');
+     if (error) {
+-      return {
+-        data: null,
+-        error: formatSupabaseError(error, 'تعذر حذف الوحدة.'),
+-      };
++      return { data: null, error: formatSupabaseError(error, 'تعذر حذف الوحدة.') };
++    }
++    if (!data || data.length === 0) {
++      return { data: null, error: 'غير مسموح لك بحذف هذه الوحدة، أو لم تعد موجودة.' };
+     }
+     return { data: true, error: null };
+   } catch (err) {
+@@ -564,25 +602,17 @@ export async function deleteChaletRecord(chaletId: string): Promise<RepoResult<b
+   }
+ }
+ 
+-// ---------- Subscriptions CRUD (`subscriptions` table) ----------
++// ---------- الاشتراكات: القراءة مباشرة، والكتابة عبر RPC فقط ----------
+ 
+-export async function fetchAllSubscriptions(): Promise<RepoResult<SubscriptionRecord[]>> {
+-  if (!isSupabaseConfigured || !supabase) {
+-    return { data: [], error: null };
+-  }
++async function loadSubscriptions(ownerId?: string): Promise<RepoResult<SubscriptionRecord[]>> {
++  if (!isSupabaseConfigured || !supabase) return { data: [], error: null };
+   try {
+-    const { data, error } = await supabase
+-      .from('subscriptions')
+-      .select('*')
+-      .order('created_at', { ascending: false });
+-
++    let query = supabase.from('subscriptions').select('*').order('created_at', { ascending: false });
++    if (ownerId) query = query.eq('owner_id', ownerId);
++    const { data, error } = await query;
+     if (error) {
+-      return {
+-        data: null,
+-        error: formatSupabaseError(error, 'تعذر تحميل اشتراكات الباقات.'),
+-      };
++      return { data: null, error: formatSupabaseError(error, 'تعذر تحميل اشتراكات الباقات.') };
+     }
+-
+     return {
+       data: (data ?? []).map((row) => mapSubscriptionFromRow(row as Record<string, unknown>)),
+       error: null,
+@@ -592,104 +622,116 @@ export async function fetchAllSubscriptions(): Promise<RepoResult<SubscriptionRe
+   }
+ }
+ 
+-export async function fetchSubscriptionsByPhone(
+-  ownerPhone: string
+-): Promise<RepoResult<SubscriptionRecord[]>> {
+-  const res = await fetchAllSubscriptions();
+-  if (res.error || !res.data) return res;
+-  const normalizedTarget = normalizeEgyptianPhone(ownerPhone);
+-  return {
+-    data: res.data.filter((s) => normalizeEgyptianPhone(s.ownerPhone) === normalizedTarget),
+-    error: null,
+-  };
++/** للمدير: كل الاشتراكات (RLS تُعيد اشتراكات المستخدم فقط لغير المدير) */
++export async function fetchAllSubscriptions(): Promise<RepoResult<SubscriptionRecord[]>> {
++  return loadSubscriptions();
++}
++
++/** اشتراكاتي */
++export async function fetchMySubscriptions(): Promise<RepoResult<SubscriptionRecord[]>> {
++  const uid = await currentUserId();
++  if (!uid) return { data: [], error: null };
++  return loadSubscriptions(uid);
++}
++
++/** الباقة الفعّالة وعدد الوحدات المستخدمة (محسوبة على الخادم، لا في الواجهة) */
++export async function fetchMySubscriptionSummary(): Promise<RepoResult<OwnerSubscriptionSummary>> {
++  if (!isSupabaseConfigured || !supabase) return { data: null, error: NOT_CONFIGURED };
++  try {
++    const { data, error } = await supabase.rpc('my_subscription');
++    if (error || !data || typeof data !== 'object') {
++      return { data: null, error: formatSupabaseError(error, 'تعذر تحميل بيانات باقتك.') };
++    }
++    const r = data as Record<string, unknown>;
++    const planRaw = String(r.plan_id ?? 'free');
++    const planId: SubscriptionPlanId =
++      planRaw === 'starter' || planRaw === 'pro' || planRaw === 'enterprise' ? planRaw : 'free';
++    const pending = r.pending_request as { id?: unknown } | null | undefined;
++    return {
++      data: {
++        planId,
++        planName: String(r.plan_name ?? ''),
++        maxUnits: Number(r.max_units ?? 1),
++        usedUnits: Number(r.used_units ?? 0),
++        featuredEligible: Boolean(r.featured_eligible),
++        expiresAt: r.expires_at ? String(r.expires_at) : undefined,
++        pendingRequestId: pending?.id ? String(pending.id) : undefined,
++      },
++      error: null,
++    };
++  } catch (err) {
++    return { data: null, error: formatSupabaseError(err, 'تعذر تحميل بيانات باقتك.') };
++  }
+ }
+ 
++/**
++ * طلب اشتراك مدفوع: السعر والسعة يؤخذان من جدول plans في الخادم، ويجب أن يكون الإيصال
++ * قد رُفع أولاً عبر uploadSubscriptionReceiptFile (مسار داخل مجلد المستخدم).
++ */
+ export async function createSubscriptionRequest(payload: {
+-  ownerName: string;
+-  ownerPhone: string;
+   planId: SubscriptionPlanId;
+-  planName: string;
+-  price: number;
+-  maxUnits: number;
+-  receiptPath?: string;
+-  receiptUrl?: string;
++  receiptPath: string;
+ }): Promise<RepoResult<SubscriptionRecord>> {
+-  if (!isSupabaseConfigured || !supabase) {
+-    return { data: null, error: 'الاتصال بـ Supabase غير مهيأ.' };
+-  }
+-
++  if (!isSupabaseConfigured || !supabase) return { data: null, error: NOT_CONFIGURED };
+   try {
+-    const { data, error } = await supabase
+-      .from('subscriptions')
+-      .insert({
+-        owner_name: payload.ownerName.trim(),
+-        owner_phone: normalizeEgyptianPhone(payload.ownerPhone),
+-        plan_id: payload.planId,
+-        plan_name: payload.planName,
+-        price: payload.price,
+-        max_units: payload.maxUnits,
+-        receipt_path: payload.receiptPath ?? null,
+-        receipt_url: payload.receiptUrl ?? null,
+-        status: 'pending',
+-      })
+-      .select('*')
+-      .single();
+-
++    const { data, error } = await supabase.rpc('request_subscription', {
++      p_plan_id: payload.planId,
++      p_receipt_path: payload.receiptPath,
++    });
+     if (error || !data) {
+-      return {
+-        data: null,
+-        error: formatSupabaseError(error, 'تعذر إرسال طلب الاشتراك.'),
+-      };
++      return { data: null, error: formatSupabaseError(error, 'تعذر إرسال طلب الاشتراك.') };
+     }
+-
+     return { data: mapSubscriptionFromRow(data as Record<string, unknown>), error: null };
+   } catch (err) {
+     return { data: null, error: formatSupabaseError(err, 'تعذر حفظ طلب الاشتراك.') };
+   }
+ }
+ 
++/** للمدير فقط: تفعيل/رفض. التفعيل يحدّد الانتهاء ويحدّث الشارة المميزة تلقائياً في الخادم. */
+ export async function reviewSubscriptionAdmin(
+   subscriptionId: string,
+-  ownerPhone: string,
+-  decision: 'active' | 'rejected'
++  decision: 'active' | 'rejected',
++  note?: string
+ ): Promise<RepoResult<SubscriptionRecord>> {
+-  if (!isSupabaseConfigured || !supabase) {
+-    return { data: null, error: 'الاتصال بـ Supabase غير مهيأ.' };
+-  }
+-
++  if (!isSupabaseConfigured || !supabase) return { data: null, error: NOT_CONFIGURED };
+   try {
+-    const { data, error } = await supabase
+-      .from('subscriptions')
+-      .update({
+-        status: decision,
+-        reviewed_at: new Date().toISOString(),
+-      })
+-      .eq('id', subscriptionId)
+-      .select('*')
+-      .single();
+-
++    const { data, error } = await supabase.rpc('admin_review_subscription', {
++      p_id: subscriptionId,
++      p_approve: decision === 'active',
++      p_note: note?.trim() || null,
++    });
+     if (error || !data) {
+-      return {
+-        data: null,
+-        error: formatSupabaseError(error, 'تعذر تحديث حالة الاشتراك.'),
+-      };
++      return { data: null, error: formatSupabaseError(error, 'تعذر تحديث حالة الاشتراك.') };
+     }
+-
+-    // Automatically mark subscriber's units as featured when activated
+-    if (decision === 'active' && ownerPhone) {
+-      const normalized = normalizeEgyptianPhone(ownerPhone);
+-      const { data: allUnits } = await supabase.from('chalets').select('id, owner_phone');
+-      const matchingIds = (allUnits ?? [])
+-        .filter((u) => normalizeEgyptianPhone(String(u.owner_phone ?? '')) === normalized)
+-        .map((u) => String(u.id));
+-
+-      if (matchingIds.length > 0) {
+-        await supabase.from('chalets').update({ is_featured: true }).in('id', matchingIds);
+-      }
+-    }
+-
+     return { data: mapSubscriptionFromRow(data as Record<string, unknown>), error: null };
+   } catch (err) {
+     return { data: null, error: formatSupabaseError(err, 'تعذر مراجعة الاشتراك.') };
+   }
+ }
++
++/** للمدير: ربط الإعلانات والاشتراكات القديمة (جلسة هاتف) بحساب حقيقي بعد التحقق من الهاتف خارج النظام */
++export async function linkLegacyOwner(
++  userId: string,
++  phone: string
++): Promise<RepoResult<{ chaletsLinked: number; subscriptionsLinked: number }>> {
++  if (!isSupabaseConfigured || !supabase) return { data: null, error: NOT_CONFIGURED };
++  try {
++    const { data, error } = await supabase.rpc('admin_link_legacy_owner', {
++      p_user: userId,
++      p_phone: normalizeEgyptianPhone(phone),
++    });
++    if (error || !data) {
++      return { data: null, error: formatSupabaseError(error, 'تعذر ربط الحساب.') };
++    }
++    const r = data as Record<string, unknown>;
++    return {
++      data: {
++        chaletsLinked: Number(r.chalets_linked ?? 0),
++        subscriptionsLinked: Number(r.subscriptions_linked ?? 0),
++      },
++      error: null,
++    };
++  } catch (err) {
++    return { data: null, error: formatSupabaseError(err, 'تعذر ربط الحساب.') };
++  }
++}
+diff --git a/src/services/authService.ts b/src/services/authService.ts
+new file mode 100644
+index 0000000..b1de00c
+--- /dev/null
++++ b/src/services/authService.ts
+@@ -0,0 +1,159 @@
++/**
++ * المصادقة عبر Supabase Auth (بريد + كلمة مرور) بدل "جلسة هاتف" المحلية.
++ *
++ * - الهوية الحقيقية هي auth.uid() في قاعدة البيانات؛ لا شيء هنا يمنح صلاحية بحد ذاته.
++ * - الدور (guest/owner/admin) يُقرأ من جدول profiles ولا يستطيع المستخدم تعديله (انظر 006_secure_v2.sql).
++ * - الإدارة = profiles.role = 'admin' فقط، وتُمنح من SQL Editor.
++ */
++import { normalizeEgyptianPhone } from '@/data/subscriptions';
++import { isSupabaseConfigured, requireSupabase, supabase } from '@/lib/supabase';
++import type { AuthRole, OwnerSession } from '@/types/chalet';
++import { formatSupabaseError } from '@/utils/arabicErrors';
++
++export type AuthResult<T> = { data: T; error: null } | { data: null; error: string };
++
++const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
++
++function asRole(value: unknown): AuthRole {
++  return value === 'admin' || value === 'owner' ? value : 'guest';
++}
++
++/** يقرأ الجلسة المحفوظة ثم الملف الشخصي. يعيد null إن لم يكن هناك مستخدم مسجّل. */
++export async function loadAuthSession(): Promise<OwnerSession | null> {
++  if (!isSupabaseConfigured || !supabase) return null;
++  const { data: sessionData } = await supabase.auth.getSession();
++  const user = sessionData.session?.user;
++  if (!user) return null;
++
++  const { data: profile } = await supabase
++    .from('profiles')
++    .select('name, phone, role')
++    .eq('id', user.id)
++    .maybeSingle();
++
++  const row = (profile ?? {}) as { name?: unknown; phone?: unknown; role?: unknown };
++  return {
++    userId: user.id,
++    email: user.email ?? '',
++    name: String(row.name ?? '') || String(user.user_metadata?.name ?? ''),
++    phone: String(row.phone ?? '') || String(user.user_metadata?.phone ?? ''),
++    role: asRole(row.role),
++  };
++}
++
++export async function signUpWithEmail(input: {
++  name: string;
++  email: string;
++  password: string;
++  phone: string;
++}): Promise<AuthResult<{ needsEmailConfirmation: boolean }>> {
++  const name = input.name.trim();
++  const email = input.email.trim().toLowerCase();
++  const phone = normalizeEgyptianPhone(input.phone);
++
++  if (name.length < 3) return { data: null, error: 'يرجى إدخال الاسم ثلاثياً على الأقل.' };
++  if (!EMAIL_RE.test(email)) return { data: null, error: 'البريد الإلكتروني غير صحيح.' };
++  if (input.password.length < 8) {
++    return { data: null, error: 'كلمة المرور يجب ألا تقل عن 8 أحرف.' };
++  }
++  if (!/^01[0125][0-9]{8}$/.test(phone)) {
++    return { data: null, error: 'يرجى إدخال رقم موبايل مصري صحيح (مثال: 01012345678).' };
++  }
++
++  try {
++    const sb = requireSupabase();
++    // لا نرسل role: الدور يُحدَّد في الخادم دائماً guest
++    const { data, error } = await sb.auth.signUp({
++      email,
++      password: input.password,
++      options: { data: { name, phone }, emailRedirectTo: window.location.origin },
++    });
++    if (error) return { data: null, error: formatSupabaseError(error, 'تعذر إنشاء الحساب.') };
++
++    // عند تفعيل تأكيد البريد يعيد Supabase مستخدماً بلا هويات إن كان البريد مسجلاً مسبقاً
++    if (data.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) {
++      return { data: null, error: 'هذا البريد مسجّل بالفعل، سجّل الدخول بدلاً من إنشاء حساب.' };
++    }
++    return { data: { needsEmailConfirmation: !data.session }, error: null };
++  } catch (err) {
++    return { data: null, error: formatSupabaseError(err, 'تعذر إنشاء الحساب.') };
++  }
++}
++
++export async function signInWithEmail(
++  email: string,
++  password: string
++): Promise<AuthResult<OwnerSession>> {
++  if (!EMAIL_RE.test(email.trim())) return { data: null, error: 'البريد الإلكتروني غير صحيح.' };
++  try {
++    const sb = requireSupabase();
++    const { error } = await sb.auth.signInWithPassword({ email: email.trim().toLowerCase(), password });
++    if (error) return { data: null, error: formatSupabaseError(error, 'تعذر تسجيل الدخول.') };
++    const session = await loadAuthSession();
++    if (!session) return { data: null, error: 'تعذر قراءة بيانات الحساب بعد تسجيل الدخول.' };
++    return { data: session, error: null };
++  } catch (err) {
++    return { data: null, error: formatSupabaseError(err, 'تعذر تسجيل الدخول.') };
++  }
++}
++
++export async function signOutUser(): Promise<void> {
++  if (!supabase) return;
++  try {
++    await supabase.auth.signOut();
++  } catch {
++    // فشل الخروج البعيد لا يمنع تنظيف الجلسة محلياً
++  }
++}
++
++export async function requestPasswordReset(email: string): Promise<AuthResult<true>> {
++  if (!EMAIL_RE.test(email.trim())) return { data: null, error: 'البريد الإلكتروني غير صحيح.' };
++  try {
++    const { error } = await requireSupabase().auth.resetPasswordForEmail(email.trim().toLowerCase(), {
++      redirectTo: window.location.origin,
++    });
++    if (error) return { data: null, error: formatSupabaseError(error, 'تعذر إرسال رابط الاستعادة.') };
++    return { data: true, error: null };
++  } catch (err) {
++    return { data: null, error: formatSupabaseError(err, 'تعذر إرسال رابط الاستعادة.') };
++  }
++}
++
++/** يحدّث اسم المستخدم وهاتفه (الأعمدة الوحيدة المسموح بتعديلها من العميل) */
++export async function updateMyProfile(input: {
++  userId: string;
++  name?: string;
++  phone?: string;
++}): Promise<AuthResult<true>> {
++  const patch: Record<string, string> = {};
++  if (input.name !== undefined) {
++    if (input.name.trim().length < 3) return { data: null, error: 'يرجى إدخال الاسم ثلاثياً على الأقل.' };
++    patch.name = input.name.trim();
++  }
++  if (input.phone !== undefined) {
++    const phone = normalizeEgyptianPhone(input.phone);
++    if (!/^01[0125][0-9]{8}$/.test(phone)) {
++      return { data: null, error: 'يرجى إدخال رقم موبايل مصري صحيح (مثال: 01012345678).' };
++    }
++    patch.phone = phone;
++  }
++  try {
++    const { error } = await requireSupabase().from('profiles').update(patch).eq('id', input.userId);
++    if (error) return { data: null, error: formatSupabaseError(error, 'تعذر تحديث بياناتك.') };
++    return { data: true, error: null };
++  } catch (err) {
++    return { data: null, error: formatSupabaseError(err, 'تعذر تحديث بياناتك.') };
++  }
++}
++
++/** يستمع لتغيّر حالة الدخول ويعيد الجلسة الكاملة. يعيد دالة إلغاء الاشتراك. */
++export function subscribeToAuth(callback: (session: OwnerSession | null) => void): () => void {
++  if (!supabase) return () => undefined;
++  const { data } = supabase.auth.onAuthStateChange(() => {
++    // لا نستدعي Supabase مباشرة داخل المستمع (قد يسبب تعليقاً)؛ نؤجل التحميل
++    window.setTimeout(() => {
++      void loadAuthSession().then(callback);
++    }, 0);
++  });
++  return () => data.subscription.unsubscribe();
++}
+diff --git a/src/types/chalet.ts b/src/types/chalet.ts
+index caa79c3..6ddc069 100644
+--- a/src/types/chalet.ts
++++ b/src/types/chalet.ts
+@@ -35,6 +35,10 @@ export interface Coordinates {
+ export interface Chalet {
+   id: string;
+   isDemo?: boolean;
++  /** معرّف حساب المالك (Supabase Auth)؛ فارغ للإعلانات القديمة غير المربوطة بحساب */
++  ownerId?: string;
++  /** شارة توثيق حقيقية يمنحها المدير (لا تُحدَّد من المعلن) */
++  ownerVerified?: boolean;
+   title: string;
+   description: string;
+   governorate: string;
+@@ -65,7 +69,7 @@ export interface Chalet {
+ 
+ export type SubscriptionPlanId = 'free' | 'starter' | 'pro' | 'enterprise';
+ 
+-export type SubscriptionStatus = 'pending' | 'active' | 'rejected';
++export type SubscriptionStatus = 'pending' | 'active' | 'rejected' | 'expired';
+ 
+ export interface SubscriptionPlan {
+   id: SubscriptionPlanId;
+@@ -80,6 +84,7 @@ export interface SubscriptionPlan {
+ 
+ export interface SubscriptionRecord {
+   id: string;
++  ownerId?: string;
+   ownerName: string;
+   ownerPhone: string;
+   planId: SubscriptionPlanId;
+@@ -91,12 +96,31 @@ export interface SubscriptionRecord {
+   status: SubscriptionStatus;
+   createdAt: string;
+   reviewedAt?: string;
++  expiresAt?: string;
++  reviewNote?: string;
+ }
+ 
++/** مستخدم مسجّل عبر Supabase Auth (يُقرأ من الجلسة والملف الشخصي، لا من localStorage) */
++export type AuthRole = 'guest' | 'owner' | 'admin';
++
+ export interface OwnerSession {
++  userId: string;
++  email: string;
+   name: string;
++  /** هاتف الملف الشخصي (يُستخدم كرقم تواصل للإعلانات الجديدة) */
+   phone: string;
+-  loggedInAt: string;
++  role: AuthRole;
++}
++
++/** ملخص باقة المالك القادم من الخادم (my_subscription) */
++export interface OwnerSubscriptionSummary {
++  planId: SubscriptionPlanId;
++  planName: string;
++  maxUnits: number;
++  usedUnits: number;
++  featuredEligible: boolean;
++  expiresAt?: string;
++  pendingRequestId?: string;
+ }
+ 
+ export interface FilterState {
+diff --git a/src/utils/__tests__/arabicErrors.test.ts b/src/utils/__tests__/arabicErrors.test.ts
+index 2a88bda..b309f15 100644
+--- a/src/utils/__tests__/arabicErrors.test.ts
++++ b/src/utils/__tests__/arabicErrors.test.ts
+@@ -44,3 +44,19 @@ describe('arabicErrors utilities', () => {
+     expect(() => requireSupabase()).toThrow('Supabase غير مضبوط');
+   });
+ });
++
++describe('رموز أخطاء 006_secure_v2.sql', () => {
++  it.each([
++    ['quota_exceeded', 'الأقصى'],
++    ['rate_limited', 'إظهار الأرقام'],
++    ['invalid_receipt_path', 'الإيصال'],
++    ['owner_missing', 'غير مربوط'],
++    ['plan_is_free', 'المجانية'],
++  ])('يترجم %s', (code, fragment) => {
++    expect(toArabicError(new Error(code))).toContain(fragment);
++  });
++
++  it('forbidden_status لا يُبتلع بمفتاح forbidden الأقصر', () => {
++    expect(toArabicError(new Error('forbidden_status'))).toContain('حالة الإعلان');
++  });
++});
+diff --git a/src/utils/arabicErrors.ts b/src/utils/arabicErrors.ts
+index 78ddba2..fad2613 100644
+--- a/src/utils/arabicErrors.ts
++++ b/src/utils/arabicErrors.ts
+@@ -14,8 +14,23 @@ export const MESSAGES: Record<string, string> = {
+   forbidden: 'غير مسموح لك بهذا الإجراء',
+   'row-level security': 'غير مسموح لك بهذا الإجراء',
+   'duplicate key': 'هذا السجل موجود بالفعل',
++  // رموز دوال 006_secure_v2.sql
++  quota_exceeded: 'وصلت للحد الأقصى لوحدات باقتك. رقّ الباقة لنشر المزيد.',
++  rate_limited: 'تم تجاوز عدد مرات إظهار الأرقام مؤقتاً. حاول بعد قليل.',
++  contact_not_available: 'رقم التواصل غير متاح لهذا الإعلان حالياً.',
++  invalid_plan: 'الباقة المختارة غير صحيحة.',
++  plan_is_free: 'الباقة المجانية لا تحتاج إلى اشتراك.',
++  invalid_receipt_path: 'ملف الإيصال غير صالح، أعد رفعه ثم حاول مجدداً.',
++  owner_missing: 'هذا الاشتراك غير مربوط بحساب معلن بعد. اربط الحساب أولاً.',
++  chalet_not_found: 'الإعلان غير موجود أو غير منشور.',
++  forbidden_status: 'غير مسموح بتغيير حالة الإعلان إلى هذه الحالة.',
++  not_found: 'العنصر المطلوب غير موجود.',
++  chalets_limits_chk: 'إحدى بيانات الإعلان خارج الحدود المسموحة (عنوان طويل، صور كثيرة، أو سعر غير منطقي).',
+ };
+ 
++// الأطول أولاً حتى لا يغلب مفتاح قصير (forbidden) على أطول منه (forbidden_status)
++const MESSAGE_KEYS = Object.keys(MESSAGES).sort((a, b) => b.length - a.length);
++
+ const ARABIC_CHAR_REGEX = /[\u0600-\u06FF]/;
+ 
+ export function toArabicError(
+@@ -24,13 +39,13 @@ export function toArabicError(
+   const msg = err?.message ?? '';
+   const code = err?.code ?? '';
+ 
+-  const exactKey = Object.keys(MESSAGES).find((k) => msg.includes(k));
++  const exactKey = MESSAGE_KEYS.find((k) => msg.includes(k));
+   if (exactKey) {
+     return MESSAGES[exactKey];
+   }
+ 
+   const lowerMsg = msg.toLowerCase();
+-  const caseInsensitiveKey = Object.keys(MESSAGES).find((k) =>
++  const caseInsensitiveKey = MESSAGE_KEYS.find((k) =>
+     lowerMsg.includes(k.toLowerCase())
+   );
+   if (caseInsensitiveKey) {
+@@ -79,7 +94,7 @@ export function formatSupabaseError(err: unknown, fallback?: string): string {
+     return 'هذا البريد الإلكتروني مسجل بالفعل. يمكنك تسجيل الدخول مباشرة.';
+   }
+   if (lowerMsg.includes('password should be at least')) {
+-    return 'كلمة المرور يجب أن تتكون من ٦ أحرف على الأقل.';
++    return 'كلمة المرور ضعيفة، استخدم 8 أحرف على الأقل.';
+   }
+   if (lowerMsg.includes('jwt expired') || lowerMsg.includes('session not found')) {
+     return MESSAGES.not_authenticated;
+diff --git a/src/vite-env.d.ts b/src/vite-env.d.ts
+index bc19a1a..388c9dd 100644
+--- a/src/vite-env.d.ts
++++ b/src/vite-env.d.ts
+@@ -7,7 +7,6 @@ interface ImportMetaEnv {
+   readonly VITE_PUBLIC_SUPABASE_ANON_KEY?: string;
+   readonly VITE_SUPABASE_PUBLISHABLE_KEY?: string;
+   readonly VITE_SUBSCRIPTION_WALLET?: string;
+-  readonly VITE_ADMIN_PIN?: string;
+   readonly VITE_SHOW_DEMO?: string;
+   readonly VITE_SUPPORT_EMAIL?: string;
+   readonly VITE_SUPPORT_WHATSAPP?: string;
+diff --git a/supabase/migrations/006_secure_v2.sql b/supabase/migrations/006_secure_v2.sql
+new file mode 100644
+index 0000000..2e468a1
+--- /dev/null
++++ b/supabase/migrations/006_secure_v2.sql
+@@ -0,0 +1,873 @@
++-- =====================================================================
++-- AgzStay — 006_secure_v2.sql  (إصلاح الأمان لمخطط V2)
++--
++-- يعالج مشكلتين حرجتين وجدتا في الترحيلات 001–005:
++--
++--  1) ثغرة تصعيد الصلاحيات: الدوال التي تحمي الدور (role) والنشر والحجوزات
++--     كانت تفحص current_user داخل دوال SECURITY DEFINER، وقيمته فيها دائماً
++--     مالك الدالة (postgres) فيتخطى الفحص كل المستخدمين. النتيجة: أي مستخدم
++--     مسجّل يستطيع تحويل نفسه إلى admin بتحديث صف profiles الخاص به.
++--     الإصلاح: دالة is_privileged_session() تعتمد على current_setting('role')
++--     الذي يضبطه PostgREST (anon / authenticated / service_role).
++--
++--  2) الترحيل 005 فتح قاعدة البيانات: سياسات using (true) للقراءة والكتابة والحذف
++--     على chalets و subscriptions، وباكتات رفع مفتوحة، وإيصالات عامة.
++--     الإصلاح: ملكية الإعلانات بـ auth.uid()، وأرقام الملاك في جدول خاص مع
++--     دالة كشف محدودة المعدل، واشتراكات لا تُفعَّل إلا من المدير عبر RPC،
++--     وحدود الباقات والشارة المميزة تُفرض في قاعدة البيانات.
++--
++-- ⚠️ هذا الترحيل يغيّر عقد الواجهة (انظر PROMPT_SECURITY_FIXES.md):
++--    - أُزيل العمود chalets.owner_phone (ينتقل إلى chalet_contacts الخاص).
++--    - الكتابة تتطلب تسجيل دخول Supabase Auth (لا جلسة هاتف محلية).
++--    - الاشتراكات عبر RPC: request_subscription / admin_review_subscription.
++--    اختبره على مشروع staging ونفّذه مع نشر الواجهة الجديدة معاً.
++--
++-- يُشغَّل بعد 001–005. آمن لإعادة التشغيل (idempotent) قدر الإمكان.
++-- =====================================================================
++
++begin;
++
++-- ---------------------------------------------------------------------
++-- 0) هل الجلسة "مميزة"؟ (SQL Editor / service_role / مدير)
++-- ---------------------------------------------------------------------
++-- ملاحظة: current_setting('role') هو ما يضبطه PostgREST (SET LOCAL ROLE)، ولا يتغير
++-- داخل دوال SECURITY DEFINER بعكس current_user. من SQL Editor تكون قيمته 'none'.
++create or replace function public.is_privileged_session()
++returns boolean
++language sql
++stable
++security definer
++set search_path = public, extensions
++as $$
++  select coalesce(current_setting('role', true), 'none')
++           in ('none', 'postgres', 'supabase_admin', 'service_role')
++         or public.is_admin();
++$$;
++
++revoke all on function public.is_privileged_session() from public;
++grant execute on function public.is_privileged_session() to anon, authenticated;
++
++-- ---------------------------------------------------------------------
++-- 1) إصلاح الدوال التي كانت تفحص current_user (يُستخرج نصها من 002/003 مع الاستبدال)
++-- ---------------------------------------------------------------------
++-- حماية الدور وحالة التوثيق في profiles
++--  - المسموح ذاتياً فقط: guest → owner لحسابه هو (become_host)، ولا admin أبداً.
++--  - pg_trigger_depth() > 1 يعني تحديثاً داخلياً من تريجر آخر (مثل مزامنة التوثيق).
++create or replace function public.prevent_profile_role_self_change()
++returns trigger
++language plpgsql
++security definer
++set search_path = public, extensions
++as $$
++begin
++  if public.is_privileged_session() or pg_trigger_depth() > 1 then
++    return new;
++  end if;
++
++  if new.role is distinct from old.role then
++    if not (old.role = 'guest' and new.role = 'owner' and old.id = auth.uid()) then
++      raise exception 'forbidden';
++    end if;
++  end if;
++
++  if new.verification_status is distinct from old.verification_status then
++    raise exception 'forbidden';
++  end if;
++
++  return new;
++end;
++$$;
++
++-- طبقة ثانية: لا يستطيع المستخدم تحديث إلا أعمدته الآمنة عبر الـ API
++revoke update on public.profiles from anon, authenticated;
++grant update (name, phone, advertiser_type) on public.profiles to authenticated;
++
++
++-- handle_owner_verification_rules (أصلها في 003_profile_host_upgrade.sql؛ استُبدل فحص current_user بـ is_privileged_session())
++create or replace function public.handle_owner_verification_rules()
++returns trigger
++language plpgsql
++security definer
++set search_path = public, extensions
++as $$
++begin
++  if tg_op = 'INSERT' then
++    if not public.is_admin() and not public.is_privileged_session() then
++      new.status := 'pending';
++      new.reviewed_at := null;
++      new.rejection_reason := null;
++      new.reviewed_by := null;
++    end if;
++
++    update public.profiles
++    set verification_status = new.status
++    where id = new.owner_id;
++
++    return new;
++  end if;
++
++  if tg_op = 'UPDATE' then
++    if not public.is_admin() and not public.is_privileged_session() then
++      if old.owner_id = auth.uid() and new.owner_id = auth.uid() then
++        new.status := 'pending';
++        new.reviewed_at := null;
++        new.rejection_reason := null;
++        new.reviewed_by := null;
++        new.submitted_at := now();
++
++        update public.profiles
++        set verification_status = 'pending'
++        where id = new.owner_id;
++
++        return new;
++      end if;
++      raise exception 'forbidden';
++    end if;
++
++    update public.profiles
++    set verification_status = new.status
++    where id = new.owner_id;
++
++    if new.status = 'verified' then
++      new.reviewed_at := now();
++      new.rejection_reason := null;
++      update public.profiles
++      set role = case when role = 'guest' then 'owner' else role end,
++          verification_status = 'verified'
++      where id = new.owner_id;
++
++      update public.chalets
++      set owner_verified = true,
++          availability_status = case
++            when availability_status = 'pending_review' then 'active'
++            else availability_status
++          end
++      where owner_id = new.owner_id;
++    elsif new.status = 'unverified' then
++      new.reviewed_at := now();
++      update public.chalets
++      set owner_verified = false,
++          availability_status = case
++            when availability_status = 'active' then 'pending_review'
++            else availability_status
++          end
++      where owner_id = new.owner_id;
++    end if;
++  end if;
++
++  return new;
++end;
++$$;
++
++
++-- ملاحظة: الدالة enforce_booking_update_rules (الحجوزات) فيها نفس النمط (current_user)،
++-- لكنها غير مستخدمة في V2 ولم تُغيَّر هنا. راجعها قبل إعادة تفعيل الحجز الداخلي.
++
++-- ---------------------------------------------------------------------
++-- 2) إعدادات التطبيق (يضبطها المدير من SQL Editor فقط)
++-- ---------------------------------------------------------------------
++create table if not exists public.app_settings (
++  key        text primary key,
++  value      text not null,
++  updated_at timestamptz not null default now()
++);
++
++insert into public.app_settings (key, value) values
++  ('require_verified_to_publish', 'false'),   -- true = الإعلان الجديد لغير الموثق يذهب لـ pending_review
++  ('contact_reveal_limit_per_hour', '40')     -- حد كشف أرقام الملاك لكل زائر/ساعة
++on conflict (key) do nothing;
++
++alter table public.app_settings enable row level security;   -- بلا سياسات = لا وصول من الـ API
++revoke all on public.app_settings from anon, authenticated;
++
++create or replace function public.app_setting(p_key text, p_default text default null)
++returns text
++language sql
++stable
++security definer
++set search_path = public
++as $$
++  select coalesce((select s.value from public.app_settings s where s.key = p_key), p_default);
++$$;
++revoke all on function public.app_setting(text, text) from public, anon, authenticated;
++
++-- ---------------------------------------------------------------------
++-- 3) الباقات (مصدر الحقيقة في قاعدة البيانات، لا في الواجهة)
++-- ---------------------------------------------------------------------
++create table if not exists public.plans (
++  id                text primary key,
++  name              text    not null,
++  price             numeric not null check (price >= 0),
++  max_units         integer not null check (max_units >= 1),
++  featured_eligible boolean not null default false,
++  duration_days     integer not null default 30 check (duration_days > 0),  -- افتراض: اشتراك شهري
++  sort_order        integer not null default 0
++);
++
++insert into public.plans (id, name, price, max_units, featured_eligible, duration_days, sort_order) values
++  ('free',       'الباقة المجانية',               0,    1, false, 36500, 0),
++  ('starter',    'باقة البداية (Starter)',        500,  5, true,  30,    1),
++  ('pro',        'الباقة الاحترافية (Pro)',       800,  10, true, 30,    2),
++  ('enterprise', 'باقة الشركات والمكاتب',         1500, 20, true, 30,    3)
++on conflict (id) do update
++  set name = excluded.name, price = excluded.price, max_units = excluded.max_units,
++      featured_eligible = excluded.featured_eligible, duration_days = excluded.duration_days,
++      sort_order = excluded.sort_order;
++
++alter table public.plans enable row level security;
++drop policy if exists plans_public_read on public.plans;
++create policy plans_public_read on public.plans for select using (true);
++revoke all on public.plans from anon, authenticated;
++grant select on public.plans to anon, authenticated;
++
++-- ---------------------------------------------------------------------
++-- 4) الاشتراكات: ربط بالمستخدم + انتهاء صلاحية + كتابة عبر RPC فقط
++-- ---------------------------------------------------------------------
++alter table public.subscriptions add column if not exists owner_id    uuid references public.profiles (id) on delete set null;
++alter table public.subscriptions add column if not exists expires_at  timestamptz;
++alter table public.subscriptions add column if not exists review_note text;
++
++alter table public.subscriptions drop constraint if exists subscriptions_status_check;
++alter table public.subscriptions add constraint subscriptions_status_check
++  check (status in ('pending', 'active', 'rejected', 'expired'));
++
++alter table public.subscriptions drop constraint if exists subscriptions_plan_id_check;
++alter table public.subscriptions drop constraint if exists subscriptions_plan_fk;
++alter table public.subscriptions add constraint subscriptions_plan_fk
++  foreign key (plan_id) references public.plans (id);
++
++create index if not exists idx_subscriptions_owner_id on public.subscriptions (owner_id, status);
++create unique index if not exists subscriptions_one_pending_per_owner
++  on public.subscriptions (owner_id) where status = 'pending' and owner_id is not null;
++
++alter table public.subscriptions enable row level security;
++drop policy if exists subscriptions_v2_select on public.subscriptions;
++drop policy if exists subscriptions_v2_insert on public.subscriptions;
++drop policy if exists subscriptions_v2_update on public.subscriptions;
++drop policy if exists subscriptions_select_own_or_admin on public.subscriptions;
++create policy subscriptions_select_own_or_admin on public.subscriptions
++  for select using (owner_id = auth.uid() or public.is_admin());
++
++revoke all on public.subscriptions from anon, authenticated;
++grant select on public.subscriptions to authenticated;   -- لا إدراج ولا تعديل ولا حذف من العميل
++
++-- الباقة الفعّالة لمالك (الاشتراك المدفوع غير المنتهي الأعلى سعة، وإلا المجانية)
++create or replace function public.owner_plan(p_owner uuid)
++returns public.plans
++language plpgsql
++stable
++security definer
++set search_path = public
++as $$
++declare
++  r public.plans;
++begin
++  select p.* into r
++    from public.subscriptions s
++    join public.plans p on p.id = s.plan_id
++   where s.owner_id = p_owner
++     and s.status = 'active'
++     and (s.expires_at is null or s.expires_at > now())
++   order by p.max_units desc
++   limit 1;
++
++  if not found then
++    select * into r from public.plans where id = 'free';
++  end if;
++  return r;
++end;
++$$;
++
++create or replace function public.owner_max_units(p_owner uuid)
++returns integer
++language sql
++stable
++security definer
++set search_path = public
++as $$ select (public.owner_plan(p_owner)).max_units $$;
++
++create or replace function public.owner_featured_eligible(p_owner uuid)
++returns boolean
++language sql
++stable
++security definer
++set search_path = public
++as $$ select (public.owner_plan(p_owner)).featured_eligible $$;
++
++revoke all on function public.owner_plan(uuid), public.owner_max_units(uuid),
++                       public.owner_featured_eligible(uuid) from public, anon, authenticated;
++
++-- مزامنة شارة "مميز" مع باقة المالك الحالية (داخلي؛ يستدعيه المدير عبر RPC أو الجدولة)
++create or replace function public.refresh_owner_featured(p_owner uuid)
++returns void
++language plpgsql
++security definer
++set search_path = public
++as $$
++declare
++  v_eligible boolean := public.owner_featured_eligible(p_owner);
++begin
++  update public.chalets c
++     set is_featured = v_eligible
++   where c.owner_id = p_owner
++     and c.is_featured is distinct from v_eligible;
++end;
++$$;
++revoke all on function public.refresh_owner_featured(uuid) from public, anon, authenticated;
++
++-- طلب اشتراك مدفوع: السعر والسعة يؤخذان من جدول plans لا من العميل
++create or replace function public.request_subscription(p_plan_id text, p_receipt_path text default null)
++returns public.subscriptions
++language plpgsql
++security definer
++set search_path = public
++as $$
++declare
++  v_uid  uuid := auth.uid();
++  v_plan public.plans;
++  v_prof public.profiles;
++  v_sub  public.subscriptions;
++begin
++  if v_uid is null then raise exception 'not_authenticated'; end if;
++
++  select * into v_plan from public.plans where id = p_plan_id;
++  if not found then raise exception 'invalid_plan'; end if;
++  if v_plan.price = 0 then raise exception 'plan_is_free'; end if;
++
++  if p_receipt_path is null or p_receipt_path not like v_uid::text || '/%' then
++    raise exception 'invalid_receipt_path';
++  end if;
++
++  if exists (select 1 from public.subscriptions s where s.owner_id = v_uid and s.status = 'pending') then
++    raise exception 'duplicate_request';
++  end if;
++
++  select * into v_prof from public.profiles where id = v_uid;
++
++  insert into public.subscriptions
++    (owner_id, owner_name, owner_phone, plan_id, plan_name, price, max_units, receipt_path, status)
++  values
++    (v_uid, coalesce(nullif(btrim(v_prof.name), ''), 'معلن AgzStay'), coalesce(v_prof.phone, ''),
++     v_plan.id, v_plan.name, v_plan.price, v_plan.max_units, p_receipt_path, 'pending')
++  returning * into v_sub;
++
++  return v_sub;
++end;
++$$;
++
++-- مراجعة المدير: تفعيل أو رفض (التفعيل يستبدل أي باقة سابقة فوراً ويحدّث الشارة)
++create or replace function public.admin_review_subscription(
++  p_id text, p_approve boolean, p_note text default null
++)
++returns public.subscriptions
++language plpgsql
++security definer
++set search_path = public
++as $$
++declare
++  v_sub  public.subscriptions;
++  v_plan public.plans;
++begin
++  if not public.is_admin() then raise exception 'forbidden'; end if;
++
++  select * into v_sub from public.subscriptions where id = p_id for update;
++  if not found then raise exception 'not_found'; end if;
++  if v_sub.status <> 'pending' then raise exception 'invalid_state'; end if;
++
++  if p_approve then
++    if v_sub.owner_id is null then raise exception 'owner_missing'; end if;
++    select * into v_plan from public.plans where id = v_sub.plan_id;
++
++    update public.subscriptions set status = 'expired'
++     where owner_id = v_sub.owner_id and status = 'active';
++
++    update public.subscriptions
++       set status = 'active', reviewed_at = now(),
++           expires_at = now() + make_interval(days => v_plan.duration_days),
++           review_note = left(p_note, 300)
++     where id = p_id
++     returning * into v_sub;
++  else
++    update public.subscriptions
++       set status = 'rejected', reviewed_at = now(), review_note = left(p_note, 300)
++     where id = p_id
++     returning * into v_sub;
++  end if;
++
++  if v_sub.owner_id is not null then
++    perform public.refresh_owner_featured(v_sub.owner_id);
++  end if;
++  return v_sub;
++end;
++$$;
++
++-- للجدولة (pg_cron): إنهاء الاشتراكات المنتهية وإزالة الشارة
++create or replace function public.expire_subscriptions()
++returns integer
++language plpgsql
++security definer
++set search_path = public
++as $$
++declare
++  r record;
++  n integer := 0;
++begin
++  for r in
++    update public.subscriptions
++       set status = 'expired'
++     where status = 'active' and expires_at is not null and expires_at <= now()
++     returning owner_id
++  loop
++    n := n + 1;
++    if r.owner_id is not null then perform public.refresh_owner_featured(r.owner_id); end if;
++  end loop;
++  return n;
++end;
++$$;
++
++-- ملخص اشتراك المستخدم الحالي للوحة المالك
++create or replace function public.my_subscription()
++returns jsonb
++language plpgsql
++stable
++security definer
++set search_path = public
++as $$
++declare
++  v_uid  uuid := auth.uid();
++  v_plan public.plans;
++  v_exp  timestamptz;
++  v_pend public.subscriptions;
++begin
++  if v_uid is null then raise exception 'not_authenticated'; end if;
++  v_plan := public.owner_plan(v_uid);
++
++  select max(s.expires_at) into v_exp
++    from public.subscriptions s
++   where s.owner_id = v_uid and s.status = 'active' and s.plan_id = v_plan.id;
++
++  select * into v_pend from public.subscriptions s
++   where s.owner_id = v_uid and s.status = 'pending' limit 1;
++
++  return jsonb_build_object(
++    'plan_id', v_plan.id,
++    'plan_name', v_plan.name,
++    'max_units', v_plan.max_units,
++    'featured_eligible', v_plan.featured_eligible,
++    'used_units', (select count(*) from public.chalets c where c.owner_id = v_uid),
++    'expires_at', case when v_plan.id = 'free' then null else v_exp end,
++    'pending_request', case when v_pend.id is null then null
++                            else jsonb_build_object('id', v_pend.id, 'plan_id', v_pend.plan_id) end
++  );
++end;
++$$;
++
++-- ---------------------------------------------------------------------
++-- 5) الإعلانات: ملكية حقيقية، حماية الأعمدة، الحد حسب الباقة، حدود البيانات
++-- ---------------------------------------------------------------------
++alter table public.chalets drop constraint if exists chalets_availability_status_check;
++alter table public.chalets add constraint chalets_availability_status_check
++  check (availability_status in ('active', 'rented', 'hidden', 'draft', 'pending_review', 'suspended'));
++
++-- التقييم الافتراضي 5.0 مع صفر مراجعات كان يضلّل الزوار
++alter table public.chalets alter column rating set default 0;
++update public.chalets set rating = 0 where reviews_count = 0 and rating = 5;
++
++-- حدود حجم البيانات (NOT VALID: تُفرض على الجديد ولا تفشل بسبب صفوف قديمة)
++alter table public.chalets drop constraint if exists chalets_limits_chk;
++alter table public.chalets add constraint chalets_limits_chk check (
++  char_length(title) between 3 and 150
++  and char_length(description) <= 5000
++  and cardinality(images) <= 20
++  and cardinality(amenities) <= 40
++  and cardinality(rules) <= 30
++  and price_per_night <= 1000000
++) not valid;
++
++-- السياسات: نحذف المفتوحة (005) وأي سياسات أقدم متعارضة ثم نعيد البناء
++do $$
++declare
++  pol record;
++begin
++  for pol in select policyname from pg_policies where schemaname = 'public' and tablename = 'chalets' loop
++    execute format('drop policy %I on public.chalets', pol.policyname);
++  end loop;
++end $$;
++
++create policy chalets_select_public_or_own on public.chalets for select
++  using (availability_status in ('active', 'rented') or owner_id = auth.uid() or public.is_admin());
++
++create policy chalets_insert_own on public.chalets for insert
++  to authenticated
++  with check (owner_id = auth.uid());
++
++create policy chalets_update_own_or_admin on public.chalets for update
++  to authenticated
++  using (owner_id = auth.uid() or public.is_admin())
++  with check (owner_id = auth.uid() or public.is_admin());
++
++create policy chalets_delete_own_or_admin on public.chalets for delete
++  to authenticated
++  using (owner_id = auth.uid() or public.is_admin());
++
++-- حماية الأعمدة المُدارة من النظام (تتجاهل ما يرسله العميل بصمت، وتفرض الحد)
++create or replace function public.chalets_protect()
++returns trigger
++language plpgsql
++security definer
++set search_path = public
++as $$
++begin
++  if public.is_privileged_session() or pg_trigger_depth() > 1 then
++    return new;
++  end if;
++
++  if tg_op = 'INSERT' then
++    new.owner_id := auth.uid();
++    if new.owner_id is null then raise exception 'not_authenticated'; end if;
++
++    new.is_featured := public.owner_featured_eligible(new.owner_id);
++    new.featured := false;
++    new.rating := 0;
++    new.reviews_count := 0;
++    new.owner_verified := false;
++    new.host_tier := 'free';
++    new.verified_live_photos := false;
++    new.live_photos_verified_at := null;
++    if new.availability_status = 'suspended' then raise exception 'forbidden_status'; end if;
++
++    if (select count(*) from public.chalets c where c.owner_id = new.owner_id)
++         >= public.owner_max_units(new.owner_id) then
++      raise exception 'quota_exceeded';
++    end if;
++  else
++    new.owner_id := old.owner_id;
++    new.is_featured := old.is_featured;
++    new.featured := old.featured;
++    new.rating := old.rating;
++    new.reviews_count := old.reviews_count;
++    new.owner_verified := old.owner_verified;
++    new.host_tier := old.host_tier;
++    new.verified_live_photos := old.verified_live_photos;
++    new.live_photos_verified_at := old.live_photos_verified_at;
++
++    if old.availability_status = 'suspended' and new.availability_status <> 'suspended' then
++      raise exception 'listing_suspended';
++    end if;
++    if new.availability_status = 'suspended' and old.availability_status <> 'suspended' then
++      raise exception 'forbidden_status';
++    end if;
++  end if;
++  return new;
++end;
++$$;
++
++drop trigger if exists trg_a_chalets_protect on public.chalets;
++create trigger trg_a_chalets_protect
++  before insert or update on public.chalets
++  for each row execute function public.chalets_protect();
++
++-- بوابة النشر: التوثيق اختياري افتراضياً (شارة فقط)، ويمكن إلزامه من app_settings
++create or replace function public.enforce_chalet_verified_owner_publish()
++returns trigger
++language plpgsql
++security definer
++set search_path = public, extensions
++as $$
++declare
++  v_verified boolean;
++begin
++  if public.is_privileged_session() then
++    return new;
++  end if;
++
++  select exists (
++    select 1 from public.owner_verifications ov
++     where ov.owner_id = new.owner_id and ov.status = 'verified'
++  ) into v_verified;
++
++  new.owner_verified := coalesce(v_verified, false);
++
++  if not coalesce(v_verified, false)
++     and new.availability_status = 'active'
++     and public.app_setting('require_verified_to_publish', 'false') = 'true' then
++    new.availability_status := 'pending_review';
++  end if;
++
++  return new;
++end;
++$$;
++
++-- ---------------------------------------------------------------------
++-- 6) أرقام الملاك: جدول خاص + كشف محدود المعدل
++-- ---------------------------------------------------------------------
++alter table public.chalet_contacts alter column owner_id drop not null;
++
++-- نقل الأرقام الحالية من chalets.owner_phone (إن وُجد العمود) قبل حذفه
++do $$
++begin
++  if exists (select 1 from information_schema.columns
++              where table_schema = 'public' and table_name = 'chalets' and column_name = 'owner_phone') then
++    insert into public.chalet_contacts (chalet_id, owner_id, owner_phone)
++    select c.id, c.owner_id, btrim(c.owner_phone)
++      from public.chalets c
++     where c.owner_phone is not null and btrim(c.owner_phone) <> ''
++    on conflict (chalet_id) do nothing;
++
++    alter table public.chalets drop column owner_phone;
++  end if;
++end $$;
++
++create or replace function public.chalet_contacts_before()
++returns trigger
++language plpgsql
++security definer
++set search_path = public
++as $$
++begin
++  new.owner_id := (select c.owner_id from public.chalets c where c.id = new.chalet_id);
++  new.owner_phone := btrim(new.owner_phone);
++  if new.owner_phone !~ '^01[0125][0-9]{8}$' then
++    raise exception 'phone_invalid';
++  end if;
++  return new;
++end;
++$$;
++
++drop trigger if exists trg_chalet_contacts_before on public.chalet_contacts;
++create trigger trg_chalet_contacts_before
++  before insert or update on public.chalet_contacts
++  for each row when (public.is_privileged_session() is not true)
++  execute function public.chalet_contacts_before();
++
++do $$
++declare
++  pol record;
++begin
++  for pol in select policyname from pg_policies where schemaname = 'public' and tablename = 'chalet_contacts' loop
++    execute format('drop policy %I on public.chalet_contacts', pol.policyname);
++  end loop;
++end $$;
++
++create policy chalet_contacts_manage_own on public.chalet_contacts for all
++  to authenticated
++  using (exists (select 1 from public.chalets c
++                  where c.id = chalet_contacts.chalet_id and (c.owner_id = auth.uid() or public.is_admin())))
++  with check (exists (select 1 from public.chalets c
++                       where c.id = chalet_contacts.chalet_id and (c.owner_id = auth.uid() or public.is_admin())));
++
++revoke all on public.chalet_contacts from anon, authenticated;
++grant select, insert, update, delete on public.chalet_contacts to authenticated;
++
++-- سجل الكشف (لتحديد المعدل ولاحقاً إحصائيات النقرات)؛ لا وصول مباشر من الـ API
++create table if not exists public.contact_reveals (
++  id         bigint generated always as identity primary key,
++  actor      text not null,
++  chalet_id  text not null,
++  created_at timestamptz not null default now()
++);
++create index if not exists idx_contact_reveals_actor on public.contact_reveals (actor, created_at desc);
++alter table public.contact_reveals enable row level security;
++revoke all on public.contact_reveals from anon, authenticated;
++
++-- هوية المستدعي: مستخدم مسجّل أو عنوان IP (من ترويسات PostgREST)
++create or replace function public.client_actor()
++returns text
++language plpgsql
++stable
++security definer
++set search_path = public
++as $$
++declare
++  h  json;
++  ip text;
++begin
++  if auth.uid() is not null then
++    return 'u:' || auth.uid()::text;
++  end if;
++  begin
++    h := nullif(current_setting('request.headers', true), '')::json;
++  exception when others then
++    h := null;
++  end;
++  ip := btrim(split_part(coalesce(h ->> 'x-forwarded-for', h ->> 'cf-connecting-ip', ''), ',', 1));
++  return 'ip:' || coalesce(nullif(ip, ''), 'unknown');
++end;
++$$;
++revoke all on function public.client_actor() from public, anon, authenticated;
++
++create or replace function public.reveal_listing_contact(p_chalet_id text)
++returns text
++language plpgsql
++security definer
++set search_path = public
++as $$
++declare
++  v_actor text := public.client_actor();
++  v_limit integer := coalesce(nullif(public.app_setting('contact_reveal_limit_per_hour', '40'), '')::integer, 40);
++  v_phone text;
++begin
++  if not exists (select 1 from public.chalets c
++                  where c.id = p_chalet_id and c.availability_status in ('active', 'rented')) then
++    raise exception 'chalet_not_found';
++  end if;
++
++  if (select count(*) from public.contact_reveals r
++       where r.actor = v_actor and r.created_at > now() - interval '1 hour') >= v_limit then
++    raise exception 'rate_limited';
++  end if;
++
++  select cc.owner_phone into v_phone from public.chalet_contacts cc where cc.chalet_id = p_chalet_id;
++  if v_phone is null then raise exception 'contact_not_available'; end if;
++
++  insert into public.contact_reveals (actor, chalet_id) values (v_actor, p_chalet_id);
++  return v_phone;
++end;
++$$;
++
++create or replace function public.purge_contact_reveals()
++returns integer
++language sql
++security definer
++set search_path = public
++as $$
++  with d as (delete from public.contact_reveals where created_at < now() - interval '30 days' returning 1)
++  select count(*)::integer from d;
++$$;
++revoke all on function public.purge_contact_reveals() from public, anon, authenticated;
++
++-- ---------------------------------------------------------------------
++-- 7) ربط الإعلانات والاشتراكات القديمة (جلسة هاتف) بحساب حقيقي — بقرار المدير
++-- ---------------------------------------------------------------------
++-- المدير يتحقق من الهاتف خارج النظام (اتصال/واتساب) ثم ينفّذ:
++--   select public.admin_link_legacy_owner('<user uuid>', '01012345678');
++create or replace function public.admin_link_legacy_owner(p_user uuid, p_phone text)
++returns jsonb
++language plpgsql
++security definer
++set search_path = public
++as $$
++declare
++  v_chalets integer;
++  v_subs    integer := 0;
++  r         record;
++begin
++  if not public.is_admin() and not public.is_privileged_session() then raise exception 'forbidden'; end if;
++  if not exists (select 1 from public.profiles where id = p_user) then raise exception 'not_found'; end if;
++
++  update public.chalets c set owner_id = p_user
++   where c.owner_id is null
++     and c.id in (select cc.chalet_id from public.chalet_contacts cc where cc.owner_phone = btrim(p_phone));
++  get diagnostics v_chalets = row_count;
++
++  update public.chalet_contacts set owner_id = p_user
++   where owner_id is null and owner_phone = btrim(p_phone);
++
++  -- الاشتراكات القديمة: طلب معلّق واحد فقط لكل مالك (الأحدث يبقى، والباقي يُرفض كمستبدَل)
++  for r in
++    select s.id, s.status from public.subscriptions s
++     where s.owner_id is null and s.owner_phone = btrim(p_phone)
++     order by s.created_at desc
++  loop
++    if r.status = 'pending'
++       and exists (select 1 from public.subscriptions x where x.owner_id = p_user and x.status = 'pending') then
++      update public.subscriptions
++         set owner_id = p_user, status = 'rejected', reviewed_at = now(),
++             review_note = 'استُبدل بطلب أحدث عند ربط الحساب'
++       where id = r.id;
++    else
++      update public.subscriptions set owner_id = p_user where id = r.id;
++    end if;
++    v_subs := v_subs + 1;
++  end loop;
++
++  perform public.refresh_owner_featured(p_user);
++  return jsonb_build_object('chalets_linked', v_chalets, 'subscriptions_linked', v_subs);
++end;
++$$;
++
++-- ---------------------------------------------------------------------
++-- 8) الصلاحيات على جدول chalets
++-- ---------------------------------------------------------------------
++revoke all on public.chalets from anon, authenticated;
++grant select on public.chalets to anon, authenticated;
++grant insert, update, delete on public.chalets to authenticated;
++
++-- ---------------------------------------------------------------------
++-- 9) التخزين: صور الإعلانات عامة للقراءة، والإيصالات خاصة، والكتابة داخل مجلد المستخدم
++-- ---------------------------------------------------------------------
++update storage.buckets set public = false where id = 'receipts';
++
++drop policy if exists property_images_v2_select on storage.objects;
++drop policy if exists property_images_v2_insert on storage.objects;
++drop policy if exists property_images_v2_delete on storage.objects;
++drop policy if exists receipts_v2_select on storage.objects;
++drop policy if exists receipts_v2_insert on storage.objects;
++drop policy if exists property_images_select_own on storage.objects;
++drop policy if exists property_images_insert_own on storage.objects;
++drop policy if exists property_images_update_own on storage.objects;
++drop policy if exists property_images_delete_own on storage.objects;
++drop policy if exists receipts_select_own_or_admin on storage.objects;
++drop policy if exists receipts_insert_own on storage.objects;
++
++-- الصور: القراءة العامة تعمل عبر الرابط العام للـ bucket؛ هذه السياسات للإدارة والكتابة فقط
++create policy property_images_select_own on storage.objects for select to authenticated
++  using (bucket_id = 'property-images'
++         and ((storage.foldername(name))[1] = auth.uid()::text or public.is_admin()));
++create policy property_images_insert_own on storage.objects for insert to authenticated
++  with check (bucket_id = 'property-images' and (storage.foldername(name))[1] = auth.uid()::text);
++create policy property_images_update_own on storage.objects for update to authenticated
++  using (bucket_id = 'property-images' and (storage.foldername(name))[1] = auth.uid()::text)
++  with check (bucket_id = 'property-images' and (storage.foldername(name))[1] = auth.uid()::text);
++create policy property_images_delete_own on storage.objects for delete to authenticated
++  using (bucket_id = 'property-images'
++         and ((storage.foldername(name))[1] = auth.uid()::text or public.is_admin()));
++
++-- الإيصالات: خاصة. يرفع صاحبها داخل مجلده، ويقرؤها هو والمدير فقط، ولا تعديل ولا حذف
++create policy receipts_insert_own on storage.objects for insert to authenticated
++  with check (bucket_id = 'receipts' and (storage.foldername(name))[1] = auth.uid()::text);
++create policy receipts_select_own_or_admin on storage.objects for select to authenticated
++  using (bucket_id = 'receipts'
++         and ((storage.foldername(name))[1] = auth.uid()::text or public.is_admin()));
++
++-- ---------------------------------------------------------------------
++-- 10) صلاحيات تنفيذ الدوال
++-- ---------------------------------------------------------------------
++revoke all on function public.request_subscription(text, text)           from public, anon, authenticated;
++revoke all on function public.admin_review_subscription(text, boolean, text) from public, anon, authenticated;
++revoke all on function public.expire_subscriptions()                      from public, anon, authenticated;
++revoke all on function public.my_subscription()                           from public, anon, authenticated;
++revoke all on function public.reveal_listing_contact(text)                from public, anon, authenticated;
++revoke all on function public.admin_link_legacy_owner(uuid, text)         from public, anon, authenticated;
++
++grant execute on function public.request_subscription(text, text)            to authenticated;
++grant execute on function public.admin_review_subscription(text, boolean, text) to authenticated;  -- الدالة نفسها تفحص is_admin()
++grant execute on function public.my_subscription()                           to authenticated;
++grant execute on function public.reveal_listing_contact(text)                to anon, authenticated;
++grant execute on function public.admin_link_legacy_owner(uuid, text)         to authenticated;  -- تفحص is_admin()
++
++-- ---------------------------------------------------------------------
++-- 11) الجدولة (اختياري): فعّل pg_cron من Dashboard > Database > Extensions ثم شغّل:
++-- ---------------------------------------------------------------------
++-- select cron.schedule('agzstay-expire-subscriptions', '0 * * * *', $$ select public.expire_subscriptions(); $$);
++-- select cron.schedule('agzstay-purge-reveals',        '30 3 * * *', $$ select public.purge_contact_reveals(); $$);
++
++-- ---------------------------------------------------------------------
++-- 12) تقرير مراجعة (آخر نتيجة تظهر في SQL Editor): ما يجب فحصه يدوياً بعد التنفيذ
++-- ---------------------------------------------------------------------
++select * from (
++  select 'admin_to_review' as kind, p.id::text as ref, coalesce(p.name, '') as detail
++    from public.profiles p where p.role = 'admin'
++  union all
++  select 'open_policy_remaining', pol.tablename || '.' || pol.policyname, pol.cmd
++    from pg_policies pol
++   where pol.schemaname in ('public', 'storage')
++     and (pol.qual = 'true' or pol.with_check = 'true')
++     and pol.tablename not in ('plans')
++  union all
++  select 'legacy_listing_without_owner', c.id, c.title from public.chalets c where c.owner_id is null
++  union all
++  select 'legacy_subscription_without_owner', s.id, s.owner_name from public.subscriptions s where s.owner_id is null
++) report order by kind, ref;
++
++commit;
+diff --git a/supabase/tests/006_security_tests.sql b/supabase/tests/006_security_tests.sql
+new file mode 100644
+index 0000000..cfc1549
+--- /dev/null
++++ b/supabase/tests/006_security_tests.sql
+@@ -0,0 +1,552 @@
++-- =====================================================================
++-- AgzStay — اختبارات الأمان لـ 006_secure_v2.sql
++--
++-- ⚠️ شغّله على مشروع staging/تجريبي فقط (ينشئ مستخدمين وهميين داخل معاملة).
++--    ينتهي بـ ROLLBACK فلا يترك أي بيانات. أي فشل يوقفه برسالة FAIL توضح السبب.
++-- يفترض تطبيق 001 ثم 005 ثم 006 (بهذا الترتيب).
++-- =====================================================================
++
++begin;
++
++-- ---------- أدوات الاختبار (تُحذف مع ROLLBACK) ----------
++create schema t;
++grant usage on schema t to public;
++create table t.state (k text primary key, v text);
++grant all on t.state to public;
++
++create function t.as_user(p_uid uuid) returns void language plpgsql as $$
++begin
++  execute 'reset role';
++  perform set_config('request.jwt.claims', json_build_object('sub', p_uid, 'role', 'authenticated')::text, true);
++  perform set_config('request.headers', '{}', true);
++  execute 'set local role authenticated';
++end $$;
++
++create function t.as_anon(p_ip text default null) returns void language plpgsql as $$
++begin
++  execute 'reset role';
++  perform set_config('request.jwt.claims', '', true);
++  perform set_config('request.headers',
++    case when p_ip is null then '{}' else json_build_object('x-forwarded-for', p_ip || ', 10.0.0.1')::text end, true);
++  execute 'set local role anon';
++end $$;
++
++create function t.as_super() returns void language plpgsql as $$
++begin
++  execute 'reset role';
++end $$;
++
++create function t.ok(cond boolean, msg text) returns void language plpgsql as $$
++begin
++  if cond is not true then raise exception 'FAIL: %', msg; end if;
++  raise notice 'PASS: %', msg;
++end $$;
++
++create function t.fails(p_sql text, p_expect text, p_msg text) returns void language plpgsql as $$
++begin
++  begin
++    execute p_sql;
++  exception when others then
++    if sqlerrm ilike '%' || p_expect || '%' then
++      raise notice 'PASS: %', p_msg;
++      return;
++    end if;
++    raise exception 'FAIL: % (توقعت خطأ يحتوي "%" لكن الخطأ: %)', p_msg, p_expect, sqlerrm;
++  end;
++  raise exception 'FAIL: % (لم يحدث أي خطأ)', p_msg;
++end $$;
++
++-- إنشاء إعلان كمستخدم حالي. p_hostile=true يحاول فرض أعمدة محمية وملكية مستخدم آخر
++create function t.listing(p_title text, p_hostile boolean default false, p_status text default 'active')
++returns text language plpgsql as $$
++declare v_id text;
++begin
++  if p_hostile then
++    insert into public.chalets (title, price_per_night, owner_name, availability_status,
++                                owner_id, is_featured, featured, rating, reviews_count, owner_verified, host_tier)
++    values (p_title, 1000, 'مالك', p_status,
++            '00000000-0000-0000-0000-0000000000c2', true, true, 5, 99, true, 'pro')
++    returning id into v_id;
++  else
++    insert into public.chalets (title, price_per_night, owner_name, availability_status)
++    values (p_title, 1000, 'مالك', p_status)
++    returning id into v_id;
++    if p_status <> 'active' then
++      update public.chalets set availability_status = p_status where id = v_id;
++    end if;
++  end if;
++  return v_id;
++end $$;
++
++-- مستخدمون ثابتون: O1/O2/O3 ملاك، A مدير
++do $$
++begin
++  insert into auth.users (id, email, raw_user_meta_data) values
++    ('00000000-0000-0000-0000-0000000000c1', 'o1@test.dev', '{"name":"المالك الأول","role":"admin"}'),  -- محاولة تزوير الدور
++    ('00000000-0000-0000-0000-0000000000c2', 'o2@test.dev', '{"name":"المالك الثاني"}'),
++    ('00000000-0000-0000-0000-0000000000c3', 'o3@test.dev', '{"name":"المالك الثالث"}'),
++    ('00000000-0000-0000-0000-0000000000c4', 'admin@test.dev', '{"name":"المدير"}');
++  update public.profiles set role = 'admin' where id = '00000000-0000-0000-0000-0000000000c4';
++
++  -- بيانات قديمة تحاكي بوابة الهاتف: إعلانان بلا مالك ورقم في جدول الاتصال واشتراك معلّق
++  insert into public.chalets (id, title, price_per_night, owner_name, availability_status)
++  values ('legacy-t1', 'شاليه قديم', 1200, 'معلن قديم', 'active'),
++         ('legacy-t2', 'شقة قديمة مخفية', 700, 'معلن قديم', 'hidden');
++  insert into public.chalet_contacts (chalet_id, owner_id, owner_phone)
++  values ('legacy-t1', null, '01099990000'), ('legacy-t2', null, '01099990000');
++  insert into public.subscriptions (id, owner_name, owner_phone, plan_id, plan_name, price, max_units, status)
++  values ('sub-legacy-t1', 'معلن قديم', '01099990000', 'starter', 'باقة البداية', 500, 5, 'pending');
++end $$;
++
++-- =====================================================================
++-- 1) تصعيد الصلاحيات (الثغرة الحرجة): لا admin ذاتي
++-- =====================================================================
++do $$
++declare
++  o1 uuid := '00000000-0000-0000-0000-0000000000c1';
++  a  uuid := '00000000-0000-0000-0000-0000000000c4';
++begin
++  perform t.ok((select role from public.profiles where id = o1) = 'guest',
++    'التسجيل الجديد = guest حتى لو أرسل role=admin في metadata');
++
++  perform t.as_user(o1);
++  perform t.ok(public.is_admin() is false, 'مستخدم عادي: is_admin() = false');
++  perform t.ok(public.is_privileged_session() is false, 'جلسة API لمستخدم عادي ليست مميزة');
++  perform t.fails($q$ update public.profiles set role = 'admin' where id = '00000000-0000-0000-0000-0000000000c1' $q$,
++    'permission denied', 'الطبقة 1 (صلاحيات الأعمدة): لا تحديث للدور');
++  perform t.fails($q$ update public.profiles set verification_status = 'verified' where id = '00000000-0000-0000-0000-0000000000c1' $q$,
++    'permission denied', 'الطبقة 1: لا تحديث لحالة التوثيق');
++  perform t.ok((select count(*) from (select 1 from public.profiles where id <> o1) x) = 0,
++    'المستخدم لا يرى ملفات الآخرين غير المنشورين');
++
++  -- الطبقة الثانية: حتى لو مُنحت الصلاحية على العمود، يرفض التريجر الإصلاحي
++  perform t.as_super();
++  grant update (role, verification_status) on public.profiles to authenticated;
++  perform t.as_user(o1);
++  perform t.fails($q$ update public.profiles set role = 'admin' where id = '00000000-0000-0000-0000-0000000000c1' $q$,
++    'forbidden', 'الطبقة 2 (التريجر بعد الإصلاح): ترقية ذاتية إلى admin مرفوضة');
++  update public.profiles set role = 'owner' where id = '00000000-0000-0000-0000-0000000000c2';
++  perform t.as_super();
++  perform t.ok((select role from public.profiles where id = '00000000-0000-0000-0000-0000000000c2') = 'guest',
++    'لا ترقية حساب شخص آخر (RLS تتجاهل التحديث)');
++  perform t.as_user(o1);
++  perform t.fails($q$ update public.profiles set verification_status = 'verified' where id = '00000000-0000-0000-0000-0000000000c1' $q$,
++    'forbidden', 'الطبقة 2: التوثيق الذاتي مرفوض');
++  update public.profiles set role = 'owner' where id = o1;
++  perform t.ok((select role from public.profiles where id = o1) = 'owner', 'الترقية الذاتية المسموحة الوحيدة: guest → owner');
++  perform t.fails($q$ update public.profiles set role = 'admin' where id = '00000000-0000-0000-0000-0000000000c1' $q$,
++    'forbidden', 'من owner لا يمكن الترقية إلى admin');
++  perform t.as_super();
++  revoke update (role, verification_status) on public.profiles from authenticated;
++  update public.profiles set role = 'guest' where id = o1;
++
++  perform t.as_user(o1);
++  perform public.become_host('owner');
++  perform t.as_super();
++  perform t.ok((select role from public.profiles where id = o1) = 'owner', 'become_host() يعمل (guest → owner)');
++  perform t.ok((select count(*) from public.profiles where role = 'admin') = 1, 'يوجد مدير واحد فقط (المُعيَّن من SQL)');
++
++  perform t.as_user(a);
++  perform t.ok(public.is_admin() is true, 'المدير المعيَّن من SQL: is_admin() = true');
++end $$;
++
++-- =====================================================================
++-- 2) الزائر غير المسجل
++-- =====================================================================
++do $$
++declare
++  n int;
++begin
++  perform t.as_anon();
++  select count(*) into n from public.chalets;
++  perform t.ok(n = 1, 'الزائر يرى المنشور فقط (legacy-t1) ولا يرى المخفي');
++  perform t.fails($q$ select * from public.chalet_contacts $q$, 'permission denied', 'الزائر لا يقرأ جدول أرقام الملاك');
++  perform t.fails($q$ select * from public.subscriptions $q$, 'permission denied', 'الزائر لا يقرأ الاشتراكات');
++  perform t.fails($q$ insert into public.chalets (title, price_per_night, owner_name) values ('اختراق', 1, 'x') $q$,
++    'permission denied', 'الزائر لا ينشئ إعلانات');
++  perform t.fails($q$ update public.chalets set title = 'اختراق' $q$, 'permission denied', 'الزائر لا يعدّل إعلانات');
++  perform t.fails($q$ delete from public.chalets $q$, 'permission denied', 'الزائر لا يحذف إعلانات');
++  perform t.fails($q$ insert into public.subscriptions (owner_name, owner_phone, plan_id, plan_name, price, max_units, status)
++                      values ('x', '01011112222', 'enterprise', 'e', 1500, 20, 'active') $q$,
++    'permission denied', 'الزائر لا ينشئ اشتراكاً مفعّلاً بنفسه');
++  perform t.fails($q$ select public.request_subscription('starter', 'x/y.jpg') $q$, 'permission denied', 'الزائر لا يطلب اشتراكاً');
++  perform t.fails($q$ select public.admin_review_subscription('sub-legacy-t1', true) $q$, 'permission denied', 'الزائر لا يراجع اشتراكات');
++  perform t.fails($q$ select public.owner_plan('00000000-0000-0000-0000-0000000000c1') $q$, 'permission denied', 'دوال الباقة الداخلية غير مكشوفة');
++  select count(*) into n from public.plans;
++  perform t.ok(n = 4, 'الباقات مقروءة للجميع');
++
++  -- كشف رقم المالك
++  perform t.ok(public.reveal_listing_contact('legacy-t1') = '01099990000', 'كشف رقم إعلان منشور');
++  perform t.fails($q$ select public.reveal_listing_contact('legacy-t2') $q$, 'chalet_not_found', 'لا كشف لرقم إعلان مخفي');
++  perform t.fails($q$ select public.reveal_listing_contact('no-such') $q$, 'chalet_not_found', 'إعلان غير موجود');
++end $$;
++
++-- تحديد المعدل: 3 كشوف/ساعة لكل IP
++do $$
++begin
++  perform t.as_super();
++  update public.app_settings set value = '3' where key = 'contact_reveal_limit_per_hour';
++  delete from public.contact_reveals;
++
++  perform t.as_anon('1.1.1.1');
++  perform public.reveal_listing_contact('legacy-t1');
++  perform public.reveal_listing_contact('legacy-t1');
++  perform public.reveal_listing_contact('legacy-t1');
++  perform t.fails($q$ select public.reveal_listing_contact('legacy-t1') $q$, 'rate_limited', 'الكشف الرابع من نفس IP مرفوض (rate_limited)');
++
++  perform t.as_anon('2.2.2.2');
++  perform t.ok(public.reveal_listing_contact('legacy-t1') = '01099990000', 'IP مختلف لا يتأثر بحد غيره');
++
++  perform t.as_user('00000000-0000-0000-0000-0000000000c3');
++  perform t.ok(public.reveal_listing_contact('legacy-t1') = '01099990000', 'المستخدم المسجّل له عدّاد مستقل عن IP');
++
++  perform t.as_super();
++  update public.app_settings set value = '40' where key = 'contact_reveal_limit_per_hour';
++end $$;
++
++-- =====================================================================
++-- 3) المالك: الملكية، الأعمدة المحمية، الحد حسب الباقة
++-- =====================================================================
++do $$
++declare
++  o1 uuid := '00000000-0000-0000-0000-0000000000c1';
++  o2 uuid := '00000000-0000-0000-0000-0000000000c2';
++  l1 text; l2 text; r record;
++begin
++  perform t.as_user(o1);
++  l1 := t.listing('شاليه O1', true);   -- محاولة فرض owner_id=O2 وأعمدة محمية
++  insert into t.state values ('l1', l1);
++  perform t.as_super();
++  select * into r from public.chalets where id = l1;
++  perform t.ok(r.owner_id = o1, 'owner_id المُرسَل (مالك آخر) يُستبدل بمالك الجلسة');
++  perform t.ok(r.is_featured is false and r.featured is false, 'is_featured/featured المُرسَلة تُتجاهل (باقة مجانية)');
++  perform t.ok(r.rating = 0 and r.reviews_count = 0, 'rating/reviews_count المُرسَلة تُتجاهل');
++  perform t.ok(r.owner_verified is false and r.host_tier = 'free', 'owner_verified/host_tier المُرسَلة تُتجاهل');
++  perform t.ok(r.availability_status = 'active', 'بوابة التوثيق اختيارية افتراضياً: النشر المباشر لغير الموثق');
++
++  perform t.as_user(o1);
++  perform t.fails($q$ select t.listing('إعلان ثانٍ للباقة المجانية') $q$, 'quota_exceeded', 'الحد: باقة مجانية = وحدة واحدة');
++  perform t.fails($q$ select t.listing('إعلان موقوف ذاتياً', false, 'suspended') $q$, 'forbidden_status', 'لا يمكن للمالك إنشاء إعلان suspended');
++
++  -- تعديل الإعلان
++  update public.chalets set title = 'عنوان معدّل', is_featured = true, rating = 5, owner_id = o2, owner_verified = true where id = l1;
++  perform t.as_super();
++  select * into r from public.chalets where id = l1;
++  perform t.ok(r.title = 'عنوان معدّل', 'المالك يعدّل بيانات إعلانه');
++  perform t.ok(r.owner_id = o1 and r.is_featured is false and r.rating = 0 and r.owner_verified is false,
++    'تعديل الأعمدة المحمية (مالك/تمييز/تقييم/توثيق) يُتجاهل');
++  perform t.as_user(o1);
++  perform t.fails(format($q$ update public.chalets set availability_status = 'suspended' where id = %L $q$, l1),
++    'forbidden_status', 'المالك لا يوقف إعلانه بصفة إدارية');
++
++  -- مالك آخر لا يعدّل ولا يحذف
++  perform t.as_user(o2);
++  update public.chalets set title = 'اختراق' where id = l1;
++  delete from public.chalets where id = l1;
++  perform t.as_super();
++  perform t.ok((select title from public.chalets where id = l1) = 'عنوان معدّل', 'مالك آخر لا يعدّل إعلان غيره');
++  perform t.ok(exists (select 1 from public.chalets where id = l1), 'مالك آخر لا يحذف إعلان غيره');
++
++  -- الإعلان المخفي لا يراه إلا صاحبه
++  perform t.as_user(o1);
++  update public.chalets set availability_status = 'hidden' where id = l1;
++  perform t.ok((select count(*) from public.chalets where id = l1) = 1, 'المالك يرى إعلانه المخفي');
++  perform t.as_user(o2);
++  perform t.ok((select count(*) from public.chalets where id = l1) = 0, 'مالك آخر لا يرى المخفي');
++  perform t.as_anon();
++  perform t.ok((select count(*) from public.chalets where id = l1) = 0, 'الزائر لا يرى المخفي');
++  perform t.as_user(o1);
++  update public.chalets set availability_status = 'active' where id = l1;
++
++  -- حدود البيانات
++  perform t.as_user(o2);
++  perform t.fails($q$ select t.listing(repeat('ع', 200)) $q$, 'chalets_limits_chk', 'عنوان أطول من 150 حرفاً مرفوض');
++  perform t.fails($q$ insert into public.chalets (title, price_per_night, owner_name, images)
++                      values ('صور كثيرة', 100, 'x', array_fill('u'::text, array[21])) $q$,
++    'chalets_limits_chk', 'أكثر من 20 صورة مرفوض');
++  perform t.fails($q$ insert into public.chalets (title, price_per_night, owner_name) values ('سعر خرافي', 99999999, 'x') $q$,
++    'chalets_limits_chk', 'سعر غير منطقي مرفوض');
++end $$;
++
++-- أرقام الملاك
++do $$
++declare
++  o1 uuid := '00000000-0000-0000-0000-0000000000c1';
++  o2 uuid := '00000000-0000-0000-0000-0000000000c2';
++  l1 text := (select v from t.state where k = 'l1');
++  l2 text;
++begin
++  perform t.as_user(o2);
++  l2 := t.listing('شاليه O2');
++  insert into t.state values ('l2', l2);
++
++  perform t.as_user(o1);
++  insert into public.chalet_contacts (chalet_id, owner_phone) values (l1, ' 01012345678 ');
++  perform t.ok((select owner_id from public.chalet_contacts where chalet_id = l1) = o1,
++    'المالك يضيف رقم إعلانه (owner_id يُملأ تلقائياً)');
++  perform t.fails($q$ update public.chalet_contacts set owner_phone = '123' where owner_phone = '01012345678' $q$,
++    'phone_invalid', 'رقم موبايل غير صحيح مرفوض');
++  perform t.fails(format($q$ insert into public.chalet_contacts (chalet_id, owner_phone) values (%L, '01011112222') $q$, l2),
++    'row-level security', 'لا إضافة رقم على إعلان مالك آخر');
++
++  perform t.as_user(o2);
++  perform t.ok((select count(*) from public.chalet_contacts where chalet_id = l1) = 0, 'مالك آخر لا يقرأ رقم غيره');
++  update public.chalet_contacts set owner_phone = '01000000000' where chalet_id = l1;
++  perform t.as_super();
++  perform t.ok((select owner_phone from public.chalet_contacts where chalet_id = l1) = '01012345678',
++    'مالك آخر لا يعدّل رقم غيره');
++
++  perform t.as_anon();
++  perform t.ok(public.reveal_listing_contact(l1) = '01012345678', 'الزائر يحصل على الرقم عبر الدالة المحدودة فقط');
++end $$;
++
++-- =====================================================================
++-- 4) الاشتراكات: طلب → مراجعة المدير → ميزات تلقائية → انتهاء
++-- =====================================================================
++do $$
++declare
++  o1 uuid := '00000000-0000-0000-0000-0000000000c1';
++  o2 uuid := '00000000-0000-0000-0000-0000000000c2';
++  a  uuid := '00000000-0000-0000-0000-0000000000c4';
++  l1 text := (select v from t.state where k = 'l1');
++  s public.subscriptions; j jsonb; n int;
++begin
++  perform t.as_user(o1);
++  perform t.fails($q$ insert into public.subscriptions (owner_name, owner_phone, plan_id, plan_name, price, max_units, status)
++                      values ('x', '01011112222', 'pro', 'p', 800, 10, 'active') $q$,
++    'permission denied', 'المالك لا ينشئ اشتراكاً مباشرة');
++  perform t.fails($q$ update public.subscriptions set status = 'active' $q$, 'permission denied', 'المالك لا يفعّل اشتراكه بنفسه');
++
++  perform t.fails($q$ select public.request_subscription('free', '00000000-0000-0000-0000-0000000000c1/r.jpg') $q$,
++    'plan_is_free', 'الباقة المجانية لا تحتاج طلباً');
++  perform t.fails($q$ select public.request_subscription('nope', '00000000-0000-0000-0000-0000000000c1/r.jpg') $q$,
++    'invalid_plan', 'باقة غير موجودة');
++  perform t.fails($q$ select public.request_subscription('starter', null) $q$, 'invalid_receipt_path', 'لا طلب بلا إيصال');
++  perform t.fails($q$ select public.request_subscription('starter', '00000000-0000-0000-0000-0000000000c2/r.jpg') $q$,
++    'invalid_receipt_path', 'إيصال في مجلد مستخدم آخر مرفوض');
++
++  s := public.request_subscription('starter', '00000000-0000-0000-0000-0000000000c1/r.jpg');
++  insert into t.state values ('sub1', s.id);
++  perform t.ok(s.status = 'pending' and s.price = 500 and s.max_units = 5 and s.owner_id = o1,
++    'الطلب pending والسعر/السعة من جدول plans (500 / 5) والمالك من الجلسة');
++  perform t.fails($q$ select public.request_subscription('pro', '00000000-0000-0000-0000-0000000000c1/r2.jpg') $q$,
++    'duplicate_request', 'طلب معلّق واحد فقط لكل مالك');
++
++  perform t.fails(format($q$ select public.admin_review_subscription(%L, true) $q$, s.id), 'forbidden', 'المالك لا يعتمد اشتراكه');
++  j := public.my_subscription();
++  perform t.ok(j ->> 'plan_id' = 'free' and (j ->> 'max_units')::int = 1 and (j ->> 'used_units')::int = 1
++               and jsonb_typeof(j -> 'pending_request') = 'object', 'my_subscription: مجاني، 1/1، وطلب معلّق');
++
++  perform t.as_user(o2);
++  select count(*) into n from public.subscriptions;
++  perform t.ok(n = 0, 'مالك آخر لا يرى اشتراكات غيره');
++
++  perform t.as_user(o1);
++  select count(*) into n from public.subscriptions;
++  perform t.ok(n = 1, 'المالك يرى اشتراكه فقط');
++
++  -- المدير
++  perform t.as_user(a);
++  select count(*) into n from public.subscriptions;
++  perform t.ok(n = 2, 'المدير يرى كل الاشتراكات (طلب O1 + القديم)');
++  perform t.fails($q$ select public.admin_review_subscription('sub-legacy-t1', true) $q$, 'owner_missing',
++    'اشتراك قديم بلا مالك لا يُفعَّل قبل الربط');
++
++  s := public.admin_review_subscription(s.id, true, 'تم التحقق من الإيصال');
++  perform t.ok(s.status = 'active' and s.reviewed_at is not null
++               and s.expires_at between now() + interval '29 days' and now() + interval '31 days',
++    'اعتماد المدير: active + انتهاء بعد 30 يوماً');
++  perform t.fails(format($q$ select public.admin_review_subscription(%L, true) $q$, s.id), 'invalid_state', 'لا اعتماد مرتين');
++  perform t.ok((select is_featured from public.chalets where id = l1) is true, 'الاعتماد يفعّل شارة "مميز" على إعلانات المالك');
++
++  perform t.as_user(o1);
++  j := public.my_subscription();
++  perform t.ok((j ->> 'plan_id') = 'starter' and (j ->> 'max_units')::int = 5 and jsonb_typeof(j -> 'pending_request') = 'null'
++               and (j ->> 'expires_at') is not null, 'my_subscription بعد الاعتماد: starter / 5 وحدات');
++
++  -- الحد الجديد 5: أربعة إضافية مسموحة ثم يُرفض السادس، والجديدة مميزة تلقائياً
++  perform t.listing('O1-2'); perform t.listing('O1-3'); perform t.listing('O1-4'); perform t.listing('O1-5');
++  perform t.ok((select count(*) from public.chalets where owner_id = o1 and is_featured) = 5, 'الإعلانات الجديدة مميزة تلقائياً بحسب الباقة');
++  perform t.fails($q$ select t.listing('O1-6') $q$, 'quota_exceeded', 'الحد 5 وحدات للباقة المدفوعة');
++
++  -- رفض طلب O2
++  perform t.as_user(o2);
++  s := public.request_subscription('pro', '00000000-0000-0000-0000-0000000000c2/r.jpg');
++  perform t.as_user(a);
++  s := public.admin_review_subscription(s.id, false, 'الإيصال غير واضح');
++  perform t.ok(s.status = 'rejected' and s.review_note = 'الإيصال غير واضح', 'رفض المدير مع ذكر السبب');
++  perform t.as_user(o2);
++  perform t.ok((public.request_subscription('pro', '00000000-0000-0000-0000-0000000000c2/r2.jpg')).status = 'pending',
++    'يمكن إعادة الطلب بعد الرفض');
++
++  -- الترقية: pro تستبدل starter
++  perform t.as_user(o1);
++  s := public.request_subscription('pro', '00000000-0000-0000-0000-0000000000c1/r3.jpg');
++  perform t.as_user(a);
++  perform public.admin_review_subscription(s.id, true);
++  perform t.as_super();
++  perform t.ok((select count(*) from public.subscriptions where owner_id = o1 and status = 'active') = 1
++               and (select plan_id from public.subscriptions where owner_id = o1 and status = 'active') = 'pro',
++    'الترقية تستبدل الباقة السابقة (واحدة فعّالة فقط)');
++  perform t.ok((select count(*) from public.subscriptions where owner_id = o1 and status = 'expired') = 1, 'الباقة القديمة أصبحت expired');
++end $$;
++
++-- الانتهاء التلقائي
++do $$
++declare
++  o1 uuid := '00000000-0000-0000-0000-0000000000c1';
++  j jsonb;
++begin
++  perform t.as_user(o1);
++  perform t.fails($q$ select public.expire_subscriptions() $q$, 'permission denied', 'المستخدم لا يشغّل دالة الانتهاء');
++
++  perform t.as_super();
++  update public.subscriptions set expires_at = now() - interval '1 hour' where owner_id = o1 and status = 'active';
++  perform t.ok(public.expire_subscriptions() >= 1, 'دالة الانتهاء تنهي الاشتراكات المنتهية');
++  perform t.ok((select count(*) from public.chalets where owner_id = o1 and is_featured) = 0, 'تُزال الشارة المميزة عند الانتهاء');
++
++  perform t.as_user(o1);
++  j := public.my_subscription();
++  perform t.ok((j ->> 'plan_id') = 'free' and (j ->> 'max_units')::int = 1, 'بعد الانتهاء: عودة للباقة المجانية');
++  perform t.ok((select count(*) from public.chalets where owner_id = o1) = 5, 'إعلانات المالك الحالية تبقى (لا حذف تلقائي)');
++  perform t.fails($q$ select t.listing('بعد الانتهاء') $q$, 'quota_exceeded', 'لا إعلانات جديدة فوق حد الباقة المجانية');
++end $$;
++
++-- =====================================================================
++-- 5) الإدارة: الإيقاف + ربط الإعلانات القديمة
++-- =====================================================================
++do $$
++declare
++  o1 uuid := '00000000-0000-0000-0000-0000000000c1';
++  o2 uuid := '00000000-0000-0000-0000-0000000000c2';
++  a  uuid := '00000000-0000-0000-0000-0000000000c4';
++  l1 text := (select v from t.state where k = 'l1');
++  j jsonb;
++begin
++  perform t.as_user(a);
++  update public.chalets set availability_status = 'suspended' where id = l1;
++  perform t.ok((select availability_status from public.chalets where id = l1) = 'suspended', 'المدير يوقف إعلاناً');
++
++  perform t.as_user(o1);
++  perform t.fails(format($q$ update public.chalets set availability_status = 'active' where id = %L $q$, l1),
++    'listing_suspended', 'المالك لا يرفع الإيقاف الإداري');
++  perform t.as_anon();
++  perform t.ok((select count(*) from public.chalets where id = l1) = 0, 'الإعلان الموقوف لا يظهر للزوار');
++
++  -- ربط القديم
++  perform t.as_user(o1);
++  perform t.fails($q$ select public.admin_link_legacy_owner('00000000-0000-0000-0000-0000000000c1', '01099990000') $q$,
++    'forbidden', 'غير المدير لا يربط إعلانات قديمة بحسابه');
++
++  perform t.as_user(a);
++  j := public.admin_link_legacy_owner(o2, '01099990000');
++  perform t.ok((j ->> 'chalets_linked')::int = 2 and (j ->> 'subscriptions_linked')::int = 1, 'ربط الإعلانات والاشتراك القديم بمالك حقيقي');
++  perform t.as_super();
++  perform t.ok((select owner_id from public.chalets where id = 'legacy-t1') = o2, 'الإعلان القديم أصبح مملوكاً للحساب');
++  perform t.as_user(o2);
++  update public.chalets set title = 'قديم بعد الربط' where id = 'legacy-t1';
++  perform t.as_super();
++  perform t.ok((select title from public.chalets where id = 'legacy-t1') = 'قديم بعد الربط', 'المالك الجديد يعدّل إعلانه المربوط');
++
++  -- O2 لديه طلب معلّق أحدث، فيُرفض القديم كمستبدَل بدل خرق قيد "طلب معلّق واحد"
++  perform t.ok((select status from public.subscriptions where id = 'sub-legacy-t1') = 'rejected'
++               and (select owner_id from public.subscriptions where id = 'sub-legacy-t1') = o2,
++    'الاشتراك القديم المعلّق يُربط ويُرفض كمستبدَل عند وجود طلب أحدث للمالك');
++  perform t.as_user(a);
++  perform t.fails($q$ select public.admin_review_subscription('sub-legacy-t1', true) $q$, 'invalid_state',
++    'لا يُعتمد طلب قديم مستبدَل');
++end $$;
++
++-- =====================================================================
++-- 6) بوابة التوثيق القابلة للضبط
++-- =====================================================================
++do $$
++declare
++  o3 uuid := '00000000-0000-0000-0000-0000000000c3';
++  l3 text; l3b text;
++begin
++  perform t.as_super();
++  update public.app_settings set value = 'true' where key = 'require_verified_to_publish';
++  perform t.as_user(o3);
++  l3 := t.listing('يتطلب توثيقاً');
++  perform t.as_super();
++  perform t.ok((select availability_status from public.chalets where id = l3) = 'pending_review',
++    'عند تفعيل require_verified_to_publish: النشر لغير الموثق يصبح pending_review');
++  update public.app_settings set value = 'false' where key = 'require_verified_to_publish';
++end $$;
++
++-- =====================================================================
++-- 7) التخزين
++-- =====================================================================
++do $$
++declare
++  o1 uuid := '00000000-0000-0000-0000-0000000000c1';
++  o2 uuid := '00000000-0000-0000-0000-0000000000c2';
++  a  uuid := '00000000-0000-0000-0000-0000000000c4';
++  n int;
++begin
++  perform t.ok((select public from storage.buckets where id = 'receipts') is false, 'باكت الإيصالات أصبح خاصاً');
++
++  -- صور الإعلانات
++  perform t.as_user(o1);
++  insert into storage.objects (bucket_id, name) values ('property-images', o1::text || '/a.webp');
++  perform t.ok(true, 'رفع صورة داخل مجلد المستخدم');
++  perform t.fails(format($q$ insert into storage.objects (bucket_id, name) values ('property-images', %L) $q$, o2::text || '/x.webp'),
++    'row-level security', 'لا رفع داخل مجلد مستخدم آخر');
++  perform t.fails($q$ insert into storage.objects (bucket_id, name) values ('property-images', '01099990000/x.webp') $q$,
++    'row-level security', 'المسار القديم (باسم الهاتف) مرفوض');
++  perform t.as_anon();
++  perform t.fails($q$ insert into storage.objects (bucket_id, name) values ('property-images', 'any/x.webp') $q$,
++    'permission denied', 'الزائر لا يرفع صوراً');
++  perform t.as_user(o2);
++  delete from storage.objects where bucket_id = 'property-images' and name = o1::text || '/a.webp';
++  perform t.as_super();
++  perform t.ok(exists (select 1 from storage.objects where name = o1::text || '/a.webp'), 'مستخدم آخر لا يحذف صور غيره');
++  perform t.as_user(o1);
++  delete from storage.objects where bucket_id = 'property-images' and name = o1::text || '/a.webp';
++  perform t.as_super();
++  perform t.ok(not exists (select 1 from storage.objects where name = o1::text || '/a.webp'), 'المالك يحذف صوره');
++
++  -- الإيصالات
++  perform t.as_user(o1);
++  insert into storage.objects (bucket_id, name) values ('receipts', o1::text || '/r.jpg');
++  perform t.fails(format($q$ insert into storage.objects (bucket_id, name) values ('receipts', %L) $q$, o2::text || '/r.jpg'),
++    'row-level security', 'لا رفع إيصال في مجلد غيرك');
++  perform t.as_user(o2);
++  select count(*) into n from storage.objects where bucket_id = 'receipts';
++  perform t.ok(n = 0, 'مستخدم آخر لا يرى إيصالات غيره');
++  perform t.as_anon();
++  perform t.fails($q$ select * from storage.objects where bucket_id = 'receipts' $q$, 'permission denied', 'الزائر لا يقرأ الإيصالات');
++  perform t.as_user(a);
++  select count(*) into n from storage.objects where bucket_id = 'receipts';
++  perform t.ok(n = 1, 'المدير يرى الإيصالات');
++  perform t.as_user(o1);
++  delete from storage.objects where bucket_id = 'receipts';
++  perform t.as_super();
++  perform t.ok(exists (select 1 from storage.objects where bucket_id = 'receipts'), 'لا حذف للإيصالات من المستخدم');
++end $$;
++
++-- =====================================================================
++-- 8) سلامة عامة
++-- =====================================================================
++do $$
++declare
++  n int;
++begin
++  perform t.as_super();
++  select count(*) into n from pg_policies
++   where schemaname in ('public', 'storage') and (qual = 'true' or with_check = 'true')
++     and tablename not in ('plans', 'reviews');
++  perform t.ok(n = 0, 'لا توجد سياسات مفتوحة using(true) خارج القراءة العامة المقصودة');
++
++  perform t.ok(not exists (select 1 from information_schema.columns
++                            where table_schema = 'public' and table_name = 'chalets' and column_name = 'owner_phone'),
++    'عمود owner_phone لم يعد في الجدول العام');
++
++  insert into public.chalets (title, price_per_night, owner_name) values ('بدون تقييم', 100, 'x');
++  perform t.ok((select rating from public.chalets where title = 'بدون تقييم') = 0, 'التقييم الافتراضي للإعلان الجديد 0');
++end $$;
++
++select 'ALL SECURITY TESTS PASSED ✅' as result;
++
++rollback;

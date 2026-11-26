@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { SUBSCRIPTION_PLANS } from '@/data/subscriptions';
 import { CHALET_PUBLIC_SELECT_COLUMNS } from '@/services/agzstayRepository';
 import migrationSql from '../../../supabase/migrations/006_secure_v2.sql?raw';
+import migration007Sql from '../../../supabase/migrations/007_maintenance_and_legacy_triggers_fix.sql?raw';
 import pgTapSql from '../../../supabase/tests/006_secure_v2.test.sql?raw';
 import repoSource from '@/services/agzstayRepository.ts?raw';
 
@@ -106,5 +108,42 @@ describe('006_secure_v2.sql security & concurrency invariants', () => {
     expect(adminDashboardSource).toContain('العودة للرئيسية');
     expect(repoSource).toContain("supabase.rpc('is_admin')");
     expect(repoSource).toContain("supabase.from('profiles').select('role').eq('id', user.id).single()");
+    expect(repoSource).not.toContain('loadOwnerSession');
+    expect(repoSource).not.toContain('fetchOwnerChaletsByPhone');
+    expect(repoSource).not.toMatch(/from\(\s*'receipts'\s*\)\.getPublicUrl/);
+  });
+
+  it('keeps frontend SUBSCRIPTION_PLANS in strict parity with SQL plans in 006_secure_v2.sql', () => {
+    for (const plan of SUBSCRIPTION_PLANS) {
+      const tuplePattern = new RegExp(
+        `'${plan.id}'\\s*,\\s*'[^']*'\\s*,\\s*'[^']*'\\s*,\\s*${plan.price}\\s*,\\s*${plan.maxUnits}\\s*,\\s*${plan.isFeaturedEligible}`,
+        'i'
+      );
+      expect(migrationSql).toMatch(tuplePattern);
+    }
+  });
+
+  it('hardens legacy 002/003 triggers and provides maintenance & legacy-owner RPCs in 007', () => {
+    const verificationFnMatch = migration007Sql.match(
+      /create\s+or\s+replace\s+function\s+public\.handle_owner_verification_rules[\s\S]*?\$\$;/i
+    );
+    expect(verificationFnMatch).not.toBeNull();
+    const verificationFnCodeOnly = verificationFnMatch![0].replace(/--.*$/gm, '').toLowerCase();
+    expect(verificationFnCodeOnly).toContain("set search_path = ''");
+    expect(verificationFnCodeOnly).not.toContain('current_user');
+
+    expect(migration007Sql).toMatch(/create\s+or\s+replace\s+function\s+public\.enforce_booking_update_rules[\s\S]*security\s+invoker[\s\S]*set\s+search_path\s*=\s*''/i);
+    expect(migration007Sql).toContain('public.expire_subscriptions()');
+    expect(migration007Sql).toContain('public.purge_contact_reveals()');
+    expect(migration007Sql).toContain('public.admin_link_legacy_owner(');
+
+    const secDefHeaders = migration007Sql.match(
+      /create\s+or\s+replace\s+function\s+[\s\S]*?as\s+\$\$/gi
+    ) ?? [];
+    for (const header of secDefHeaders) {
+      if (/security\s+definer/i.test(header)) {
+        expect(header).toMatch(/set\s+search_path\s*=\s*''/i);
+      }
+    }
   });
 });

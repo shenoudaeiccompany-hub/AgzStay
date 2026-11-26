@@ -1444,3 +1444,43 @@ export async function adminReviewSubscriptionRpc(
     };
   }
 }
+
+export async function linkLegacyOwner(
+  userId: string,
+  phone: string
+): Promise<RepoResult<{ linkedChalets: number; linkedSubscriptions: number }>> {
+  if (!isSupabaseConfigured || !supabase) {
+    return { data: null, error: 'الاتصال بـ Supabase غير مهيأ.' };
+  }
+
+  try {
+    const { data, error } = await supabase.rpc('admin_link_legacy_owner', {
+      p_user_id: userId,
+      p_phone: normalizeEgyptianPhone(phone),
+    });
+
+    if (error || !data || typeof data !== 'object') {
+      return {
+        data: null,
+        error: formatSupabaseError(error, 'تعذر ربط الحساب بالوحدات القديمة.'),
+        errorCode: extractErrorCodeKey(error) ?? undefined,
+      };
+    }
+
+    const r = data as Record<string, unknown>;
+    return {
+      data: {
+        linkedChalets: Number(r.linked_chalets ?? 0),
+        linkedSubscriptions: Number(r.linked_subscriptions ?? 0),
+      },
+      error: null,
+    };
+  } catch (err) {
+    return {
+      data: null,
+      error: formatSupabaseError(err, 'تعذر ربط الحساب بالوحدات القديمة.'),
+      errorCode: extractErrorCodeKey(err) ?? undefined,
+    };
+  }
+}
+
